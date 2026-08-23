@@ -3136,6 +3136,23 @@ class InMemoryAdapter extends DatabaseAdapter {
 				if (Number(log.nyaitter_id) === previousId) log.nyaitter_id = nextId;
 			}
 
+			// imposter parent_id and members
+			for (const candidate of this.users.values()) {
+				if (candidate?.settings?.imposter && typeof candidate.settings.imposter === 'object') {
+					if (Number(candidate.settings.imposter.parent_id) === previousId) {
+						candidate.settings.imposter.parent_id = nextId;
+					}
+					if (Array.isArray(candidate.settings.imposter.members)) {
+						candidate.settings.imposter.members = candidate.settings.imposter.members.map((m) => {
+							if (Number(m?.user_id) === previousId) {
+								return { ...m, user_id: nextId };
+							}
+							return m;
+						});
+					}
+				}
+			}
+
 			return user;
 		}
 

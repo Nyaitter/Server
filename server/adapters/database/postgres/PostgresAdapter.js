@@ -1087,6 +1087,34 @@ class PostgresAdapter extends DatabaseAdapter {
 				);
 			}
 
+			// imposter parent_id and members
+			const { rows: imposterUsers } = await client.query(
+				"SELECT id, settings FROM users WHERE settings::text LIKE '%imposter%' OR auth_provider = 'imposter'",
+			);
+			for (const imp of imposterUsers) {
+				const impSettings = typeof imp.settings === 'object' && imp.settings !== null ? imp.settings : parseJsonSafe(imp.settings, {});
+				if (!impSettings || typeof impSettings !== 'object') continue;
+				let changed = false;
+				if (impSettings.imposter && typeof impSettings.imposter === 'object') {
+					if (Number(impSettings.imposter.parent_id) === previousId) {
+						impSettings.imposter.parent_id = nextId;
+						changed = true;
+					}
+					if (Array.isArray(impSettings.imposter.members)) {
+						impSettings.imposter.members = impSettings.imposter.members.map((m) => {
+							if (Number(m?.user_id) === previousId) {
+								changed = true;
+								return { ...m, user_id: nextId };
+							}
+							return m;
+						});
+					}
+				}
+				if (changed) {
+					await client.query('UPDATE users SET settings = $2::jsonb WHERE id = $1', [imp.id, JSON.stringify(impSettings)]);
+				}
+			}
+
 			this._invalidateUserCache(previousId);
 			this._invalidateUserCache(nextId);
 			this._invalidateUserCache(null); // Clear overall maps
