@@ -111,15 +111,16 @@ function serializeLoginUser(user, req) {
   };
 }
 
-function setSessionCookie(res, token, expiresAt) {
+function setSessionCookie(req, res, token, expiresAt) {
   const maxAge = expiresAt
     ? new Date(expiresAt).getTime() - Date.now()
     : 30 * 24 * 60 * 60 * 1000;
   const isProduction = (process.env.NODE_ENV || 'development') === 'production';
+  const isSecure = isProduction || req.secure || req.get('x-forwarded-proto') === 'https';
 
   res.cookie('nyaitter_session', token, {
     httpOnly: true,
-    secure: isProduction,
+    secure: isSecure,
     path: '/',
     maxAge: Math.max(maxAge, 3600000),
     sameSite: 'lax',
@@ -131,7 +132,7 @@ function clearSessionCookie(res) {
 }
 
 function setAuthenticatedSessionCookies(req, res, session) {
-  setSessionCookie(res, session.token, session.expiresAt);
+  setSessionCookie(req, res, session.token, session.expiresAt);
   rememberAccountSession(req, res, session);
 }
 
@@ -735,7 +736,7 @@ router.post('/accounts/switch', async (req, res) => {
       return res.status(403).json({ error: 'このブラウザで認証済みのアカウントではありません' });
     }
 
-    setSessionCookie(res, selected.token, selected.session.expiresAt);
+    setSessionCookie(req, res, selected.token, selected.session.expiresAt);
     setRememberedAccountsCookie(res, [
       { token: selected.token, userId: selected.userId },
       ...accounts

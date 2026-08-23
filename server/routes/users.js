@@ -27,6 +27,7 @@ const router = express.Router();
 const { createRateLimiter } = require('../middleware/rateLimit');
 const profileUpdateLimiter = createRateLimiter(config.rateLimit.profileUpdate);
 const accountOperationLimiter = createRateLimiter(config.rateLimit.profileUpdate);
+const searchLimiter = createRateLimiter(config.rateLimit.profileUpdate);
 const accountDeletionConfirmations = new Map();
 const ACCOUNT_CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 
@@ -349,7 +350,7 @@ async function handleUserIcon(req, res) {
 
 router.get('/:userId/icon', handleUserIcon);
 
-router.get('/search', optionalAuth, async (req, res) => {
+router.get('/search', optionalAuth, searchLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const query = req.query.q || '';
 	const requestedLimit = parseInt(req.query.limit, 10);
@@ -382,7 +383,7 @@ router.get('/search', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/recommended', optionalAuth, async (req, res) => {
+router.get('/recommended', optionalAuth, searchLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const viewerId = req.user ? req.user.id : null;
 
@@ -393,7 +394,7 @@ router.get('/recommended', optionalAuth, async (req, res) => {
 		} else {
 			const allUsers = db.getAllUsers ? await db.getAllUsers() : [];
 			let candidates = allUsers
-				.slice()
+				.slice(0, 100) // cap before sort to avoid large in-memory operations
 				.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 			if (viewerId) {
 				candidates = candidates.filter(
@@ -402,9 +403,9 @@ router.get('/recommended', optionalAuth, async (req, res) => {
 			}
 			selected = candidates.slice(0, 3);
 		}
-			res.json({ users: selected.map((user) => serializeUserCard(user, getPublicUrl(req), {
-				includeSearchExclusion: Boolean(req.user?.admin),
-			})) });
+		res.json({ users: selected.map((user) => serializeUserCard(user, getPublicUrl(req), {
+			includeSearchExclusion: Boolean(req.user?.admin),
+		})) });
 
 	} catch (err) {
 		console.error('[users] recommended error:', err);
@@ -705,7 +706,7 @@ router.get('/:userId/followers', optionalAuth, async (req, res) => {
 		const target = await db.getUserById(userId);
 		if (!target) return res.status(404).json({ error: 'User not found' });
 		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'followers')) return sendPrivateProfileSection(res, 'followers');
-		const followers = await db.getFollowers(userId, offset + limit);
+		const followers = await db.getFollowers(userId, offset + limit + 1);
 		const slice = followers.slice(offset, offset + limit);
 		res.json({
 			followers: slice.map((u) => serializeUserBrief(u)),
@@ -731,7 +732,7 @@ router.get('/:userId/following', optionalAuth, async (req, res) => {
 		const target = await db.getUserById(userId);
 		if (!target) return res.status(404).json({ error: 'User not found' });
 		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'following')) return sendPrivateProfileSection(res, 'following');
-		const following = await db.getFollowing(userId, offset + limit);
+		const following = await db.getFollowing(userId, offset + limit + 1);
 		const slice = following.slice(offset, offset + limit);
 		res.json({
 			following: slice.map((u) => serializeUserBrief(u)),

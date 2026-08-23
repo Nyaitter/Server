@@ -59,7 +59,7 @@ function normalizeUserRow(row) {
 		uuid: row.uuid || null,
 		settings: parseJsonSafe(row.settings, {}),
 		bio: row.bio || '',
-		me: row.bio || '',
+		me: row.me ?? row.bio ?? '',
 		header_image: row.header_image || null,
 		icon_data: row.icon_data || null,
 		verify: Boolean(row.verify),

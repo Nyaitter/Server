@@ -40,6 +40,7 @@ const { isCrawler, generatePostOgpTags, generatePostHtml } = require('../service
 const router = express.Router();
 const { createRateLimiter } = require('../middleware/rateLimit');
 const postWriteLimiter = createRateLimiter(config.rateLimit.postWrite);
+const searchLimiter = createRateLimiter(config.rateLimit.profileUpdate ?? config.rateLimit.postWrite);
 
 function getDbAdapter(req) {
 	return req.app.locals.dbAdapter;
@@ -340,6 +341,9 @@ router.get('/', optionalAuth, async (req, res) => {
 					knownViewer,
 					visibilityContext,
 				);
+			if (!req.user) {
+				res.set('Cache-Control', 'public, max-age=10, stale-while-revalidate=30');
+			}
 			res.json({ posts: enriched });
 
 	} catch (err) {
@@ -383,6 +387,9 @@ router.get('/trending', optionalAuth, async (req, res) => {
 				knownViewer,
 				visibilityContext,
 			);
+			if (!req.user) {
+				res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+			}
 			res.json({ posts: hydrated });
 
 	} catch (err) {
@@ -391,7 +398,7 @@ router.get('/trending', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/search', optionalAuth, async (req, res) => {
+router.get('/search', optionalAuth, searchLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const q = req.query.q || '';
 	const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
