@@ -663,9 +663,13 @@ router.get('/:groupId/posts', requireAuth, async (req, res) => {
       page = await getDb(req).getGroupAnnouncementPostIds(group.id, { limit, offset, beforeId });
     } else if (mode === 'recommended') {
       const candidatePage = await getDb(req).getGroupPostIds(group.id, { limit: Math.min(limit * 4, 100), offset, beforeId, authorId, subType });
-      const metrics = await getDb(req).getPostMetricsBatch(candidatePage.ids || [], req.user.id);
+      const candidatePosts = await getDb(req).getPostsByIds(candidatePage.ids || []);
+      const eligibleIds = (candidatePosts || [])
+        .filter((post) => Number(post.userId ?? post.user_id) !== Number(req.user.id))
+        .map((post) => Number(post.id));
+      const metrics = await getDb(req).getPostMetricsBatch(eligibleIds, req.user.id);
       const metricsByPostId = new Map(metrics.map((metric) => [Number(metric.post_id ?? metric.postId), metric]));
-      const rankedIds = [...(candidatePage.ids || [])].sort((left, right) => {
+      const rankedIds = [...eligibleIds].sort((left, right) => {
         const leftMetrics = metricsByPostId.get(Number(left)) || {};
         const rightMetrics = metricsByPostId.get(Number(right)) || {};
         const score = (metric) => Number(metric.like_count || 0) + Number(metric.star_count || 0) * 2 + Number(metric.repost_count || 0) * 3;

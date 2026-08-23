@@ -2663,16 +2663,44 @@ class PostgresAdapter extends DatabaseAdapter {
 		const validViewerId = Number.isSafeInteger(parsedViewerId) && parsedViewerId > 0 ? parsedViewerId : null;
 
 		const candidateLimit = Math.max(60, normalizedLimit * 2) + 1;
-		const query = normalizedBeforeId != null
-			? `SELECT p.id, p.user_id, p.created_at, p.tags,
+		const userExclusionClause = validViewerId != null ? 'AND p.user_id != $' : '';
+		let query;
+		let params;
+
+		if (validViewerId != null) {
+			if (normalizedBeforeId != null) {
+				query = `SELECT p.id, p.user_id, p.created_at, p.tags,
+				          COALESCE(p.like_count, 0)::int AS like_count,
+				          COALESCE(p.star_count, 0)::int AS star_count,
+				          COALESCE(p.repost_count, 0)::int AS repost_count
+				   FROM posts p
+				   WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.user_id != $1 AND p.id < $2
+				   ORDER BY p.created_at DESC, p.id DESC
+				   LIMIT $3 OFFSET $4`;
+				params = [validViewerId, normalizedBeforeId, candidateLimit, normalizedOffset];
+			} else {
+				query = `SELECT p.id, p.user_id, p.created_at, p.tags,
+				          COALESCE(p.like_count, 0)::int AS like_count,
+				          COALESCE(p.star_count, 0)::int AS star_count,
+				          COALESCE(p.repost_count, 0)::int AS repost_count
+				   FROM posts p
+				   WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.user_id != $1
+				   ORDER BY p.created_at DESC, p.id DESC
+				   LIMIT $2 OFFSET $3`;
+				params = [validViewerId, candidateLimit, normalizedOffset];
+			}
+		} else if (normalizedBeforeId != null) {
+			query = `SELECT p.id, p.user_id, p.created_at, p.tags,
 			          COALESCE(p.like_count, 0)::int AS like_count,
 			          COALESCE(p.star_count, 0)::int AS star_count,
 			          COALESCE(p.repost_count, 0)::int AS repost_count
 			   FROM posts p
 			   WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.id < $1
 			   ORDER BY p.created_at DESC, p.id DESC
-			   LIMIT $2 OFFSET $3`
-			: `SELECT p.id, p.user_id, p.created_at, p.tags,
+			   LIMIT $2 OFFSET $3`;
+			params = [normalizedBeforeId, candidateLimit, normalizedOffset];
+		} else {
+			query = `SELECT p.id, p.user_id, p.created_at, p.tags,
 			          COALESCE(p.like_count, 0)::int AS like_count,
 			          COALESCE(p.star_count, 0)::int AS star_count,
 			          COALESCE(p.repost_count, 0)::int AS repost_count
@@ -2680,10 +2708,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			   WHERE p.group_id IS NULL AND p.reply_to IS NULL
 			   ORDER BY p.created_at DESC, p.id DESC
 			   LIMIT $1 OFFSET $2`;
-
-		const params = normalizedBeforeId != null
-			? [normalizedBeforeId, candidateLimit, normalizedOffset]
-			: [candidateLimit, normalizedOffset];
+			params = [candidateLimit, normalizedOffset];
+		}
 
 		if (!this._affinityCache) this._affinityCache = new Map();
 		if (!this._followCache) this._followCache = new Map();

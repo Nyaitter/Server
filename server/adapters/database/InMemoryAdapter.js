@@ -2887,7 +2887,16 @@ class InMemoryAdapter extends DatabaseAdapter {
 			const candidateSource = [];
 			for (const id of this.postIdsNewest) {
 				const post = this.posts.get(id);
-				if (!post || post.groupId || post.group_id || post.replyTo != null || (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)) continue;
+				if (
+					!post
+					|| post.groupId
+					|| post.group_id
+					|| post.replyTo != null
+					|| (normalizedViewerId != null && Number(post.userId ?? post.user_id) === normalizedViewerId)
+					|| (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)
+				) {
+					continue;
+				}
 				candidateSource.push(post);
 				if (candidateSource.length >= normalizedOffset + scoringBlockSize + 1) break;
 			}

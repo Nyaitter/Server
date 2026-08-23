@@ -8,7 +8,11 @@ function scoreRecommendedPosts(candidatePosts, { viewerId = null, keywordProfile
 	const validViewerId = Number.isSafeInteger(Number(viewerId)) && Number(viewerId) > 0 ? Number(viewerId) : null;
 	const now = Date.now();
 
-	const scored = (candidatePosts || []).map((post) => {
+	const eligiblePosts = validViewerId != null
+		? (candidatePosts || []).filter((post) => Number(post?.userId ?? post?.user_id) !== validViewerId)
+		: (candidatePosts || []);
+
+	const scored = eligiblePosts.map((post) => {
 		const createdAtMs = new Date(post.createdAt || post.created_at || now).getTime();
 		const ageHours = Math.max(0, (now - createdAtMs) / (1000 * 3600));
 		const timeScore = 48 / (1 + (ageHours / 6));
