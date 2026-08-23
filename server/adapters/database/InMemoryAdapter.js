@@ -3307,7 +3307,6 @@ class InMemoryAdapter extends DatabaseAdapter {
 			.map((post) => Number(post.id)));
 		for (const post of this.posts.values()) {
 			if (ownedPostIds.has(Number(post.id))) continue;
-			if (ownedPostIds.has(Number(post.replyTo))) post.replyTo = null;
 			if (ownedPostIds.has(Number(post.repostTo))) post.repostTo = null;
 		}
 		for (const postId of ownedPostIds) await this.adminDeletePost(postId);

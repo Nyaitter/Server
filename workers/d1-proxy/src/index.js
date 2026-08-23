@@ -958,7 +958,6 @@ export default {
 					const statements = [];
 					if (postIds.length > 0) {
 						const placeholders = postIds.map(() => '?').join(',');
-						statements.push(db.prepare(`UPDATE posts SET reply_to = NULL WHERE reply_to IN (${placeholders})`).bind(...postIds));
 						statements.push(db.prepare(`UPDATE posts SET repost_to = NULL WHERE repost_to IN (${placeholders})`).bind(...postIds));
 					}
 					for (const channel of channels || []) {
@@ -1397,7 +1396,6 @@ export default {
 				const now = new Date().toISOString();
 				await db.batch([
 					db.prepare('UPDATE groups SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').bind(now, now, groupId),
-					db.prepare('UPDATE posts SET reply_to = NULL WHERE reply_to IN (SELECT id FROM posts WHERE group_id = ?)').bind(groupId),
 					db.prepare('UPDATE posts SET repost_to = NULL WHERE repost_to IN (SELECT id FROM posts WHERE group_id = ?)').bind(groupId),
 					db.prepare('DELETE FROM likes WHERE post_id IN (SELECT id FROM posts WHERE group_id = ?)').bind(groupId),
 					db.prepare('DELETE FROM stars WHERE post_id IN (SELECT id FROM posts WHERE group_id = ?)').bind(groupId),

@@ -1171,7 +1171,6 @@ class PostgresAdapter extends DatabaseAdapter {
 						await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [Number(p.repost_to)]);
 					}
 				}
-				await client.query('UPDATE posts SET reply_to = NULL WHERE reply_to = ANY($1::int[])', [postIds]);
 				await client.query('UPDATE posts SET repost_to = NULL WHERE repost_to = ANY($1::int[])', [postIds]);
 			}
 
@@ -1830,7 +1829,6 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 			const postIds = postRows.map((post) => Number(post.id));
 			if (postIds.length > 0) {
-				await client.query('UPDATE posts SET reply_to = NULL WHERE reply_to = ANY($1::int[])', [postIds]);
 				await client.query('UPDATE posts SET repost_to = NULL WHERE repost_to = ANY($1::int[])', [postIds]);
 				await client.query('DELETE FROM likes WHERE post_id = ANY($1::int[])', [postIds]);
 				await client.query('DELETE FROM stars WHERE post_id = ANY($1::int[])', [postIds]);
@@ -2549,7 +2547,6 @@ class PostgresAdapter extends DatabaseAdapter {
 			if (post.repost_to) {
 				await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [Number(post.repost_to)]);
 			}
-			await client.query('UPDATE posts SET reply_to = NULL WHERE reply_to = $1', [targetId]);
 			await client.query('UPDATE posts SET repost_to = NULL WHERE repost_to = $1', [targetId]);
 			await client.query('DELETE FROM likes WHERE post_id = $1', [targetId]);
 			await client.query('DELETE FROM stars WHERE post_id = $1', [targetId]);
@@ -2574,7 +2571,6 @@ class PostgresAdapter extends DatabaseAdapter {
 					await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [Number(post.repost_to)]);
 				}
 			}
-			await client.query('UPDATE posts SET reply_to = NULL WHERE reply_to = $1', [Number(postId)]);
 			await client.query('UPDATE posts SET repost_to = NULL WHERE repost_to = $1', [Number(postId)]);
 			await client.query('DELETE FROM likes WHERE post_id = $1', [Number(postId)]);
 			await client.query('DELETE FROM stars WHERE post_id = $1', [Number(postId)]);
