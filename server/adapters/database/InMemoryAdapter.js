@@ -11,6 +11,7 @@ const {
 	rewriteAttachmentReferences,
 } = require('../../utils/attachmentKeys');
 const { scoreRecommendedPosts } = require('../../utils/recommendation');
+const { extractViewContent } = require('../../utils/viewContent');
 
 class InMemoryAdapter extends DatabaseAdapter {
 	constructor() {
@@ -1454,16 +1455,22 @@ class InMemoryAdapter extends DatabaseAdapter {
 		if (!q) return { ids: [], has_more: false, next_cursor: null };
 		const activeGroupIds = new Set((this.groupIdsByUser.get(Number(userId)) || new Set()).values());
 		const posts = [...this.posts.values()].filter((post) => post.groupId && activeGroupIds.has(post.groupId) &&
-			this.groupMemberships.get(this._groupMemberKey(post.groupId, userId))?.status === 'active' && String(post.content || '').toLowerCase().includes(q));
+			this.groupMemberships.get(this._groupMemberKey(post.groupId, userId))?.status === 'active' &&
+			(String(post.viewContent || post.view_content || extractViewContent(post.content || '')).toLowerCase().includes(q) || String(post.content || '').toLowerCase().includes(q)));
 		return this._groupPostResult(posts, limit, offset, beforeId);
 	}
 
 	async createPost(postData) {
 		const id = this.nextPostId++;
+		const viewContent = postData.viewContent != null
+			? String(postData.viewContent)
+			: (postData.view_content != null ? String(postData.view_content) : extractViewContent(postData.content || ''));
 		const post = {
 			id,
 			userId: postData.userId,
 				content: postData.content,
+				viewContent,
+				view_content: viewContent,
 				tags: Array.isArray(postData.tags) ? [...new Set(postData.tags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean))].slice(0, 5) : [],
 				tagsGeneratedAt: postData.tagsGeneratedAt || null,
 				attachments: postData.attachments || null,
@@ -1593,7 +1600,15 @@ class InMemoryAdapter extends DatabaseAdapter {
 		const post = this.posts.get(postId);
 		if (!post) return null;
 		const previousTags = Array.isArray(post.tags) ? [...post.tags] : [];
-			if (fields.content !== undefined) post.content = fields.content;
+			if (fields.content !== undefined) {
+				post.content = fields.content;
+				post.viewContent = extractViewContent(fields.content);
+				post.view_content = post.viewContent;
+			}
+			if (fields.viewContent !== undefined || fields.view_content !== undefined) {
+				post.viewContent = String(fields.viewContent ?? fields.view_content ?? '');
+				post.view_content = post.viewContent;
+			}
 			if (fields.tags !== undefined) post.tags = Array.isArray(fields.tags) ? [...new Set(fields.tags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean))].slice(0, 5) : [];
 			if (fields.tagsGeneratedAt !== undefined) post.tagsGeneratedAt = fields.tagsGeneratedAt || null;
 			if (fields.attachments !== undefined) post.attachments = fields.attachments;
@@ -2929,12 +2944,13 @@ class InMemoryAdapter extends DatabaseAdapter {
 				limit: normalizedLimit,
 			});
 
+			const lastCandidate = candidates.length > 0 ? candidates[candidates.length - 1] : null;
 			return {
 				ids: scored.map((s) => s.id),
 				has_more: blockWithSentinel.length > scoringBlockSize,
-				next_cursor: null,
+				next_cursor: blockWithSentinel.length > scoringBlockSize && lastCandidate ? Number(lastCandidate.id) : null,
 				next_offset: normalizedOffset + Math.min(blockWithSentinel.length, scoringBlockSize),
-				use_offset_pagination: true,
+				use_offset_pagination: normalizedBeforeId == null,
 			};
 		}
 
@@ -2950,7 +2966,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 			for (const id of this.postIdsNewest) {
 				const post = this.posts.get(id);
 				if (!post || post.groupId || post.group_id || (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)) continue;
-				if (!(post.content || '').toLowerCase().includes(q)) continue;
+				const targetText = String(post.viewContent || post.view_content || extractViewContent(post.content || '')).toLowerCase();
+				if (!targetText.includes(q) && !(post.content || '').toLowerCase().includes(q)) continue;
 				matched.push(id);
 				if (matched.length >= normalizedOffset + normalizedLimit + 1) break;
 			}
@@ -2974,7 +2991,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			const createdAtTime = new Date(post.createdAt || post.created_at || 0).getTime();
 			if (createdAtTime && createdAtTime < threeDaysAgo) continue;
 
-			const content = post.content || '';
+			const content = post.viewContent || post.view_content || extractViewContent(post.content || '');
 			const hashtagMatches = content.match(/(?:#|＃)([\p{L}\p{N}_-]{1,48})/gu) || [];
 			const postHashtags = new Set(
 				hashtagMatches
@@ -3401,6 +3418,21 @@ class InMemoryAdapter extends DatabaseAdapter {
 			.slice()
 			.sort((a, b) => new Date(b.log_time) - new Date(a.log_time));
 		return sorted.slice(offset, offset + limit);
+	}
+
+	async getUserPostSubscribers(authorUserId) {
+		const targetIdStr = String(authorUserId);
+		const subscribers = [];
+		for (const user of this.users.values()) {
+			const userNotifications = user.settings?.user_notifications;
+			if (userNotifications && typeof userNotifications === 'object') {
+				const mode = userNotifications[targetIdStr];
+				if (mode && ['important', 'media', 'all'].includes(mode)) {
+					subscribers.push({ userId: Number(user.id), mode });
+				}
+			}
+		}
+		return subscribers;
 	}
 }
 

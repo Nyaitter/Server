@@ -1,4 +1,5 @@
 const NOTIFICATION_TYPES = new Set([
+  'post',
   'reply',
   'quote',
   'repost',

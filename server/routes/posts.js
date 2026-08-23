@@ -1,6 +1,7 @@
 const express = require('express');
 const PostService = require('../services/PostService');
 const { extractPostKeywords } = require('../services/PostKeywordService');
+const { extractViewContent } = require('../utils/viewContent');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
 const config = require('../config');
 const { isWithinRange, describeIntegerRange } = require('../utils/settingFormats');
@@ -1136,9 +1137,12 @@ router.put('/:id', requireAuth, postWriteLimiter, async (req, res) => {
 		}
 
 				const normalizedContent = content.trim();
+				const viewContent = extractViewContent(normalizedContent);
 				const updated = await db.updatePost(postId, {
 				content: normalizedContent,
-				tags: await extractPostKeywords(normalizedContent),
+				viewContent,
+				view_content: viewContent,
+				tags: await extractPostKeywords(viewContent),
 				tagsGeneratedAt: new Date().toISOString(),
 			attachments:
 				Array.isArray(attachments) && attachments.length > 0

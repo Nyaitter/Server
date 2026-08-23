@@ -8,13 +8,15 @@ function normalizePostIds(ids) {
 	return [...new Set((ids || []).map(Number).filter(Number.isInteger))];
 }
 
+const MAX_CHUNK_ATTEMPTS = 20;
+
 /**
  * 検索・タイムライン・おすすめ等の「発見可能な投稿一覧」を取得する。
  *
  * DBアダプターは投稿候補の並び順だけを返す。閲覧者依存の可視性
  * （非公開、検索除外、フォロー関係）は、この共通層で一貫して適用する。
- * `offset` は可視な投稿に対するオフセットなので、非表示候補をまたいで
- * 必要件数に達するまでアダプターへ追加問い合わせを行う。
+ * `offset` は可視な投稿に対するオフセットなので、非表示候補や
+ * 表示可能ポストが0件のチャンクをまたいで必要件数に達するまでアダプターへ追加問い合わせ（次チャンク取得）を行う。
  */
 async function getDiscoverablePostPage({
 	db,
@@ -45,8 +47,10 @@ async function getDiscoverablePostPage({
 	let hasMore = false;
 	let requiresOffsetPagination = false;
 	let visibilityContext = null;
+	let chunkAttempts = 0;
 
-	while (true) {
+	while (chunkAttempts < MAX_CHUNK_ATTEMPTS) {
+		chunkAttempts += 1;
 		const candidatePage = await fetchCandidatePage({
 			limit: candidateLimit,
 			offset: candidateOffset,
@@ -58,10 +62,18 @@ async function getDiscoverablePostPage({
 		const nextCandidateOffset =
 			Number.isInteger(reportedNextOffset) && reportedNextOffset > candidateOffset
 				? reportedNextOffset
-				: candidateOffset + candidateIds.length;
+				: candidateOffset + (candidateIds.length > 0 ? candidateIds.length : candidateLimit);
+
 		if (candidateIds.length === 0) {
 			if (!candidatePage?.has_more) break;
-			if (candidateBeforeId != null) break;
+			if (candidateBeforeId != null) {
+				const nextCursor = Number(candidatePage?.next_cursor);
+				if (Number.isInteger(nextCursor) && nextCursor > 0 && nextCursor < candidateBeforeId) {
+					candidateBeforeId = nextCursor;
+					continue;
+				}
+				break;
+			}
 			if (nextCandidateOffset <= candidateOffset) break;
 			candidateOffset = nextCandidateOffset;
 			continue;
@@ -82,41 +94,43 @@ async function getDiscoverablePostPage({
 				.map((id) => postsById.get(id))
 				.filter(Boolean);
 		}
-			const candidateVisibilityContext = await createPostVisibilityContext(
-				db,
-				orderedPosts,
-				viewerId,
-				null,
-				knownViewer,
-			);
-			if (!visibilityContext) {
-				visibilityContext = candidateVisibilityContext;
-			} else {
-				for (const [authorId, author] of candidateVisibilityContext.authorsById) {
-					visibilityContext.authorsById.set(Number(authorId), author);
-				}
-				for (const authorId of candidateVisibilityContext.relationshipAuthorIds || []) {
-					visibilityContext.relationshipAuthorIds.add(authorId);
-				}
-				for (const authorId of candidateVisibilityContext.followingIds) {
-					visibilityContext.followingIds.add(authorId);
-				}
-				for (const authorId of candidateVisibilityContext.followerIds) {
-					visibilityContext.followerIds.add(authorId);
-				}
+
+		const candidateVisibilityContext = await createPostVisibilityContext(
+			db,
+			orderedPosts,
+			viewerId,
+			null,
+			knownViewer,
+		);
+		if (!visibilityContext) {
+			visibilityContext = candidateVisibilityContext;
+		} else {
+			for (const [authorId, author] of candidateVisibilityContext.authorsById) {
+				visibilityContext.authorsById.set(Number(authorId), author);
 			}
-			const viewablePosts = await filterViewablePosts(
-				db,
-				orderedPosts,
-				viewerId,
-				candidateVisibilityContext,
-			);
-			const discoverablePosts = await filterDiscoverablePosts(
-				db,
-				viewablePosts,
-				viewerId,
-				candidateVisibilityContext,
-			);
+			for (const authorId of candidateVisibilityContext.relationshipAuthorIds || []) {
+				visibilityContext.relationshipAuthorIds.add(authorId);
+			}
+			for (const authorId of candidateVisibilityContext.followingIds) {
+				visibilityContext.followingIds.add(authorId);
+			}
+			for (const authorId of candidateVisibilityContext.followerIds) {
+				visibilityContext.followerIds.add(authorId);
+			}
+		}
+
+		const viewablePosts = await filterViewablePosts(
+			db,
+			orderedPosts,
+			viewerId,
+			candidateVisibilityContext,
+		);
+		const discoverablePosts = await filterDiscoverablePosts(
+			db,
+			viewablePosts,
+			viewerId,
+			candidateVisibilityContext,
+		);
 
 		for (const post of discoverablePosts) {
 			if (visibleOffset < normalizedOffset) {
@@ -126,18 +140,23 @@ async function getDiscoverablePostPage({
 			collectedPosts.push(post);
 			if (collectedPosts.length > normalizedLimit) break;
 		}
+
 		if (collectedPosts.length > normalizedLimit) {
 			hasMore = true;
 			break;
 		}
 
+		// チャンク内に表示できるポストがなくなった（または不足している）場合、has_moreがあれば次チャンクから取得を継続
+		if (!candidatePage?.has_more) break;
+
 		if (candidateBeforeId != null) {
-			candidateBeforeId = candidatePage?.next_cursor ?? candidateIds[candidateIds.length - 1];
+			const nextCursor = Number(candidatePage?.next_cursor) || candidateIds[candidateIds.length - 1];
+			if (!nextCursor || nextCursor >= candidateBeforeId) break;
+			candidateBeforeId = nextCursor;
 		} else {
 			if (nextCandidateOffset <= candidateOffset) break;
 			candidateOffset = nextCandidateOffset;
 		}
-		if (!candidatePage?.has_more) break;
 	}
 
 	const posts = collectedPosts.slice(0, normalizedLimit);
@@ -146,9 +165,9 @@ async function getDiscoverablePostPage({
 		ids,
 		posts,
 		visibilityContext,
-		has_more: hasMore,
+		has_more: hasMore || (collectedPosts.length > normalizedLimit),
 		use_offset_pagination: requiresOffsetPagination,
-		next_cursor: !requiresOffsetPagination && hasMore && ids.length > 0
+		next_cursor: !requiresOffsetPagination && (hasMore || collectedPosts.length > normalizedLimit) && ids.length > 0
 			? ids[ids.length - 1]
 			: null,
 	};

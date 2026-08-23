@@ -1,6 +1,7 @@
 'use strict';
 
 const { extractPostKeywords } = require('./PostKeywordService');
+const { extractViewContent } = require('../utils/viewContent');
 
 /**
  * 旧投稿に対する主要語生成を、通常の投稿アクションと同じ順次キューで実行する。
@@ -38,8 +39,11 @@ class PostKeywordBackfillService {
           if (!currentPost || currentPost.tagsGeneratedAt != null || currentPost.tags_generated_at != null) {
             return;
           }
-          const tags = await extractPostKeywords(currentPost.content || '');
+          const viewContent = extractViewContent(currentPost.content || '');
+          const tags = await extractPostKeywords(viewContent);
           await db.updatePost(postId, {
+            viewContent,
+            view_content: viewContent,
             tags,
             tagsGeneratedAt: new Date().toISOString(),
           });

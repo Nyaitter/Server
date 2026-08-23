@@ -20,6 +20,7 @@ const {
 } = require('../../../services/DataMigrationSql');
 const { normalizeSnapshot } = require('../../../services/DataMigrationService');
 const { scoreRecommendedPosts } = require('../../../utils/recommendation');
+const { extractViewContent } = require('../../../utils/viewContent');
 
 function parseJsonSafe(value, fallback = null) {
 	if (value === null || value === undefined) return fallback;
@@ -95,12 +96,15 @@ function normalizePostRow(row) {
 	const tags = normalizePostTags(row.tags);
 	const groupId = row.group_id ?? row.groupId ?? null;
 	const groupAnnouncement = Boolean(row.group_announcement ?? row.groupAnnouncement);
+	const viewContent = row.view_content ?? row.viewContent ?? extractViewContent(row.content || '');
 
 	return {
 		id,
 		userId,
 		user_id: userId,
 		content: row.content || '',
+		viewContent,
+		view_content: viewContent,
 		tags,
 		tagsGeneratedAt,
 		tags_generated_at: tagsGeneratedAt,
@@ -398,6 +402,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		try {
 			client = await this.pool.connect();
 			await client.query('SELECT 1');
+			await client.query('ALTER TABLE posts ADD COLUMN IF NOT EXISTS view_content TEXT;');
 			client.release();
 			client = null;
 
@@ -2210,7 +2215,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!normalizedQuery) return { ids: [], has_more: false, next_cursor: null };
 		const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
 		const values = [Number(userId), `%${normalizedQuery}%`];
-		const clauses = ['gm.user_id = $1', "gm.status = 'active'", 'p.group_id = gm.group_id', 'LOWER(p.content) LIKE $2'];
+		const clauses = ['gm.user_id = $1', "gm.status = 'active'", 'p.group_id = gm.group_id', '(LOWER(COALESCE(p.view_content, p.content)) LIKE $2 OR LOWER(p.content) LIKE $2)'];
 		if (Number.isInteger(Number(beforeId)) && Number(beforeId) > 0) {
 			values.push(Number(beforeId)); clauses.push(`p.id < $${values.length}`);
 		}
@@ -2233,9 +2238,13 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	async createPost(postData) {
 		const now = postData.createdAt ? toIsoString(postData.createdAt) : new Date().toISOString();
+		const viewContent = postData.viewContent != null
+			? String(postData.viewContent)
+			: (postData.view_content != null ? String(postData.view_content) : extractViewContent(postData.content || ''));
 		const values = [
 			Number(postData.userId),
 			String(postData.content || ''),
+			viewContent,
 			postData.attachments ? JSON.stringify(postData.attachments) : null,
 			Boolean(postData.mask),
 			Boolean(postData.lock),
@@ -2250,9 +2259,9 @@ class PostgresAdapter extends DatabaseAdapter {
 		];
 		return this._withTransaction(async (client) => {
 			const { rows } = await client.query(
-`INSERT INTO posts (user_id, content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at)
-				 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)
-			 RETURNING *`,
+				`INSERT INTO posts (user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at)
+				 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14)
+				 RETURNING *`,
 				values,
 			);
 			const post = normalizePostRow(rows[0] || null);
@@ -2492,6 +2501,15 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (fields.content !== undefined) {
 			values.push(fields.content);
 			sets.push(`content = $${values.length}`);
+			const viewContent = fields.viewContent != null
+				? String(fields.viewContent)
+				: (fields.view_content != null ? String(fields.view_content) : extractViewContent(fields.content || ''));
+			values.push(viewContent);
+			sets.push(`view_content = $${values.length}`);
+		} else if (fields.viewContent !== undefined || fields.view_content !== undefined) {
+			const viewContent = String(fields.viewContent ?? fields.view_content ?? '');
+			values.push(viewContent);
+			sets.push(`view_content = $${values.length}`);
 		}
 		if (fields.tags !== undefined) {
 			values.push(JSON.stringify(normalizePostTags(fields.tags)));
@@ -2840,12 +2858,13 @@ class PostgresAdapter extends DatabaseAdapter {
 		});
 
 		const selectedIds = scored.map((s) => s.id);
+		const lastCandidateId = candidateRows.length > 0 ? Number(candidateRows[candidateRows.length - 1].id) : null;
 		return {
 			ids: selectedIds,
 			has_more: hasMore,
-			next_cursor: null,
-			next_offset: normalizedOffset + selectedIds.length,
-			use_offset_pagination: true,
+			next_cursor: hasMore && lastCandidateId ? lastCandidateId : null,
+			next_offset: normalizedOffset + candidateRows.length,
+			use_offset_pagination: normalizedBeforeId == null,
 		};
 	}
 
@@ -2894,12 +2913,12 @@ class PostgresAdapter extends DatabaseAdapter {
 		const pattern = `%${q.toLowerCase()}%`;
 		const { rows } = normalizedBeforeId != null
 			? await this.pool.query(
-				`SELECT id FROM posts WHERE group_id IS NULL AND LOWER(content) LIKE $1 AND id < $2
+				`SELECT id FROM posts WHERE group_id IS NULL AND (LOWER(COALESCE(view_content, content)) LIKE $1 OR LOWER(content) LIKE $1) AND id < $2
 					 ORDER BY created_at DESC, id DESC LIMIT $3`,
 				[pattern, normalizedBeforeId, normalizedLimit + 1],
 			)
 			: await this.pool.query(
-				`SELECT id FROM posts WHERE group_id IS NULL AND LOWER(content) LIKE $1
+				`SELECT id FROM posts WHERE group_id IS NULL AND (LOWER(COALESCE(view_content, content)) LIKE $1 OR LOWER(content) LIKE $1)
 					 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
 				[pattern, normalizedLimit + 1, normalizedOffset],
 			);
@@ -2916,8 +2935,8 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!q) return [];
 		const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
 		const { rows } = await this.pool.query(
-`SELECT * FROM posts 
-				 WHERE group_id IS NULL AND LOWER(content) LIKE $1
+			`SELECT * FROM posts 
+				 WHERE group_id IS NULL AND (LOWER(COALESCE(view_content, content)) LIKE $1 OR LOWER(content) LIKE $1)
 			 ORDER BY created_at DESC, id DESC
 			 LIMIT $2`,
 			[`%${q.toLowerCase()}%`, safeLimit],
@@ -3061,7 +3080,7 @@ class PostgresAdapter extends DatabaseAdapter {
 	async getTrendingHashtags(limit = 10, options = {}) {
 		const normalizedLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
 		const { rows } = await this.pool.query(
-			`SELECT content, tags
+			`SELECT content, view_content, tags
 			 FROM posts
 			 WHERE group_id IS NULL
 			   AND created_at >= NOW() - INTERVAL '3 days'
@@ -3072,7 +3091,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const tagCounts = new Map();
 
 		for (const row of rows) {
-			const content = row.content || '';
+			const content = row.view_content || extractViewContent(row.content || '');
 			const hashtagMatches = content.match(/(?:#|＃)([\p{L}\p{N}_-]{1,48})/gu) || [];
 			const postHashtags = new Set(
 				hashtagMatches
@@ -4627,6 +4646,19 @@ class PostgresAdapter extends DatabaseAdapter {
 			nyaitter_id: r.nyaitter_id != null ? Number(r.nyaitter_id) : null,
 			masked_ip_uuid: r.masked_ip_uuid,
 			log_time: toIsoString(r.log_time),
+		}));
+	}
+
+	async getUserPostSubscribers(authorUserId) {
+		const { rows } = await this.pool.query(
+			`SELECT id, settings->'user_notifications'->>$1 AS mode
+			 FROM users
+			 WHERE settings->'user_notifications'->>$1 IN ('important', 'media', 'all')`,
+			[String(authorUserId)],
+		);
+		return rows.map((r) => ({
+			userId: Number(r.id),
+			mode: r.mode,
 		}));
 	}
 }

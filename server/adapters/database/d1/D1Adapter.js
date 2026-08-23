@@ -1,6 +1,7 @@
 const DatabaseAdapter = require('../DatabaseAdapter');
 
 const { normalizeBlockList } = require('../../../utils/blockList');
+const { extractViewContent } = require('../../../utils/viewContent');
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -63,6 +64,8 @@ function normalizePost(post) {
 	post.replyTo = post.replyTo ?? post.reply_to ?? null;
 	post.repostTo = post.repostTo ?? post.repost_to ?? null;
 	post.createdAt = post.createdAt ?? post.created_at ?? null;
+	post.viewContent = post.viewContent ?? post.view_content ?? extractViewContent(post.content || '');
+	post.view_content = post.viewContent;
 	post.tagsGeneratedAt = post.tagsGeneratedAt ?? post.tags_generated_at ?? null;
 	post.tags_generated_at = post.tagsGeneratedAt;
 	post.mask = !!post.mask;

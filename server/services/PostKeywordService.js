@@ -3,6 +3,8 @@
 const path = require('path');
 const kuromoji = require('kuromoji');
 
+const { extractViewContent } = require('../utils/viewContent');
+
 const MAX_POST_TAGS = 5;
 const MAX_CANDIDATE_LENGTH = 48;
 
@@ -69,7 +71,8 @@ function fallbackKeywords(content) {
 }
 
 async function extractPostKeywords(content) {
-  const sanitized = stripNonContentSegments(content);
+  const viewContent = extractViewContent(content);
+  const sanitized = stripNonContentSegments(viewContent);
   if (!sanitized.trim()) return [];
 
   const tokenizer = await buildTokenizer();

@@ -2,6 +2,7 @@
 
 const PostService = require('./PostService');
 const { extractPostKeywords } = require('./PostKeywordService');
+const { extractViewContent } = require('../utils/viewContent');
 const {
   serializeNotification,
 } = require('../utils/serialize');
@@ -288,7 +289,8 @@ async function processCreatePostAction(context, payload) {
     return attachment;
   });
 
-  const tags = isSimpleRepost ? [] : await extractPostKeywords(content);
+  const viewContent = isSimpleRepost ? '' : extractViewContent(content);
+  const tags = isSimpleRepost ? [] : await extractPostKeywords(viewContent);
   const postService = new PostService({
     dbAdapter: context.db,
     storageAdapter: context.storage,
@@ -296,6 +298,8 @@ async function processCreatePostAction(context, payload) {
   const post = await postService.createPost({
     userId,
     content,
+    viewContent,
+    view_content: viewContent,
     tags,
     tagsGeneratedAt: new Date().toISOString(),
     attachments: processedAttachments,
@@ -359,6 +363,48 @@ async function processCreatePostAction(context, payload) {
   }
 
   if (groupAnnouncement && group) await notifyGroupAnnouncement(context, group, post);
+
+  // 通知設定されたフォロワー/購読者への新規ポスト通知 (返信・リポスト以外)
+  if (!replyTo && !isSimpleRepost && typeof context.db.getUserPostSubscribers === 'function') {
+    try {
+      const subscribers = await context.db.getUserPostSubscribers(userId);
+      if (Array.isArray(subscribers) && subscribers.length > 0) {
+        const hasHeading = /(?:^|\n)#{1,6}\s+\S/.test(content);
+        const hasMedia = Array.isArray(processedAttachments) && processedAttachments.length > 0;
+
+        for (const sub of subscribers) {
+          const subId = Number(sub?.userId ?? sub?.user_id ?? sub?.id);
+          const mode = sub?.mode;
+          if (!Number.isInteger(subId) || subId <= 0) continue;
+          if (excludedNotificationIds.has(subId)) continue;
+          if (subId === userId) continue;
+          if (!canNotifyPostRecipient(subId)) continue;
+
+          let shouldNotify = false;
+          if (mode === 'all') {
+            shouldNotify = true;
+          } else if (mode === 'important' && hasHeading) {
+            shouldNotify = true;
+          } else if (mode === 'media' && hasMedia) {
+            shouldNotify = true;
+          }
+
+          if (shouldNotify) {
+            excludedNotificationIds.add(subId);
+            await notifyPostAction(context, {
+              userId: subId,
+              type: 'post',
+              fromUserId: userId,
+              postId: post.id,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[post-actions] failed to notify post subscribers:', err.message);
+    }
+  }
+
   await publishNewTimelinePost(context, post);
   timelineCacheManager.onPostCreated(post);
   enqueueGeminiModeration(context, post);

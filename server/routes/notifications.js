@@ -17,7 +17,7 @@ const router = express.Router();
 const notificationLimiter = createRateLimiter(config.rateLimit.notification);
 
 // サーバー側イベントで自動生成される通知タイプ。クライアントからは作成できない。
-const SERVER_GENERATED_TYPES = new Set(['like', 'star', 'follow', 'quote', 'reply', 'login_approval', 'group_invite', 'group_join_request', 'group_announcement']);
+const SERVER_GENERATED_TYPES = new Set(['post', 'like', 'star', 'follow', 'quote', 'reply', 'login_approval', 'group_invite', 'group_join_request', 'group_announcement']);
 
 async function validateClientNotification(db, senderId, recipientId, type, target) {
 	if (SERVER_GENERATED_TYPES.has(type)) {

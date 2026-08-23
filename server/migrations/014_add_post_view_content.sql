@@ -1,0 +1,2 @@
+ALTER TABLE posts
+  ADD COLUMN IF NOT EXISTS view_content TEXT;

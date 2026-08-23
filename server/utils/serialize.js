@@ -9,6 +9,7 @@ const {
 	extendPostVisibilityContext,
 	isPrivatePost,
 } = require('./postVisibility');
+const { extractViewContent } = require('./viewContent');
 const { getVisibleDmUnreadCount } = require('../services/DmVisibilityService');
 
 function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = false } = {}) {
@@ -628,6 +629,7 @@ async function serializePostsBatch(
 			id: post.id,
 			userid: post.userId,
 			content: post.content,
+			view_content: post.view_content ?? post.viewContent ?? extractViewContent(post.content || ''),
 			tags: Array.isArray(post.tags) ? post.tags : [],
 			mask: !!post.mask,
 			lock: !!post.lock,

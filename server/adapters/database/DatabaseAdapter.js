@@ -636,6 +636,10 @@ class DatabaseAdapter {
 	async getLogs(limit = 20, offset = 0) {
 		throw new Error('getLogs() must be implemented');
 	}
+
+	async getUserPostSubscribers(authorUserId) {
+		return [];
+	}
 }
 
 module.exports = DatabaseAdapter;
