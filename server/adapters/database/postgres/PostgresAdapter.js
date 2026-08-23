@@ -397,6 +397,22 @@ class PostgresAdapter extends DatabaseAdapter {
 			poolOptions.ssl = { ca: this.config.sslCa, rejectUnauthorized: true };
 		} else if (this.config.ssl === true) {
 			poolOptions.ssl = { rejectUnauthorized: false };
+		} else if (sslMode && ['verify-full', 'verify-ca', 'require', 'prefer', 'allow'].includes(sslMode)) {
+			// verify-full/verify-ca では明示的なCA証明書なしに pg v8 がハングするため、
+			// システムのCA束を優先し、なければ Node.js のデフォルトに委ねる。
+			const fs = require('fs');
+			const SYSTEM_CA_PATHS = [
+				'/etc/ssl/certs/ca-certificates.crt',   // Debian/Ubuntu
+				'/etc/pki/tls/certs/ca-bundle.crt',     // RHEL/CentOS
+				'/etc/ssl/ca-bundle.pem',                // OpenSUSE
+			];
+			let systemCa = null;
+			for (const caPath of SYSTEM_CA_PATHS) {
+				try { systemCa = fs.readFileSync(caPath); break; } catch (_) {}
+			}
+			poolOptions.ssl = systemCa
+				? { ca: systemCa, rejectUnauthorized: ['verify-full', 'verify-ca'].includes(sslMode) }
+				: { rejectUnauthorized: false };
 		}
 		this.pool = new Pool(poolOptions);
 
