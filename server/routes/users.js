@@ -297,58 +297,54 @@ async function handleUserIcon(req, res) {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	if (!Number.isInteger(userId) || userId <= 0) {
-		return res.redirect(302, '/logo.png');
+		return res.redirect(302, '/emoji/neko.svg');
 	}
 
-		try {
-			const user = await db.getUserById(userId);
+	try {
+		const user = await db.getUserById(userId);
 
-		
-			if (user && user.icon_data && user.icon_data.trim() !== '') {
-				const iconData = user.icon_data.trim();
+		if (user && user.icon_data && user.icon_data.trim() !== '') {
+			const iconData = user.icon_data.trim();
 
-				// R2/D1・ローカルストレージに保存されたアイコンはキーだけをDBへ保存する。
-
-				// キーを相対リダイレクトすると現在の /server/api/users/... 配下として解決されるため、
-				if (!/^(?:https?:)?\/\//i.test(iconData) && !iconData.startsWith('/')) {
-					const storage = getStorageAdapter(req);
-											if (storage && typeof storage.getPublicUrl === 'function') {
-							try {
-								const publicUrl = await storage.getPublicUrl(iconData);
-								if (typeof publicUrl === 'string' && publicUrl && isAllowedIconRedirectUrl(publicUrl)) {
-									return res.redirect(302, publicUrl);
-								}
-							} catch (error) {
-								console.warn('[users/icon] stored icon URL resolution failed:', error.message);
-							}
+			// R2/D1・ローカルストレージに保存されたアイコンはキーだけをDBへ保存する。
+			// キーを相対リダイレクトすると現在の /server/api/users/... 配下として解決されるため、
+			if (!/^(?:https?:)?\/\//i.test(iconData) && !iconData.startsWith('/')) {
+				const storage = getStorageAdapter(req);
+				if (storage && typeof storage.getPublicUrl === 'function') {
+					try {
+						const publicUrl = await storage.getPublicUrl(iconData);
+						if (typeof publicUrl === 'string' && publicUrl && isAllowedIconRedirectUrl(publicUrl)) {
+							return res.redirect(302, publicUrl);
 						}
-
-						// ユーザーファイルの公開URLを設定していない場合でも、Push通知が
-						// このAPIを読み込めるよう、保存済み画像を直接返す。
-						if (await sendStoredIcon(req, res, iconData)) return;
-						return res.redirect(302, '/logo.png');
-
+					} catch (error) {
+						console.warn('[users/icon] stored icon URL resolution failed:', error.message);
+					}
 				}
 
-				// 同一オリジン相対パス、または許可済みScratch CDNのURLだけをリダイレクトする。
-				// それ以外（プロトコル相対・任意ホストの絶対URL）はフォールバック画像へ倒す。
-				if (isAllowedIconRedirectUrl(iconData)) {
-					return res.redirect(302, iconData);
-				}
-				return res.redirect(302, '/logo.png');
+				// ユーザーファイルの公開URLを設定していない場合でも、Push通知が
+				// このAPIを読み込めるよう、保存済み画像を直接返す。
+				if (await sendStoredIcon(req, res, iconData)) return;
+				return res.redirect(302, '/emoji/neko.svg');
 			}
 
-				if (user && user.scid != null && String(user.scid).trim() !== '') {
-					if (await sendScratchFallbackIcon(req, res, String(user.scid).trim())) return;
-					res.setHeader('Cache-Control', 'public, max-age=60');
-					return res.redirect(302, '/logo.png');
-				}
+			// 同一オリジン相対パス、または許可済みScratch CDNのURLだけをリダイレクトする。
+			// それ以外（プロトコル相対・任意ホストの絶対URL）はフォールバック画像へ倒す。
+			if (isAllowedIconRedirectUrl(iconData)) {
+				return res.redirect(302, iconData);
+			}
+			return res.redirect(302, '/emoji/neko.svg');
+		}
 
+		if (user && user.scid != null && String(user.scid).trim() !== '') {
+			if (await sendScratchFallbackIcon(req, res, String(user.scid).trim())) return;
+			res.setHeader('Cache-Control', 'public, max-age=60');
+			return res.redirect(302, '/emoji/neko.svg');
+		}
 	} catch (err) {
 		console.error('[users] icon route error:', err);
 	}
 
-	return res.redirect(302, '/logo.png');
+	return res.redirect(302, '/emoji/neko.svg');
 }
 
 router.get('/:userId/icon', handleUserIcon);
