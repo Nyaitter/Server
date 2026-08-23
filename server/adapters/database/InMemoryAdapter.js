@@ -2068,6 +2068,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 	async getFollowing(userId, limit = config.limits.followingPageSize) {
 		const ids = this.followingIdsByUser.get(Number(userId)) || new Set();
 		return [...ids]
+			.reverse()
 			.slice(0, Math.max(0, Number(limit) || 0))
 			.map((followingId) => this.users.get(followingId))
 			.filter(Boolean);
@@ -2076,6 +2077,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 	async getFollowers(userId, limit = config.limits.followingPageSize) {
 		const ids = this.followerIdsByUser.get(Number(userId)) || new Set();
 		return [...ids]
+			.reverse()
 			.slice(0, Math.max(0, Number(limit) || 0))
 			.map((followerId) => this.users.get(followerId))
 			.filter(Boolean);
@@ -2603,15 +2605,15 @@ class InMemoryAdapter extends DatabaseAdapter {
 	}
 
 		async getLikeIds(userId) {
-			return [...(this.likedPostIdsByUser.get(Number(userId)) || [])];
+			return [...(this.likedPostIdsByUser.get(Number(userId)) || [])].reverse();
 		}
 
 		async getStarIds(userId) {
-			return [...(this.starredPostIdsByUser.get(Number(userId)) || [])];
+			return [...(this.starredPostIdsByUser.get(Number(userId)) || [])].reverse();
 		}
 
 		async getFollowIds(userId) {
-			return [...(this.followingIdsByUser.get(Number(userId)) || [])];
+			return [...(this.followingIdsByUser.get(Number(userId)) || [])].reverse();
 		}
 
 	async getFollowRelationshipSnapshot(userId, candidateUserIds) {

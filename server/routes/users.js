@@ -673,7 +673,7 @@ router.get('/:userId/:section(likes|stars)', optionalAuth, async (req, res) => {
 		const ids = section === 'likes'
 			? await db.getLikeIds(userId)
 			: await db.getStarIds(userId);
-		const orderedIds = [...(ids || [])].reverse();
+		const orderedIds = Array.isArray(ids) ? ids : [];
 		const pageIds = orderedIds.slice(offset, offset + limit);
 			const posts = await serializePostsByIds(
 				db,
