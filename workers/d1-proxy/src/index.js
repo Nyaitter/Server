@@ -1826,7 +1826,7 @@ export default {
 							SELECT c.id, c.created_at,
 								MAX(0.0, ${recencyScore} + ${engagementScore}
 									+ CASE WHEN df.user_id IS NOT NULL THEN 24.0 WHEN sdf.user_id IS NOT NULL THEN 10.0 ELSE 0.0 END
-									+ CASE WHEN vr.post_id IS NOT NULL THEN -60.0 ELSE 0.0 END
+									+ CASE WHEN vr.post_id IS NOT NULL THEN -35.0 ELSE 0.0 END
 									+ MIN(30.0, COALESCE(vka.score, 0) * 2.0)) AS score
 							FROM candidates c
 							LEFT JOIN like_counts l ON l.post_id = c.id

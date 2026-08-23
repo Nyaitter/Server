@@ -27,7 +27,7 @@ function scoreRecommendedPosts(candidatePosts, { viewerId = null, keywordProfile
 		if (validViewerId != null) {
 			const postId = Number(post.id);
 			if (reactedPostIds && reactedPostIds.has(postId)) {
-				penalty = 60;
+				penalty = 35;
 			}
 			const authorId = Number(post.userId ?? post.user_id);
 			if (directFollows.has(authorId)) {
