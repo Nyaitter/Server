@@ -32,6 +32,7 @@ const {
 const {
 	processCreatePostAction,
 	processDeletePostAction,
+	processEditPostAction,
 } = require('../services/PostActionProcessor');
 const timelineCacheManager = require('../utils/TimelineCacheManager');
 const path = require('path');
@@ -1124,9 +1125,7 @@ router.post('/:id/dislike', requireAuth, postWriteLimiter, async (req, res) => {
 	}
 });
 
-router.put('/:id', requireAuth, postWriteLimiter, async (req, res) => {
-	const db = getDbAdapter(req);
-	const storage = getStorageAdapter(req);
+router.put('/:id', requireAuth, postWriteLimiter, (req, res) => {
 	const postId = safeParsePostId(req.params.id);
 	const userId = req.user.id;
 
@@ -1157,96 +1156,25 @@ router.put('/:id', requireAuth, postWriteLimiter, async (req, res) => {
 			: 'everyone')
 		: undefined;
 
+	const queue = req.app.locals.postActionQueue;
+	if (!queue) {
+		return res.status(503).json({ error: 'Post action queue is unavailable' });
+	}
+
 	try {
-		const post = await db.getPostById(postId);
-		if (!post) {
-			return res.status(404).json({ error: 'Post not found' });
-		}
-		if (post.userId !== userId) {
-			return res.status(403).json({ error: 'You can only edit your own posts' });
-		}
-
-		const normalizedContent = content.trim();
-		const viewContent = extractViewContent(normalizedContent);
-		const updatePayload = {
-			content: normalizedContent,
-			viewContent,
-			view_content: viewContent,
-			tags: await extractPostKeywords(viewContent),
-			tagsGeneratedAt: new Date().toISOString(),
-			attachments:
-				Array.isArray(attachments) && attachments.length > 0
-					? attachments
-					: null,
-			mask: !!mask,
-			lock: !!lock,
-		};
-		const isReply = Boolean(post.replyTo != null || post.reply_to != null);
-		if (normalizedReplyControl !== undefined && !isReply) {
-			updatePayload.reply_control = normalizedReplyControl;
-			updatePayload.replyControl = normalizedReplyControl;
-		}
-
-		const updated = await db.updatePost(postId, updatePayload);
-
-		// 後から編集で変更可能にする(条件を満たさない返信は消える & スレッド全体に伝播)
-		if (!isReply && normalizedReplyControl !== undefined) {
-			const effectiveReplyControl = normalizedReplyControl;
-			try {
-				let replyIds = [];
-				if (typeof db.getThreadReplyPostIds === 'function') {
-					const threadResult = await db.getThreadReplyPostIds(postId, 500, 0);
-					replyIds = threadResult?.ids || [];
-				} else if (typeof db.getReplyPostIds === 'function') {
-					const replyResult = await db.getReplyPostIds(postId, 500, 0);
-					replyIds = replyResult?.ids || [];
-				}
-				if (replyIds.length > 0) {
-					const existingReplies = await db.getPostsByIds(replyIds);
-					for (const reply of existingReplies) {
-						if (!reply) continue;
-						if (effectiveReplyControl !== 'everyone' && Number(reply.userId) !== Number(userId)) {
-							const isMentioned = Boolean(normalizedContent && new RegExp(`@${reply.userId}\\b`).test(normalizedContent));
-							let permitted = false;
-							if (effectiveReplyControl === 'following') {
-								const isFollowedByAuthor = typeof db.isFollowing === 'function'
-									? await db.isFollowing(Number(userId), Number(reply.userId))
-									: false;
-								permitted = isMentioned || isFollowedByAuthor;
-							} else if (effectiveReplyControl === 'mentioned') {
-								permitted = isMentioned;
-							}
-							if (!permitted) {
-								if (typeof db.adminDeletePost === 'function') {
-									await db.adminDeletePost(reply.id);
-								} else if (typeof db.deletePost === 'function') {
-									await db.deletePost(reply.id, reply.userId);
-								}
-								continue;
-							}
-						}
-						// スレッド内の返信に親ポストの返信制限を伝播
-						await db.updatePost(reply.id, {
-							reply_control: effectiveReplyControl,
-							replyControl: effectiveReplyControl,
-						}).catch(() => {});
-					}
-				}
-			} catch (cleanupError) {
-				console.warn('[posts] Failed to clean up invalid replies on post edit:', cleanupError.message);
-			}
-		}
-
-		const moderatedPost = updated || post;
-		enqueueGeminiModeration(req, moderatedPost);
-		res.json({
-			success: true,
-			post: await serializePost(db, moderatedPost, userId, 0, getPublicUrl(req)),
-		});
-
-	} catch (err) {
-		console.error('[posts] edit error:', err);
-		res.status(500).json({ error: '投稿の更新に失敗しました' });
+		const context = createPostActionContext(req);
+		const actionId = queue.enqueue('edit', () => processEditPostAction(context, {
+			postId,
+			userId,
+			content,
+			attachments,
+			mask,
+			lock,
+			replyControl: normalizedReplyControl,
+		}));
+		return res.status(202).json({ success: true, queued: true, action_id: actionId });
+	} catch (error) {
+		return res.status(error.statusCode || 503).json({ error: error.message });
 	}
 });
 

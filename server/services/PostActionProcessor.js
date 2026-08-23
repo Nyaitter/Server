@@ -488,7 +488,83 @@ async function processDeletePostAction(context, { postId, userId, admin = false 
   );
 }
 
+async function processEditPostAction(context, { postId, userId, content, attachments, mask, lock, replyControl }) {
+  const post = await context.db.getPostById(postId);
+  if (!post) throw new Error('Post not found');
+  if (post.userId !== userId) throw new Error('You can only edit your own posts');
+
+  const { extractViewContent } = require('../utils/viewContent');
+  const { extractPostKeywords } = require('./PostKeywordService');
+
+  const normalizedContent = content.trim();
+  const viewContent = extractViewContent(normalizedContent);
+  const updatePayload = {
+    content: normalizedContent,
+    viewContent,
+    view_content: viewContent,
+    tags: await extractPostKeywords(viewContent),
+    tagsGeneratedAt: new Date().toISOString(),
+    attachments: Array.isArray(attachments) && attachments.length > 0 ? attachments : null,
+    mask: !!mask,
+    lock: !!lock,
+  };
+
+  const isReply = Boolean(post.replyTo != null || post.reply_to != null);
+  if (replyControl !== undefined && !isReply) {
+    updatePayload.reply_control = replyControl;
+    updatePayload.replyControl = replyControl;
+  }
+
+  const updated = await context.db.updatePost(postId, updatePayload);
+
+  // 返信制限変更時スレッド全体に伝播、条件外の返信を削除
+  if (!isReply && replyControl !== undefined) {
+    try {
+      let replyIds = [];
+      if (typeof context.db.getThreadReplyPostIds === 'function') {
+        replyIds = (await context.db.getThreadReplyPostIds(postId, 500, 0))?.ids || [];
+      } else if (typeof context.db.getReplyPostIds === 'function') {
+        replyIds = (await context.db.getReplyPostIds(postId, 500, 0))?.ids || [];
+      }
+      if (replyIds.length > 0) {
+        const existingReplies = await context.db.getPostsByIds(replyIds);
+        for (const reply of existingReplies) {
+          if (!reply) continue;
+          if (replyControl !== 'everyone' && Number(reply.userId) !== Number(userId)) {
+            const isMentioned = Boolean(normalizedContent && new RegExp(`@${reply.userId}\\b`).test(normalizedContent));
+            let permitted = false;
+            if (replyControl === 'following') {
+              const isFollowed = typeof context.db.isFollowing === 'function'
+                ? await context.db.isFollowing(Number(userId), Number(reply.userId))
+                : false;
+              permitted = isMentioned || isFollowed;
+            } else if (replyControl === 'mentioned') {
+              permitted = isMentioned;
+            }
+            if (!permitted) {
+              if (typeof context.db.adminDeletePost === 'function') await context.db.adminDeletePost(reply.id);
+              else if (typeof context.db.deletePost === 'function') await context.db.deletePost(reply.id, reply.userId);
+              continue;
+            }
+          }
+          await context.db.updatePost(reply.id, {
+            reply_control: replyControl,
+            replyControl,
+          }).catch(() => {});
+        }
+      }
+    } catch (cleanupError) {
+      console.warn('[post-actions] Failed to clean up invalid replies on post edit:', cleanupError.message);
+    }
+  }
+
+  const moderatedPost = updated || post;
+  enqueueGeminiModeration(context, moderatedPost);
+  return moderatedPost;
+}
+
 module.exports = {
   processCreatePostAction,
   processDeletePostAction,
+  processEditPostAction,
 };
