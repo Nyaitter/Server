@@ -3199,6 +3199,58 @@ class InMemoryAdapter extends DatabaseAdapter {
 				if (Number(log.nyaitter_id) === previousId) log.nyaitter_id = nextId;
 			}
 
+			// groups and memberships
+			for (const group of this.groups.values()) {
+				if (Number(group.owner_id) === previousId) group.owner_id = nextId;
+			}
+			const updatedMemberships = new Map();
+			for (const [key, membership] of this.groupMemberships.entries()) {
+				if (Number(membership.user_id) === previousId) {
+					membership.user_id = nextId;
+					updatedMemberships.set(`${membership.group_id}:${nextId}`, membership);
+				} else {
+					updatedMemberships.set(key, membership);
+				}
+			}
+			this.groupMemberships = updatedMemberships;
+
+			for (const invite of this.groupInvites.values()) {
+				if (Number(invite.inviter_id) === previousId) invite.inviter_id = nextId;
+				if (Number(invite.invitee_id) === previousId) invite.invitee_id = nextId;
+			}
+			for (const request of this.groupJoinRequests.values()) {
+				if (Number(request.user_id) === previousId) request.user_id = nextId;
+				if (Number(request.reviewed_by) === previousId) request.reviewed_by = nextId;
+			}
+
+			// authorized apps and affinities
+			const updatedAuthorizedApps = new Map();
+			for (const [key, app] of this.authorizedApps.entries()) {
+				if (Number(app.user_id) === previousId) {
+					app.user_id = nextId;
+					updatedAuthorizedApps.set(`${nextId}:${app.app_id}:${app.app_token_hash}`, app);
+				} else {
+					updatedAuthorizedApps.set(key, app);
+				}
+			}
+			this.authorizedApps = updatedAuthorizedApps;
+
+			const updatedAffinities = new Map();
+			for (const [key, affinity] of this.userKeywordAffinities.entries()) {
+				if (Number(affinity.user_id) === previousId) {
+					affinity.user_id = nextId;
+					updatedAffinities.set(`${nextId}:${affinity.keyword}`, affinity);
+				} else {
+					updatedAffinities.set(key, affinity);
+				}
+			}
+			this.userKeywordAffinities = updatedAffinities;
+			if (this.userKeywordAffinityByUser.has(previousId)) {
+				const affinityMap = this.userKeywordAffinityByUser.get(previousId);
+				this.userKeywordAffinityByUser.delete(previousId);
+				this.userKeywordAffinityByUser.set(nextId, affinityMap);
+			}
+
 			// imposter parent_id and members
 			for (const candidate of this.users.values()) {
 				if (candidate?.settings?.imposter && typeof candidate.settings.imposter === 'object') {

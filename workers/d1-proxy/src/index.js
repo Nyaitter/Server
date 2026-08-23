@@ -844,10 +844,22 @@ export default {
 							db.prepare('UPDATE follows SET following_id = ? WHERE following_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE dm_e2e_keys SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE notifications SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
-															db.prepare('UPDATE notifications SET from_user_id = ? WHERE from_user_id = ?').bind(nextId, previousId),
-								db.prepare(`UPDATE notifications SET target = json_set(target, '$.id', ?)
-									WHERE json_extract(target, '$.kind') = 'user' AND CAST(json_extract(target, '$.id') AS INTEGER) = ?`).bind(nextId, previousId),
-								db.prepare('UPDATE push_subscriptions SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE notifications SET from_user_id = ? WHERE from_user_id = ?').bind(nextId, previousId),
+							db.prepare(`UPDATE notifications SET target = json_set(target, '$.id', ?)
+								WHERE json_extract(target, '$.kind') = 'user' AND CAST(json_extract(target, '$.id') AS INTEGER) = ?`).bind(nextId, previousId),
+							db.prepare('UPDATE push_subscriptions SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+
+							// groups and memberships
+							db.prepare('UPDATE groups SET owner_id = ? WHERE owner_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE group_memberships SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE group_invites SET inviter_id = ? WHERE inviter_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE group_invites SET invitee_id = ? WHERE invitee_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE group_join_requests SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE group_join_requests SET reviewed_by = ? WHERE reviewed_by = ?').bind(nextId, previousId),
+
+							// authorized apps and affinities
+							db.prepare('UPDATE authorized_apps SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE user_keyword_affinities SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
 
 							db.prepare('UPDATE moderation_reports SET reporter_user_id = ? WHERE reporter_user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE moderation_reports SET assigned_admin_id = ? WHERE assigned_admin_id = ?').bind(nextId, previousId),

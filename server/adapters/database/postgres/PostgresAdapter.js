@@ -1014,6 +1014,18 @@ class PostgresAdapter extends DatabaseAdapter {
 			await client.query('UPDATE moderation_reports SET assigned_admin_id = $2 WHERE assigned_admin_id = $1', [previousId, nextId]);
 			await client.query('UPDATE logs SET nyaitter_id = $2 WHERE nyaitter_id = $1', [previousId, nextId]);
 
+			// groups and memberships
+			await client.query('UPDATE groups SET owner_id = $2 WHERE owner_id = $1', [previousId, nextId]);
+			await client.query('UPDATE group_memberships SET user_id = $2 WHERE user_id = $1', [previousId, nextId]);
+			await client.query('UPDATE group_invites SET inviter_id = $2 WHERE inviter_id = $1', [previousId, nextId]);
+			await client.query('UPDATE group_invites SET invitee_id = $2 WHERE invitee_id = $1', [previousId, nextId]);
+			await client.query('UPDATE group_join_requests SET user_id = $2 WHERE user_id = $1', [previousId, nextId]);
+			await client.query('UPDATE group_join_requests SET reviewed_by = $2 WHERE reviewed_by = $1', [previousId, nextId]);
+
+			// authorized apps and affinities
+			await client.query('UPDATE authorized_apps SET user_id = $2 WHERE user_id = $1', [previousId, nextId]);
+			await client.query('UPDATE user_keyword_affinities SET user_id = $2 WHERE user_id = $1', [previousId, nextId]);
+
 			// dm_channels participants
 			const { rows: channels } = await client.query(
 				'SELECT id, participants FROM dm_channels WHERE $1::int = ANY(participants)',
@@ -1117,7 +1129,22 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			this._invalidateUserCache(previousId);
 			this._invalidateUserCache(nextId);
-			this._invalidateUserCache(null); // Clear overall maps
+
+			if (this._affinityCache instanceof Map) {
+				const userAffinity = this._affinityCache.get(previousId);
+				this._affinityCache.delete(previousId);
+				if (userAffinity) this._affinityCache.set(nextId, userAffinity);
+			}
+			if (this._followCache instanceof Map) {
+				const userFollows = this._followCache.get(previousId);
+				this._followCache.delete(previousId);
+				if (userFollows) this._followCache.set(nextId, userFollows);
+			}
+			if (Array.isArray(this._candidatePostsCache?.posts)) {
+				for (const post of this._candidatePostsCache.posts) {
+					if (Number(post.user_id) === previousId) post.user_id = nextId;
+				}
+			}
 
 			return normalizeUserRow(rows[0] || null);
 		});
@@ -3113,18 +3140,28 @@ class PostgresAdapter extends DatabaseAdapter {
 		const normalizedDelta = Number(delta);
 		const normalizedTags = normalizePostTags(tags);
 		if (!Number.isFinite(normalizedDelta) || normalizedDelta === 0 || normalizedTags.length === 0) return;
-		await client.query(
-			`INSERT INTO user_keyword_affinities (user_id, keyword, score, updated_at)
-			 SELECT $1, keyword, $3::numeric, NOW() FROM unnest($2::text[]) AS keyword
-			 ON CONFLICT (user_id, keyword) DO UPDATE
-			 SET score = GREATEST(0, user_keyword_affinities.score + EXCLUDED.score),
-				 updated_at = NOW()`,
-			[Number(userId), normalizedTags, normalizedDelta],
-		);
-		await client.query(
-			'DELETE FROM user_keyword_affinities WHERE user_id = $1 AND score <= 0',
-			[Number(userId)],
-		);
+		if (normalizedDelta > 0) {
+			await client.query(
+				`INSERT INTO user_keyword_affinities (user_id, keyword, score, updated_at)
+				 SELECT $1, keyword, $3::numeric, NOW() FROM unnest($2::text[]) AS keyword
+				 ON CONFLICT (user_id, keyword) DO UPDATE
+				 SET score = user_keyword_affinities.score + EXCLUDED.score,
+					 updated_at = NOW()`,
+				[Number(userId), normalizedTags, normalizedDelta],
+			);
+		} else {
+			await client.query(
+				`UPDATE user_keyword_affinities
+				 SET score = GREATEST(0, score + $3::numeric),
+					 updated_at = NOW()
+				 WHERE user_id = $1 AND keyword = ANY($2::text[])`,
+				[Number(userId), normalizedTags, normalizedDelta],
+			);
+			await client.query(
+				'DELETE FROM user_keyword_affinities WHERE user_id = $1 AND score <= 0',
+				[Number(userId)],
+			);
+		}
 	}
 
 	async _adjustUserKeywordAffinities(client, userId, postId, delta) {
