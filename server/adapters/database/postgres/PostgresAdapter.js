@@ -421,8 +421,6 @@ class PostgresAdapter extends DatabaseAdapter {
 		try {
 			client = await this.pool.connect();
 			await client.query('SELECT 1');
-			await client.query('ALTER TABLE posts ADD COLUMN IF NOT EXISTS view_content TEXT;');
-			await client.query('ALTER TABLE posts ADD COLUMN IF NOT EXISTS reply_control VARCHAR(32) DEFAULT \'everyone\';');
 			client.release();
 			client = null;
 

@@ -1,0 +1,2 @@
+ALTER TABLE posts
+  ADD COLUMN IF NOT EXISTS reply_control VARCHAR(32) DEFAULT 'everyone';
