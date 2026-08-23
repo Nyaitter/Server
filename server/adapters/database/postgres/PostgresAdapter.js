@@ -833,7 +833,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const safeOffset = Math.max(Number(offset) || 0, 0);
 
 		const { rows } = await this.pool.query(
-			`SELECT id, name, scid, handle, nyaitter_address, auth_provider, provider_domain, external_id, icon_data
+			`SELECT *
 			 FROM users
 			 WHERE LOWER(COALESCE(scid, '')) LIKE $1
 				OR LOWER(COALESCE(name, '')) LIKE $1
@@ -857,8 +857,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			? `WHERE id <> $${values.push(Number(excludedUserId))}`
 			: '';
 		const { rows } = await this.pool.query(
-			`SELECT id, name, scid, icon_data, admin, verify,
-				auth_provider, provider_domain, external_id, bio, created_at
+			`SELECT *
 			 FROM users
 			 ${exclusion}
 			 ORDER BY created_at DESC, id ASC
@@ -2555,6 +2554,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 			if (post.repost_to) {
 				await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [Number(post.repost_to)]);
+				await client.query('DELETE FROM reposts WHERE user_id = $1 AND post_id = $2', [Number(userId), Number(post.repost_to)]);
 			}
 			await client.query('UPDATE posts SET repost_to = NULL WHERE repost_to = $1', [targetId]);
 			await client.query('DELETE FROM likes WHERE post_id = $1', [targetId]);
@@ -2570,7 +2570,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const targetId = Number(postId);
 		this._getPostCache()?.delete(targetId);
 		return this._withTransaction(async (client) => {
-			const { rows } = await client.query('SELECT reply_to, repost_to FROM posts WHERE id = $1 FOR UPDATE', [targetId]);
+			const { rows } = await client.query('SELECT user_id, reply_to, repost_to FROM posts WHERE id = $1 FOR UPDATE', [targetId]);
 			if (rows[0]) {
 				const post = rows[0];
 				if (post.reply_to) {
@@ -2578,6 +2578,9 @@ class PostgresAdapter extends DatabaseAdapter {
 				}
 				if (post.repost_to) {
 					await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [Number(post.repost_to)]);
+					if (post.user_id) {
+						await client.query('DELETE FROM reposts WHERE user_id = $1 AND post_id = $2', [Number(post.user_id), Number(post.repost_to)]);
+					}
 				}
 			}
 			await client.query('UPDATE posts SET repost_to = NULL WHERE repost_to = $1', [Number(postId)]);
@@ -3816,6 +3819,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		const now = new Date().toISOString();
 		return this._withTransaction(async (client) => {
+			this._followCache?.delete(u1);
 			const delResult = await client.query(
 				'DELETE FROM follows WHERE follower_id = $1 AND following_id = $2 RETURNING 1',
 				[u1, u2],
@@ -3842,39 +3846,27 @@ class PostgresAdapter extends DatabaseAdapter {
 	async getFollowing(userId, limit = 100) {
 		const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
 		const { rows } = await this.pool.query(
-			`SELECT u.id, u.name, u.scid, u.handle, u.icon_data FROM follows f
+			`SELECT u.* FROM follows f
 			 JOIN users u ON u.id = f.following_id
 			 WHERE f.follower_id = $1
 			 ORDER BY f.created_at DESC
 			 LIMIT $2`,
 			[Number(userId), safeLimit],
 		);
-		return rows.map((r) => ({
-			id: Number(r.id),
-			name: r.name,
-			scid: r.scid || null,
-			handle: r.handle,
-			icon_data: r.icon_data || null,
-		}));
+		return rows.map(normalizeUserRow);
 	}
 
 	async getFollowers(userId, limit = 100) {
 		const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
 		const { rows } = await this.pool.query(
-			`SELECT u.id, u.name, u.scid, u.handle, u.icon_data FROM follows f
+			`SELECT u.* FROM follows f
 			 JOIN users u ON u.id = f.follower_id
 			 WHERE f.following_id = $1
 			 ORDER BY f.created_at DESC
 			 LIMIT $2`,
 			[Number(userId), safeLimit],
 		);
-		return rows.map((r) => ({
-			id: Number(r.id),
-			name: r.name,
-			scid: r.scid || null,
-			handle: r.handle,
-			icon_data: r.icon_data || null,
-		}));
+		return rows.map(normalizeUserRow);
 	}
 
 	async getFollowIds(userId) {

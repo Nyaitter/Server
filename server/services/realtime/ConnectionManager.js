@@ -59,7 +59,7 @@ class ConnectionManager {
     const sockets = this.connectionsByUser.get(normalizedUserId);
     if (!sockets || sockets.size === 0) return false;
 
-    for (const socket of sockets) {
+    for (const socket of Array.from(sockets)) {
       if (!socket || socket.readyState !== 1) {
         this.unregister(normalizedUserId, socket);
         continue;
@@ -76,8 +76,7 @@ class ConnectionManager {
     if (!sockets || sockets.size === 0) return false;
 
     let delivered = false;
-    // Setを直接走査することで、イベントごとのソケット配列複製を避ける。
-    for (const socket of sockets) {
+    for (const socket of Array.from(sockets)) {
       if (!socket || socket.readyState !== 1) {
         this.unregister(normalizedUserId, socket);
         continue;
