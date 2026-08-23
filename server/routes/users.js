@@ -30,6 +30,7 @@ const accountOperationLimiter = createRateLimiter(config.rateLimit.profileUpdate
 const searchLimiter = createRateLimiter(config.rateLimit.profileUpdate);
 const accountDeletionConfirmations = new Map();
 const ACCOUNT_CONFIRMATION_TTL_MS = 5 * 60 * 1000;
+const MAX_ACCOUNT_CONFIRMATIONS = 1000;
 
 function requireInteractiveSession(req, res, next) {
 	if (req.user?.tokenType !== 'session' || !req.user?.sessionTokenHash) {
@@ -46,7 +47,15 @@ function discardExpiredAccountConfirmations(now = Date.now()) {
 	for (const [key, value] of accountDeletionConfirmations) {
 		if (!value || value.expiresAt <= now) accountDeletionConfirmations.delete(key);
 	}
+	while (accountDeletionConfirmations.size > MAX_ACCOUNT_CONFIRMATIONS) {
+		const oldestKey = accountDeletionConfirmations.keys().next().value;
+		if (oldestKey === undefined) break;
+		accountDeletionConfirmations.delete(oldestKey);
+	}
 }
+
+const accountConfirmationPruner = setInterval(discardExpiredAccountConfirmations, 60000);
+accountConfirmationPruner.unref();
 
 async function deleteStoredAccountAttachments(storage, keys) {
 	if (!storage || !Array.isArray(keys) || keys.length === 0) return;

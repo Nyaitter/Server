@@ -2,6 +2,7 @@
 
 const SessionManager = require('../services/auth/SessionManager');
 const BotTokenManager = require('../services/auth/BotTokenManager');
+const NyaitterAuthManager = require('../services/auth/NyaitterAuthManager');
 const config = require('../config');
 
 function buildContentSecurityPolicy() {
@@ -189,7 +190,6 @@ async function getAuthenticatedPrincipal(req) {
   }
 
   if (token.startsWith('nyauth_')) {
-    const NyaitterAuthManager = require('../services/auth/NyaitterAuthManager');
     const authManager = new NyaitterAuthManager({
       dbAdapter: req.app.locals.dbAdapter,
     });
