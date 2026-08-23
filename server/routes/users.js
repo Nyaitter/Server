@@ -16,6 +16,8 @@ const {
 	createPostVisibilityContext,
 	filterViewablePosts,
 } = require('../utils/postVisibility');
+const { hasBlockRelationship } = require('../utils/blockRelationship');
+const { normalizeBlockList } = require('../utils/blockList');
 const { isOwnedAttachmentKey, normalizeStorageKey } = require('../adapters/storage/safeStoragePath');
 const { ScratchIconService } = require('../services/ScratchIconService');
 const { listOwnedImposters } = require('../services/ImposterService');
@@ -251,9 +253,14 @@ function serializeUserCard(user, publicUrl, { includeSearchExclusion = false } =
 	};
 }
 
-function isProfileSectionVisible(user, viewerId, section) {
-	if (viewerId != null && Number(viewerId) === Number(user.id)) return true;
-	const settings = user.settings || {};
+function isProfileSectionVisible(user, viewerId, section, viewerUser = null) {
+	if (viewerId != null && Number(viewerId) === Number(user?.id)) return true;
+	if (viewerId != null && user) {
+		const userBlocksViewer = normalizeBlockList(user.block, user.id).includes(Number(viewerId));
+		const viewerBlocksUser = viewerUser ? normalizeBlockList(viewerUser.block, viewerUser.id).includes(Number(user.id)) : false;
+		if (userBlocksViewer || viewerBlocksUser) return false;
+	}
+	const settings = user?.settings || {};
 	const settingBySection = {
 		likes: 'show_like',
 		stars: 'show_star',
@@ -522,6 +529,14 @@ router.get('/:userId/counts', optionalAuth, async (req, res) => {
 	}
 
 	try {
+		if (req.user?.id && await hasBlockRelationship(db, req.user.id, userId)) {
+			return res.json({
+				post_count: 0,
+				media_count: 0,
+				follower_count: 0,
+				following_count: 0,
+			});
+		}
 		const [post_count, media_count, follower_count, following_count] =
 			await Promise.all([
 				db.getPostCount ? db.getPostCount(userId) : 0,
@@ -553,6 +568,9 @@ router.get('/:userId/media', optionalAuth, async (req, res) => {
 	}
 
 	try {
+		if (req.user?.id && await hasBlockRelationship(db, req.user.id, userId)) {
+			return res.json({ media_items: [] });
+		}
 		const mediaItems = await db.getMediaPosts(userId, limit, offset);
 		res.json({ media_items: mediaItems });
 	} catch (err) {
@@ -640,6 +658,9 @@ router.post('/:userId/follow', requireAuth, async (req, res) => {
 	}
 
 	try {
+		if (await hasBlockRelationship(db, followerId, followingId)) {
+			return res.status(403).json({ error: 'ブロック関係にあるユーザーをフォローすることはできません。' });
+		}
 		const result = await db.toggleFollow(followerId, followingId);
 
 			if (result.following) {
@@ -678,7 +699,7 @@ router.get('/:userId/:section(likes|stars)', optionalAuth, async (req, res) => {
 	try {
 		const user = await db.getUserById(userId);
 		if (!user) return res.status(404).json({ error: 'User not found' });
-		if (!isProfileSectionVisible(user, req.user?.id ?? null, section)) return sendPrivateProfileSection(res, section);
+		if (!isProfileSectionVisible(user, req.user?.id ?? null, section, req.user?.visibilityUser || req.user)) return sendPrivateProfileSection(res, section);
 		const ids = section === 'likes'
 			? await db.getLikeIds(userId)
 			: await db.getStarIds(userId);
@@ -714,7 +735,7 @@ router.get('/:userId/followers', optionalAuth, async (req, res) => {
 	try {
 		const target = await db.getUserById(userId);
 		if (!target) return res.status(404).json({ error: 'User not found' });
-		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'followers')) return sendPrivateProfileSection(res, 'followers');
+		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'followers', req.user?.visibilityUser || req.user)) return sendPrivateProfileSection(res, 'followers');
 		const followers = await db.getFollowers(userId, offset + limit + 1);
 		const slice = followers.slice(offset, offset + limit);
 		res.json({
@@ -740,7 +761,7 @@ router.get('/:userId/following', optionalAuth, async (req, res) => {
 	try {
 		const target = await db.getUserById(userId);
 		if (!target) return res.status(404).json({ error: 'User not found' });
-		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'following')) return sendPrivateProfileSection(res, 'following');
+		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'following', req.user?.visibilityUser || req.user)) return sendPrivateProfileSection(res, 'following');
 		const following = await db.getFollowing(userId, offset + limit + 1);
 		const slice = following.slice(offset, offset + limit);
 		res.json({
@@ -813,6 +834,9 @@ router.get('/:userId/pin', optionalAuth, async (req, res) => {
 	}
 
 	try {
+		if (req.user?.id && await hasBlockRelationship(db, req.user.id, userId)) {
+			return res.json({ pin_id: null });
+		}
 		const pinId = await db.getPinnedPostId(userId);
 		res.json({ pin_id: pinId });
 	} catch (err) {

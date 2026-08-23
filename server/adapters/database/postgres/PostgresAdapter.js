@@ -97,6 +97,7 @@ function normalizePostRow(row) {
 	const groupId = row.group_id ?? row.groupId ?? null;
 	const groupAnnouncement = Boolean(row.group_announcement ?? row.groupAnnouncement);
 	const viewContent = row.view_content ?? row.viewContent ?? extractViewContent(row.content || '');
+	const replyControl = row.reply_control ?? row.replyControl ?? 'everyone';
 
 	return {
 		id,
@@ -116,6 +117,8 @@ function normalizePostRow(row) {
 		group_id: groupId == null ? null : String(groupId),
 		groupAnnouncement,
 		group_announcement: groupAnnouncement,
+		replyControl,
+		reply_control: replyControl,
 		replyTo: replyTo == null ? null : Number(replyTo),
 		reply_to: replyTo == null ? null : Number(replyTo),
 		repostTo: repostTo == null ? null : Number(repostTo),
@@ -403,6 +406,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			client = await this.pool.connect();
 			await client.query('SELECT 1');
 			await client.query('ALTER TABLE posts ADD COLUMN IF NOT EXISTS view_content TEXT;');
+			await client.query('ALTER TABLE posts ADD COLUMN IF NOT EXISTS reply_control VARCHAR(32) DEFAULT \'everyone\';');
 			client.release();
 			client = null;
 
@@ -2241,6 +2245,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const viewContent = postData.viewContent != null
 			? String(postData.viewContent)
 			: (postData.view_content != null ? String(postData.view_content) : extractViewContent(postData.content || ''));
+		const replyControl = String(postData.replyControl ?? postData.reply_control ?? 'everyone');
 		const values = [
 			Number(postData.userId),
 			String(postData.content || ''),
@@ -2255,12 +2260,13 @@ class PostgresAdapter extends DatabaseAdapter {
 			postData.tagsGeneratedAt ? toIsoString(postData.tagsGeneratedAt) : null,
 			postData.groupId ?? postData.group_id ?? null,
 			Boolean(postData.groupAnnouncement ?? postData.group_announcement),
+			replyControl,
 			now,
 		];
 		return this._withTransaction(async (client) => {
 			const { rows } = await client.query(
-				`INSERT INTO posts (user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at)
-				 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14)
+				`INSERT INTO posts (user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, reply_control, created_at)
+				 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
 				 RETURNING *`,
 				values,
 			);
@@ -2530,6 +2536,10 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (fields.lock !== undefined) {
 			values.push(Boolean(fields.lock));
 			sets.push(`lock = $${values.length}`);
+		}
+		if (fields.reply_control !== undefined || fields.replyControl !== undefined) {
+			values.push(String(fields.reply_control ?? fields.replyControl ?? 'everyone'));
+			sets.push(`reply_control = $${values.length}`);
 		}
 		if (sets.length === 0) {
 			return this.getPostById(postId);
@@ -3231,6 +3241,29 @@ class PostgresAdapter extends DatabaseAdapter {
 			[Number(postId)],
 		);
 		await this._adjustUserKeywordAffinitiesForTags(client, userId, rows[0]?.tags, delta);
+	}
+
+	async dislikePost(userId, postId) {
+		const uId = Number(userId);
+		const pId = Number(postId);
+		this._affinityCache?.delete(uId);
+		return this._withTransaction(async (client) => {
+			const { rows } = await client.query(
+				'SELECT tags, content, view_content FROM posts WHERE id = $1 LIMIT 1',
+				[pId],
+			);
+			const post = rows[0];
+			if (!post) return false;
+			let tags = normalizePostTags(post.tags);
+			if (tags.length === 0) {
+				const keywords = await extractPostKeywords(post.view_content || post.content || '');
+				tags = normalizePostTags(keywords);
+			}
+			if (tags.length > 0) {
+				await this._adjustUserKeywordAffinitiesForTags(client, uId, tags, -5);
+			}
+			return true;
+		});
 	}
 
 	async toggleLike(userId, postId) {

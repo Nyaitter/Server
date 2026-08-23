@@ -75,6 +75,8 @@ function normalizePost(post) {
 	post.group_id = post.groupId;
 	post.groupAnnouncement = !!(post.groupAnnouncement ?? post.group_announcement);
 	post.group_announcement = post.groupAnnouncement;
+	post.replyControl = post.replyControl ?? post.reply_control ?? 'everyone';
+	post.reply_control = post.replyControl;
 	if (post.tags && typeof post.tags === 'string') {
 		try {
 			post.tags = JSON.parse(post.tags);
@@ -679,6 +681,10 @@ class D1Adapter extends DatabaseAdapter {
 			followerId: requireId(followerId, 'followerId'),
 		}), { cacheSeconds: 0 });
 		return typeof result === 'boolean' ? result : !!result?.following;
+	}
+
+	async dislikePost(userId, postId) {
+		return true;
 	}
 
 	async getFollowing(userId, limit = 100) {

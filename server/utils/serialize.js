@@ -555,7 +555,6 @@ async function serializePostsBatch(
 		Number(post.id),
 		canViewPostWithContext(post, visibilityContext),
 	]));
-	const postKeywordBackfillService = db.postKeywordBackfillService;
 	if (postKeywordBackfillService) {
 		for (const post of allPosts) {
 			if (!visibleByPostId.get(Number(post.id))) continue;
@@ -568,6 +567,44 @@ async function serializePostsBatch(
 	}
 	const briefUsersById = new Map();
 	const visitingPostIds = new Set();
+	const normalizedViewerId = currentUserId != null ? Number(currentUserId) : null;
+
+	function getRootPost(post) {
+		let current = post;
+		const seen = new Set();
+		while (current && (current.replyTo != null || current.reply_to != null)) {
+			const parentId = Number(current.replyTo ?? current.reply_to);
+			if (!Number.isInteger(parentId) || seen.has(parentId)) break;
+			seen.add(parentId);
+			const parent = postsById.get(parentId);
+			if (!parent) break;
+			current = parent;
+		}
+		return current || post;
+	}
+
+	const followingCheckAuthorIds = normalizedViewerId != null
+		? [...new Set(allPosts
+			.flatMap((p) => {
+				const root = getRootPost(p);
+				const rc = root.reply_control ?? root.replyControl ?? p.reply_control ?? p.replyControl ?? 'everyone';
+				if (rc === 'following' || rc === 'following_or_mentioned') {
+					return [Number(p.userId), Number(root.userId)];
+				}
+				return [];
+			})
+			.filter((id) => Number.isInteger(id) && id > 0 && id !== normalizedViewerId))]
+		: [];
+	const authorsFollowingViewer = new Set();
+	if (followingCheckAuthorIds.length > 0 && typeof db.isFollowing === 'function') {
+		await Promise.all(followingCheckAuthorIds.map(async (authorId) => {
+			try {
+				if (await db.isFollowing(authorId, normalizedViewerId)) {
+					authorsFollowingViewer.add(authorId);
+				}
+			} catch (_) {}
+		}));
+	}
 
 	function getBriefUser(author) {
 		const authorId = Number(author?.id);
@@ -625,6 +662,31 @@ async function serializePostsBatch(
 		}
 		const brief = getBriefUser(author);
 
+		const rootPost = getRootPost(post);
+		const effectiveReplyControl = rootPost.reply_control ?? rootPost.replyControl ?? post.reply_control ?? post.replyControl ?? 'everyone';
+		let canReply = true;
+		if (normalizedViewerId == null) {
+			canReply = false;
+		} else if (
+			Number(post.userId) === normalizedViewerId ||
+			Number(rootPost.userId) === normalizedViewerId ||
+			effectiveReplyControl === 'everyone'
+		) {
+			canReply = true;
+		} else {
+			const isMentioned = Boolean(
+				(post.content && new RegExp(`@${normalizedViewerId}\\b`).test(post.content)) ||
+				(rootPost.content && new RegExp(`@${normalizedViewerId}\\b`).test(rootPost.content))
+			);
+			if (effectiveReplyControl === 'mentioned' || effectiveReplyControl === 'mentioned_only') {
+				canReply = isMentioned;
+			} else if (effectiveReplyControl === 'following' || effectiveReplyControl === 'following_or_mentioned') {
+				canReply = isMentioned ||
+					authorsFollowingViewer.has(Number(rootPost.userId)) ||
+					authorsFollowingViewer.has(Number(post.userId));
+			}
+		}
+
 		const serialized = {
 			id: post.id,
 			userid: post.userId,
@@ -634,6 +696,8 @@ async function serializePostsBatch(
 			mask: !!post.mask,
 			lock: !!post.lock,
 			announcement: !!post.announcement,
+			reply_control: effectiveReplyControl,
+			can_reply: canReply,
 			private: isPrivatePost(post, author),
 			attachments: post.attachments || [],
 			reply_id: post.replyTo || null,

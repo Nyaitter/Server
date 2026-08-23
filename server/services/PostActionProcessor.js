@@ -264,9 +264,65 @@ async function processCreatePostAction(context, payload) {
     relatedPosts.set(targetId, target);
   }
 
-  // 返信は強制的に返信先と同一グループ（またはグループなし）に統一
+  const rawReplyControl = payload.replyControl ?? payload.reply_control ?? 'everyone';
+  const replyControl = ['everyone', 'following', 'mentioned', 'following_or_mentioned', 'mentioned_only'].includes(rawReplyControl)
+    ? (rawReplyControl === 'following_or_mentioned' ? 'following' : (rawReplyControl === 'mentioned_only' ? 'mentioned' : rawReplyControl))
+    : 'everyone';
+
+  // 返信は強制的に返信先と同一グループ（またはグループなし）に統一し、返信権限を検証
   if (replyTo) {
-    const replyTarget = relatedPosts.get(replyTo);
+    let replyTarget = relatedPosts.get(replyTo);
+    if (!replyTarget && typeof context.db.getPostById === 'function') {
+      replyTarget = await context.db.getPostById(replyTo);
+    }
+    if (replyTarget) {
+      let rootPost = replyTarget;
+      let currentAncestor = replyTarget;
+      const visited = new Set([Number(replyTarget.id)]);
+      while (currentAncestor && (currentAncestor.replyTo || currentAncestor.reply_to)) {
+        const nextParentId = Number(currentAncestor.replyTo || currentAncestor.reply_to);
+        if (!Number.isInteger(nextParentId) || visited.has(nextParentId)) break;
+        visited.add(nextParentId);
+        let nextParent = relatedPosts.get(nextParentId);
+        if (!nextParent && typeof context.db.getPostById === 'function') {
+          nextParent = await context.db.getPostById(nextParentId);
+        }
+        if (nextParent) {
+          rootPost = nextParent;
+          currentAncestor = nextParent;
+        } else {
+          break;
+        }
+      }
+
+      const rootReplyControl = rootPost.replyControl || rootPost.reply_control || 'everyone';
+      replyControl = rootReplyControl; // 返信には親/ルートポストの返信制限が伝播する
+
+      if (rootReplyControl !== 'everyone') {
+        const isRootAuthor = Number(rootPost.userId) === Number(userId);
+        const isParentAuthor = Number(replyTarget.userId) === Number(userId);
+        if (!isRootAuthor && !isParentAuthor) {
+          const isMentionedInRoot = Boolean(rootPost.content && new RegExp(`@${userId}\\b`).test(rootPost.content));
+          const isMentionedInParent = Boolean(replyTarget.content && new RegExp(`@${userId}\\b`).test(replyTarget.content));
+          const isMentioned = isMentionedInRoot || isMentionedInParent;
+          let permitted = false;
+          if (rootReplyControl === 'following' || rootReplyControl === 'following_or_mentioned') {
+            const isFollowedByRoot = typeof context.db.isFollowing === 'function'
+              ? await context.db.isFollowing(Number(rootPost.userId), Number(userId))
+              : false;
+            const isFollowedByParent = typeof context.db.isFollowing === 'function'
+              ? await context.db.isFollowing(Number(replyTarget.userId), Number(userId))
+              : false;
+            permitted = isMentioned || isFollowedByRoot || isFollowedByParent;
+          } else if (rootReplyControl === 'mentioned' || rootReplyControl === 'mentioned_only') {
+            permitted = isMentioned;
+          }
+          if (!permitted) {
+            throw new Error('このポストに返信できるユーザーが制限されています');
+          }
+        }
+      }
+    }
     groupId = normalizeGroupId(replyTarget?.groupId ?? replyTarget?.group_id);
     groupAnnouncement = false;
   }
@@ -308,6 +364,8 @@ async function processCreatePostAction(context, payload) {
     announcement: isAnnouncement,
     groupId,
     groupAnnouncement,
+    replyControl,
+    reply_control: replyControl,
     replyTo,
     repostTo,
   });

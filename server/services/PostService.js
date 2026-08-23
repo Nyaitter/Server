@@ -12,10 +12,11 @@ class PostService {
    * - raw files: { buffer, fileName, contentType }
    * - or pre-uploaded: { id, url, type, name }
    */
-  async createPost({ userId, content, viewContent = null, tags = [], tagsGeneratedAt = null, attachments = [], mask = false, lock = false, announcement = false, groupId = null, groupAnnouncement = false, replyTo = null, repostTo = null }) {
+  async createPost({ userId, content, viewContent = null, tags = [], tagsGeneratedAt = null, attachments = [], mask = false, lock = false, announcement = false, groupId = null, groupAnnouncement = false, replyControl = 'everyone', reply_control = 'everyone', replyTo = null, repostTo = null }) {
     const attachmentData = [];
     const uploadedKeys = [];
     const normalizedViewContent = viewContent != null ? String(viewContent) : extractViewContent(content);
+    const normalizedReplyControl = String(replyControl || reply_control || 'everyone');
 
     try {
       for (const att of attachments) {
@@ -63,6 +64,8 @@ class PostService {
         announcement,
         groupId,
         groupAnnouncement,
+        replyControl: normalizedReplyControl,
+        reply_control: normalizedReplyControl,
         replyTo,
         repostTo,
       });

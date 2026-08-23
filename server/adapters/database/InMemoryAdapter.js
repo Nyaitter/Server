@@ -472,6 +472,13 @@ class InMemoryAdapter extends DatabaseAdapter {
 				this._adjustUserKeywordAffinitiesForTags(userId, post?.tags, delta);
 			}
 
+			async dislikePost(userId, postId) {
+				const post = this.posts.get(Number(postId));
+				if (!post) return false;
+				this._adjustUserKeywordAffinities(Number(userId), Number(postId), -5);
+				return true;
+			}
+
 			_updateFollowIndexes(followerId, followingId, following) {
 
 		const follower = Number(followerId);
@@ -1481,6 +1488,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 			group_id: postData.groupId ?? postData.group_id ?? null,
 			groupAnnouncement: !!(postData.groupAnnouncement ?? postData.group_announcement),
 			group_announcement: !!(postData.groupAnnouncement ?? postData.group_announcement),
+			replyControl: String(postData.replyControl ?? postData.reply_control ?? 'everyone'),
+			reply_control: String(postData.replyControl ?? postData.reply_control ?? 'everyone'),
 			replyTo: postData.replyTo || null,
 			repostTo: postData.repostTo || null,
 			createdAt: new Date(),
@@ -1614,6 +1623,10 @@ class InMemoryAdapter extends DatabaseAdapter {
 			if (fields.attachments !== undefined) post.attachments = fields.attachments;
 					if (fields.mask !== undefined) post.mask = !!fields.mask;
 			if (fields.lock !== undefined) post.lock = !!fields.lock;
+			if (fields.reply_control !== undefined || fields.replyControl !== undefined) {
+				post.replyControl = String(fields.reply_control ?? fields.replyControl ?? 'everyone');
+				post.reply_control = post.replyControl;
+			}
 			if (fields.tags !== undefined) {
 				this._adjustUserKeywordAffinitiesForTags(post.userId, previousTags, -1);
 				this._adjustUserKeywordAffinitiesForTags(post.userId, post.tags, 1);

@@ -266,6 +266,8 @@ router.post('/', requireAuth, postWriteLimiter, (req, res) => {
 		group_announcement,
 		reply_to,
 		repost_to,
+		reply_control,
+		replyControl,
 		post_as_user_id,
 	} = req.body || {};
 	const hasContent = typeof content === 'string' && content.trim().length > 0;
@@ -294,11 +296,12 @@ router.post('/', requireAuth, postWriteLimiter, (req, res) => {
 			attachments,
 			mask,
 			lock,
-				announcement: announcement === true,
-				groupId: group_id,
-				groupAnnouncement: group_announcement === true,
-				replyTo: reply_to,
+			announcement: announcement === true,
+			groupId: group_id,
+			groupAnnouncement: group_announcement === true,
+			replyTo: reply_to,
 			repostTo: repost_to,
+			replyControl: reply_control ?? replyControl,
 			postAsUserId: post_as_user_id,
 		}));
 		return res.status(202).json({ success: true, queued: true, action_id: actionId });
@@ -1101,6 +1104,26 @@ router.post('/:id/pin', requireAuth, postWriteLimiter, async (req, res) => {
 	}
 });
 
+router.post('/:id/dislike', requireAuth, postWriteLimiter, async (req, res) => {
+	const db = getDbAdapter(req);
+	const postId = safeParsePostId(req.params.id);
+	const userId = req.user.id;
+
+	if (!postId) {
+		return res.status(400).json({ error: 'Invalid post id' });
+	}
+
+	try {
+		if (typeof db.dislikePost === 'function') {
+			await db.dislikePost(userId, postId);
+		}
+		res.json({ success: true, message: '関連性が低いと評価しました' });
+	} catch (err) {
+		console.error('[posts] dislike error:', err);
+		res.status(500).json({ error: '処理に失敗しました' });
+	}
+});
+
 router.put('/:id', requireAuth, postWriteLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const storage = getStorageAdapter(req);
@@ -1111,7 +1134,7 @@ router.put('/:id', requireAuth, postWriteLimiter, async (req, res) => {
 		return res.status(400).json({ error: 'Invalid post id' });
 	}
 
-	const { content, attachments, mask, lock } = req.body || {};
+	const { content, attachments, mask, lock, reply_control, replyControl } = req.body || {};
 
 	if (typeof content !== 'string' || content.trim().length === 0) {
 		return res.status(400).json({ error: 'content is required' });
@@ -1127,6 +1150,13 @@ router.put('/:id', requireAuth, postWriteLimiter, async (req, res) => {
 		}
 	}
 
+	const rawReplyControl = reply_control ?? replyControl;
+	const normalizedReplyControl = rawReplyControl !== undefined
+		? (['everyone', 'following', 'mentioned', 'following_or_mentioned', 'mentioned_only'].includes(rawReplyControl)
+			? (rawReplyControl === 'following_or_mentioned' ? 'following' : (rawReplyControl === 'mentioned_only' ? 'mentioned' : rawReplyControl))
+			: 'everyone')
+		: undefined;
+
 	try {
 		const post = await db.getPostById(postId);
 		if (!post) {
@@ -1136,21 +1166,77 @@ router.put('/:id', requireAuth, postWriteLimiter, async (req, res) => {
 			return res.status(403).json({ error: 'You can only edit your own posts' });
 		}
 
-				const normalizedContent = content.trim();
-				const viewContent = extractViewContent(normalizedContent);
-				const updated = await db.updatePost(postId, {
-				content: normalizedContent,
-				viewContent,
-				view_content: viewContent,
-				tags: await extractPostKeywords(viewContent),
-				tagsGeneratedAt: new Date().toISOString(),
+		const normalizedContent = content.trim();
+		const viewContent = extractViewContent(normalizedContent);
+		const updatePayload = {
+			content: normalizedContent,
+			viewContent,
+			view_content: viewContent,
+			tags: await extractPostKeywords(viewContent),
+			tagsGeneratedAt: new Date().toISOString(),
 			attachments:
 				Array.isArray(attachments) && attachments.length > 0
 					? attachments
 					: null,
-				mask: !!mask,
-				lock: !!lock,
-			});
+			mask: !!mask,
+			lock: !!lock,
+		};
+		const isReply = Boolean(post.replyTo != null || post.reply_to != null);
+		if (normalizedReplyControl !== undefined && !isReply) {
+			updatePayload.reply_control = normalizedReplyControl;
+			updatePayload.replyControl = normalizedReplyControl;
+		}
+
+		const updated = await db.updatePost(postId, updatePayload);
+
+		// 後から編集で変更可能にする(条件を満たさない返信は消える & スレッド全体に伝播)
+		if (!isReply && normalizedReplyControl !== undefined) {
+			const effectiveReplyControl = normalizedReplyControl;
+			try {
+				let replyIds = [];
+				if (typeof db.getThreadReplyPostIds === 'function') {
+					const threadResult = await db.getThreadReplyPostIds(postId, 500, 0);
+					replyIds = threadResult?.ids || [];
+				} else if (typeof db.getReplyPostIds === 'function') {
+					const replyResult = await db.getReplyPostIds(postId, 500, 0);
+					replyIds = replyResult?.ids || [];
+				}
+				if (replyIds.length > 0) {
+					const existingReplies = await db.getPostsByIds(replyIds);
+					for (const reply of existingReplies) {
+						if (!reply) continue;
+						if (effectiveReplyControl !== 'everyone' && Number(reply.userId) !== Number(userId)) {
+							const isMentioned = Boolean(normalizedContent && new RegExp(`@${reply.userId}\\b`).test(normalizedContent));
+							let permitted = false;
+							if (effectiveReplyControl === 'following') {
+								const isFollowedByAuthor = typeof db.isFollowing === 'function'
+									? await db.isFollowing(Number(userId), Number(reply.userId))
+									: false;
+								permitted = isMentioned || isFollowedByAuthor;
+							} else if (effectiveReplyControl === 'mentioned') {
+								permitted = isMentioned;
+							}
+							if (!permitted) {
+								if (typeof db.adminDeletePost === 'function') {
+									await db.adminDeletePost(reply.id);
+								} else if (typeof db.deletePost === 'function') {
+									await db.deletePost(reply.id, reply.userId);
+								}
+								continue;
+							}
+						}
+						// スレッド内の返信に親ポストの返信制限を伝播
+						await db.updatePost(reply.id, {
+							reply_control: effectiveReplyControl,
+							replyControl: effectiveReplyControl,
+						}).catch(() => {});
+					}
+				}
+			} catch (cleanupError) {
+				console.warn('[posts] Failed to clean up invalid replies on post edit:', cleanupError.message);
+			}
+		}
+
 		const moderatedPost = updated || post;
 		enqueueGeminiModeration(req, moderatedPost);
 		res.json({
