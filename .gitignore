@@ -12,3 +12,5 @@ node_modules
 
 # Local development server logs
 /.nyaitter-dev-server.log
+
+/data/
