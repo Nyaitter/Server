@@ -13,15 +13,17 @@ router.get('/', async (req, res) => {
 
 	try {
 		const parsed = new URL(rawUrl);
-		// Extract post ID from path /posts/123 or /#post/123 or /?post=123
+		// Extract post ID from path /posts/123, /post/123, /#post/123, /?post=123
 		let postId = null;
-		const pathMatch = parsed.pathname.match(/\/posts\/(\d+)/i);
+		const pathMatch = parsed.pathname.match(/\/(?:posts?|api\/posts)\/(\d+)/i);
 		if (pathMatch) {
 			postId = Number(pathMatch[1]);
 		} else if (parsed.searchParams.has('post')) {
 			postId = Number(parsed.searchParams.get('post'));
+		} else if (parsed.searchParams.has('post_id')) {
+			postId = Number(parsed.searchParams.get('post_id'));
 		} else if (parsed.hash) {
-			const hashMatch = parsed.hash.match(/#post\/(\d+)/i);
+			const hashMatch = parsed.hash.match(/#\/?posts?\/(\d+)/i);
 			if (hashMatch) postId = Number(hashMatch[1]);
 		}
 

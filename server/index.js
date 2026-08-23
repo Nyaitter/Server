@@ -36,7 +36,7 @@ const { serializeNotification } = require('./utils/serialize');
 const { getPublicUrl } = require('./utils/nyaitterAddress');
 const { startOperatorControlServer } = require('./utils/operatorControl');
 const { getEmbeddedMailServer } = require('./services/mail/EmbeddedMailServer');
-const { isCrawler, generatePostOgpTags } = require('./services/OgpService');
+const { isCrawler, generatePostOgpTags, generatePostHtml } = require('./services/OgpService');
 
 let embeddedMailServer = null;
 
@@ -318,6 +318,10 @@ for (const [resourcePath, router] of restRoutes) {
 
 app.use(apiPath('/auth'), require('./routes/auth'));
 
+// ── Root oEmbed Endpoint ───────────────────────────────────────────────────────
+app.use('/api/oembed', require('./routes/oembed'));
+app.use('/oembed', require('./routes/oembed'));
+
 app.get('/favicon.ico', (req, res) => {
     const faviconPath = path.join(__dirname, '../page/favicon.png');
     if (fs.existsSync(faviconPath)) {
@@ -363,7 +367,7 @@ if (hasStaticPage) {
 
         // ── Dynamic OGP Rendering for Post URLs & Bot Crawlers ──
         let targetPostId = null;
-        const postPathMatch = cleanPath.match(/^(?:\/@[^/]+)?\/posts\/(\d+)$/i);
+        const postPathMatch = cleanPath.match(/^(?:\/@[^/]+)?\/posts?\/(\d+)$/i);
         if (postPathMatch) {
             targetPostId = Number(postPathMatch[1]);
         } else if (req.query.post) {
@@ -371,27 +375,42 @@ if (hasStaticPage) {
         }
 
         if (targetPostId && Number.isInteger(targetPostId) && targetPostId > 0) {
-            const indexPath = path.join(pageDir, 'index.html');
-            if (fs.existsSync(indexPath)) {
-                return (async () => {
-                    try {
-                        const db = app.locals.dbAdapter;
-                        const post = await db?.getPostById?.(targetPostId);
-                        if (post) {
-                            const author = await db?.getUserById?.(post.userId ?? post.user_id);
-                            const publicUrl = getPublicUrl(req);
+            return (async () => {
+                try {
+                    const db = app.locals.dbAdapter;
+                    const post = await db?.getPostById?.(targetPostId);
+                    if (post) {
+                        const author = await db?.getUserById?.(post.userId ?? post.user_id);
+                        const publicUrl = getPublicUrl(req);
+                        const userAgent = req.headers['user-agent'] || '';
+                        if (isCrawler(userAgent)) {
+                            const html = generatePostHtml({
+                                post,
+                                author,
+                                publicUrl,
+                                frontendUrl: config.frontendUrl || null,
+                            });
+                            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+                            return res.send(html);
+                        }
+                        const indexPath = path.join(pageDir, 'index.html');
+                        if (fs.existsSync(indexPath)) {
                             const ogpTags = generatePostOgpTags({ post, author, publicUrl });
                             let html = fs.readFileSync(indexPath, 'utf8');
                             html = html.replace(/<title>.*?<\/title>/i, ogpTags);
                             res.setHeader('Content-Type', 'text/html; charset=utf-8');
                             return res.send(html);
                         }
-                    } catch (err) {
-                        console.warn('[ogp] Failed to render post embed:', err.message);
                     }
+                } catch (err) {
+                    console.warn('[ogp] Failed to render post embed:', err.message);
+                }
+                const indexPath = path.join(pageDir, 'index.html');
+                if (fs.existsSync(indexPath)) {
                     return res.sendFile(indexPath);
-                })();
-            }
+                }
+                return res.status(404).send('Post not found');
+            })();
         }
 
         if (cleanPath.endsWith('.html')) {
