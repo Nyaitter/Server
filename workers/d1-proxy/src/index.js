@@ -1770,7 +1770,7 @@ export default {
 								COALESCE(l.count, 0) * 2.0 / (COALESCE(l.count, 0) + 4.0)
 								+ COALESCE(s.count, 0) * 4.0 / (COALESCE(s.count, 0) + 2.0)
 								+ COALESCE(r.count, 0) * 10.0 / (COALESCE(r.count, 0) + 2.0))`;
-					const recencyScore = `48.0 / (1.0 + MAX(0.0, (julianday('now') - julianday(c.created_at)) * 24.0) / 6.0)`;
+					const recencyScore = `72.0 / (1.0 + MAX(0.0, (julianday('now') - julianday(c.created_at)) * 24.0) / 4.5)`;
 					const query = viewerId == null
 						? `${commonCtes}, scored AS (
 							SELECT c.id, c.created_at, ${recencyScore} + ${engagementScore} AS score
@@ -1810,18 +1810,13 @@ export default {
 									AND (instr(post_tag.value, profile.keyword) > 0 OR instr(profile.keyword, post_tag.value) > 0)
 								)
 							GROUP BY c.id
-							), /* Temporarily disabled: simple author affinity from likes and stars.
-							viewer_like_affinity AS (
-								SELECT p.user_id, COUNT(*) AS count
-								FROM likes l JOIN posts p ON p.id = l.post_id
-								WHERE l.user_id = ?
-								GROUP BY p.user_id
-							), viewer_star_affinity AS (
-								SELECT p.user_id, COUNT(*) AS count
-								FROM stars s JOIN posts p ON p.id = s.post_id
-								WHERE s.user_id = ?
-								GROUP BY p.user_id
-							), */ direct_follows AS (
+							), viewer_reacted AS (
+								SELECT post_id FROM likes WHERE user_id = ?
+								UNION
+								SELECT post_id FROM stars WHERE user_id = ?
+								UNION
+								SELECT post_id FROM reposts WHERE user_id = ?
+							), direct_follows AS (
 							SELECT following_id AS user_id FROM follows WHERE follower_id = ?
 						), second_degree_follows AS (
 							SELECT DISTINCT f2.following_id AS user_id
@@ -1829,19 +1824,16 @@ export default {
 							WHERE f1.follower_id = ? AND f2.following_id <> ?
 						), scored AS (
 							SELECT c.id, c.created_at,
-								${recencyScore} + ${engagementScore}
+								MAX(0.0, ${recencyScore} + ${engagementScore}
 									+ CASE WHEN df.user_id IS NOT NULL THEN 24.0 WHEN sdf.user_id IS NOT NULL THEN 10.0 ELSE 0.0 END
-										/* Temporarily disabled: simple author affinity from likes and stars.
-										+ MIN(20.0, COALESCE(vla.count, 0) * 4.0)
-										+ MIN(32.0, COALESCE(vsa.count, 0) * 8.0)
-										*/ + MIN(30.0, COALESCE(vka.score, 0) * 2.0) AS score
+									+ CASE WHEN vr.post_id IS NOT NULL THEN -60.0 ELSE 0.0 END
+									+ MIN(30.0, COALESCE(vka.score, 0) * 2.0)) AS score
 							FROM candidates c
 							LEFT JOIN like_counts l ON l.post_id = c.id
 							LEFT JOIN star_counts s ON s.post_id = c.id
 							LEFT JOIN repost_counts r ON r.post_id = c.id
 								LEFT JOIN viewer_keyword_affinity vka ON vka.post_id = c.id
-								/* Temporarily disabled: LEFT JOIN viewer_like_affinity vla ON vla.user_id = c.user_id
-								LEFT JOIN viewer_star_affinity vsa ON vsa.user_id = c.user_id */
+								LEFT JOIN viewer_reacted vr ON vr.post_id = c.id
 								LEFT JOIN direct_follows df ON df.user_id = c.user_id
 							LEFT JOIN second_degree_follows sdf ON sdf.user_id = c.user_id
 						)
@@ -1855,7 +1847,7 @@ export default {
 							)`;
 					const bindings = viewerId == null
 						? candidateBindings
-							: [...candidateBindings, viewerId, viewerId, viewerId, viewerId];
+							: [...candidateBindings, viewerId, viewerId, viewerId, viewerId, viewerId, viewerId, viewerId];
 					const { results } = await db.prepare(query).bind(...bindings).all();
 					const row = (results || [])[0] || {};
 					let ids = [];

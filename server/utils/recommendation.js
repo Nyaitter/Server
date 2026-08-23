@@ -3,7 +3,7 @@
  * Keeps databases focused purely on data delivery while Node.js performs scoring.
  */
 
-function scoreRecommendedPosts(candidatePosts, { viewerId = null, keywordProfile = new Map(), directFollows = new Set(), limit = 30 } = {}) {
+function scoreRecommendedPosts(candidatePosts, { viewerId = null, keywordProfile = new Map(), directFollows = new Set(), reactedPostIds = new Set(), limit = 30 } = {}) {
 	const normalizedLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
 	const validViewerId = Number.isSafeInteger(Number(viewerId)) && Number(viewerId) > 0 ? Number(viewerId) : null;
 	const now = Date.now();
@@ -15,7 +15,7 @@ function scoreRecommendedPosts(candidatePosts, { viewerId = null, keywordProfile
 	const scored = eligiblePosts.map((post) => {
 		const createdAtMs = new Date(post.createdAt || post.created_at || now).getTime();
 		const ageHours = Math.max(0, (now - createdAtMs) / (1000 * 3600));
-		const timeScore = 48 / (1 + (ageHours / 6));
+		const timeScore = 72 / (1 + (ageHours / 4.5));
 
 		const lCount = Number(post.likeCount ?? post.like_count) || 0;
 		const sCount = Number(post.starCount ?? post.star_count) || 0;
@@ -23,7 +23,12 @@ function scoreRecommendedPosts(candidatePosts, { viewerId = null, keywordProfile
 		const reactionScore = Math.min(22, (lCount * 2 / (lCount + 4)) + (sCount * 4 / (sCount + 2)) + (rCount * 10 / (rCount + 2)));
 
 		let socialScore = 0;
+		let penalty = 0;
 		if (validViewerId != null) {
+			const postId = Number(post.id);
+			if (reactedPostIds && reactedPostIds.has(postId)) {
+				penalty = 60;
+			}
 			const authorId = Number(post.userId ?? post.user_id);
 			if (directFollows.has(authorId)) {
 				socialScore += 24;
@@ -46,7 +51,7 @@ function scoreRecommendedPosts(candidatePosts, { viewerId = null, keywordProfile
 			}
 		}
 
-		const totalScore = timeScore + reactionScore + socialScore;
+		const totalScore = Math.max(0, timeScore + reactionScore + socialScore - penalty);
 		return {
 			id: Number(post.id),
 			score: totalScore,

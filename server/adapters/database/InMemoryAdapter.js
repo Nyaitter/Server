@@ -2911,10 +2911,21 @@ class InMemoryAdapter extends DatabaseAdapter {
 				? new Map()
 				: (this.userKeywordAffinityByUser.get(normalizedViewerId) || new Map());
 
+			const reactedPostIds = normalizedViewerId == null
+				? new Set()
+				: new Set([
+					...(this.likedPostIdsByUser.get(normalizedViewerId) || []),
+					...(this.starredPostIdsByUser.get(normalizedViewerId) || []),
+					...([...this.reposts.keys()]
+						.filter((k) => k.startsWith(`${normalizedViewerId}:`))
+						.map((k) => Number(k.split(':')[1]))),
+				]);
+
 			const scored = scoreRecommendedPosts(candidates, {
 				viewerId: normalizedViewerId,
 				keywordProfile: keywordAffinities,
 				directFollows: directFollowIds,
+				reactedPostIds,
 				limit: normalizedLimit,
 			});
 

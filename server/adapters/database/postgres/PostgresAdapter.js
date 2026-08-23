@@ -2736,11 +2736,13 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		if (!this._affinityCache) this._affinityCache = new Map();
 		if (!this._followCache) this._followCache = new Map();
+		if (!this._reactionCache) this._reactionCache = new Map();
 		if (!this._candidatePostsCache) this._candidatePostsCache = { posts: [], expiresAt: 0 };
 		const now = Date.now();
 
 		let keywordProfile = new Map();
 		let directFollows = new Set();
+		let reactedPostIds = new Set();
 
 		if (validViewerId != null) {
 			const cachedAffinity = this._affinityCache.get(validViewerId);
@@ -2768,6 +2770,23 @@ class PostgresAdapter extends DatabaseAdapter {
 					this._followCache.set(validViewerId, { follows: fset, expiresAt: Date.now() + 60000 });
 				}).catch(() => {});
 			}
+
+			const cachedReactions = this._reactionCache.get(validViewerId);
+			if (cachedReactions && cachedReactions.expiresAt > now) {
+				reactedPostIds = cachedReactions.posts;
+			} else {
+				this.pool.query(
+					`SELECT post_id FROM likes WHERE user_id = $1
+					 UNION
+					 SELECT post_id FROM stars WHERE user_id = $1
+					 UNION
+					 SELECT post_id FROM reposts WHERE user_id = $1`,
+					[validViewerId],
+				).then(({ rows }) => {
+					const rset = new Set(rows.map((r) => Number(r.post_id)));
+					this._reactionCache.set(validViewerId, { posts: rset, expiresAt: Date.now() + 60000 });
+				}).catch(() => {});
+			}
 		}
 
 		let candidateRows = [];
@@ -2790,6 +2809,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			viewerId: validViewerId,
 			keywordProfile,
 			directFollows,
+			reactedPostIds,
 			limit: normalizedLimit,
 		});
 
