@@ -265,7 +265,7 @@ async function processCreatePostAction(context, payload) {
   }
 
   const rawReplyControl = payload.replyControl ?? payload.reply_control ?? 'everyone';
-  const replyControl = ['everyone', 'following', 'mentioned', 'following_or_mentioned', 'mentioned_only'].includes(rawReplyControl)
+  let replyControl = ['everyone', 'following', 'mentioned', 'following_or_mentioned', 'mentioned_only'].includes(rawReplyControl)
     ? (rawReplyControl === 'following_or_mentioned' ? 'following' : (rawReplyControl === 'mentioned_only' ? 'mentioned' : rawReplyControl))
     : 'everyone';
 
