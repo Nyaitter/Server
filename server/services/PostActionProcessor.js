@@ -239,8 +239,12 @@ async function processCreatePostAction(context, payload) {
   }
   if (isAnnouncement && groupId) throw new Error('Global announcements cannot be group posts');
   if (groupAnnouncement && !groupId) throw new Error('Group announcements require a group');
-  if (groupId && repostTo) throw new Error('Group posts cannot quote or repost another post');
-  if (groupAnnouncement && (replyTo || repostTo)) throw new Error('Group announcements cannot be replies or reposts');
+  if (groupAnnouncement && replyTo) throw new Error('Group announcements cannot be replies');
+
+  if (isSimpleRepost) {
+    groupId = null;
+    groupAnnouncement = false;
+  }
 
   validateAttachmentReferences(attachments, userId);
   const relatedPosts = new Map();
@@ -259,14 +263,11 @@ async function processCreatePostAction(context, payload) {
     relatedPosts.set(targetId, target);
   }
 
-  const replyTargetForGroup = replyTo ? relatedPosts.get(replyTo) : null;
-  const replyTargetGroupId = normalizeGroupId(replyTargetForGroup?.groupId ?? replyTargetForGroup?.group_id);
-  if (replyTargetGroupId) {
-    if (groupId && groupId !== replyTargetGroupId) throw new Error('Replies must remain in the same group');
-    groupId = replyTargetGroupId;
+  // 返信は強制的に返信先と同一グループ（またはグループなし）に統一
+  if (replyTo) {
+    const replyTarget = relatedPosts.get(replyTo);
+    groupId = normalizeGroupId(replyTarget?.groupId ?? replyTarget?.group_id);
     groupAnnouncement = false;
-  } else if (groupId && replyTo) {
-    throw new Error('Group posts cannot reply to a non-group post');
   }
 
   if (groupId) {
