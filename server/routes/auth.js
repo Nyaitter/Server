@@ -106,7 +106,7 @@ function serializeLoginUser(user, req) {
     auth_provider: user.auth_provider,
     provider_domain: user.provider_domain || null,
     external_profile: user.external_profile || null,
-    is_imposter: !!user.settings?.imposter?.parent_id,
+    is_imposter: isImposter(user),
     admin: !!user.admin,
   };
 }
