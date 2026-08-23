@@ -72,6 +72,7 @@ function getNotificationText(notification) {
   }
   const actor = getNotificationActorLabel(notification);
   switch (notification?.type) {
+    case 'post': return `${actor} さんが新しいポストを投稿しました。`;
     case 'reply': return `${actor} さんがあなたのポストに返信しました。`;
     case 'quote': return `${actor} さんがあなたのポストを引用しました。`;
     case 'repost': return `${actor} さんがあなたのポストをリポストしました。`;

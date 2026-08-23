@@ -26,11 +26,16 @@ class PushNotificationService {
     );
 
     if (this.enabled) {
-      webpush.setVapidDetails(
-        pushConfig.vapidSubject,
-        pushConfig.vapidPublicKey,
-        pushConfig.vapidPrivateKey,
-      );
+      try {
+        webpush.setVapidDetails(
+          pushConfig.vapidSubject,
+          pushConfig.vapidPublicKey,
+          pushConfig.vapidPrivateKey,
+        );
+      } catch (error) {
+        this.enabled = false;
+        console.warn('[push] Web Push configuration is invalid:', error.message);
+      }
     } else {
       console.warn('[push] Web Push is disabled: VAPID_SUBJECT, VAPID_PUBLIC_KEY, and VAPID_PRIVATE_KEY are required.');
     }
