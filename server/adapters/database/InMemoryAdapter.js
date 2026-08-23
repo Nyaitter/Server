@@ -1521,6 +1521,60 @@ class InMemoryAdapter extends DatabaseAdapter {
 			return Array.from(result.values());
 		}
 
+		async auditAndHealPostCounters(postId) {
+			const id = Number(postId);
+			const post = this.posts.get(id);
+			if (!post) return null;
+
+			let likes = 0;
+			for (const key of this.likes.keys()) {
+				if (Number(key.split(':')[1]) === id) likes += 1;
+			}
+			let stars = 0;
+			for (const key of this.stars.keys()) {
+				if (Number(key.split(':')[1]) === id) stars += 1;
+			}
+			let reposts = 0;
+			for (const candidate of this.posts.values()) {
+				if (Number(candidate.repostTo) === id) reposts += 1;
+			}
+			let replies = 0;
+			for (const candidate of this.posts.values()) {
+				if (Number(candidate.replyTo) === id) replies += 1;
+			}
+
+			this.likeCountByPost.set(id, likes);
+			this.starCountByPost.set(id, stars);
+			this.repostCountByPost.set(id, reposts);
+			this.replyCountByParent.set(id, replies);
+
+			post.likeCount = likes;
+			post.starCount = stars;
+			post.repostCount = reposts;
+			post.replyCount = replies;
+			return post;
+		}
+
+		async auditAndHealUserCounters(userId) {
+			const id = Number(userId);
+			const user = this.users.get(id);
+			if (!user) return null;
+
+			const followers = this.followerIdsByUser.get(id)?.size || 0;
+			const followings = this.followingIdsByUser.get(id)?.size || 0;
+			let posts = 0;
+			for (const candidate of this.posts.values()) {
+				if (Number(candidate.userId) === id && !candidate.repostTo) posts += 1;
+			}
+
+			return {
+				userId: id,
+				followerCount: followers,
+				followingCount: followings,
+				postCount: posts,
+			};
+		}
+
 		async getPostMetricsBatch(postIds, currentUserId = null) {
 			const ids = [...new Set((postIds || []).map(Number).filter(Number.isInteger))];
 			return ids.map((id) => ({

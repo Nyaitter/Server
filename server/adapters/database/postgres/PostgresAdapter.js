@@ -2352,6 +2352,56 @@ class PostgresAdapter extends DatabaseAdapter {
 		return Array.from(resolved.values());
 	}
 
+	async auditAndHealPostCounters(postId) {
+		const id = Number(postId);
+		if (!Number.isSafeInteger(id) || id <= 0) return null;
+
+		return this._withTransaction(async (client) => {
+			const [likeRes, starRes, repostRes, replyRes] = await Promise.all([
+				client.query('SELECT COUNT(*)::bigint AS count FROM likes WHERE post_id = $1', [id]),
+				client.query('SELECT COUNT(*)::bigint AS count FROM stars WHERE post_id = $1', [id]),
+				client.query('SELECT COUNT(*)::bigint AS count FROM reposts WHERE post_id = $1', [id]),
+				client.query('SELECT COUNT(*)::bigint AS count FROM posts WHERE reply_to = $1', [id]),
+			]);
+
+			const likes = Number(likeRes.rows[0]?.count || 0);
+			const stars = Number(starRes.rows[0]?.count || 0);
+			const reposts = Number(repostRes.rows[0]?.count || 0);
+			const replies = Number(replyRes.rows[0]?.count || 0);
+
+			const { rows } = await client.query(
+				`UPDATE posts
+				 SET like_count = $2, star_count = $3, repost_count = $4, reply_count = $5
+				 WHERE id = $1
+				 RETURNING *`,
+				[id, likes, stars, reposts, replies],
+			);
+			const post = normalizePostRow(rows[0] || null);
+			if (post) {
+				this._getPostCache()?.set(post.id, post);
+			}
+			return post;
+		});
+	}
+
+	async auditAndHealUserCounters(userId) {
+		const id = Number(userId);
+		if (!Number.isSafeInteger(id) || id <= 0) return null;
+
+		const [followerRes, followingRes, postRes] = await Promise.all([
+			this.pool.query('SELECT COUNT(*)::bigint AS count FROM follows WHERE following_id = $1', [id]),
+			this.pool.query('SELECT COUNT(*)::bigint AS count FROM follows WHERE follower_id = $1', [id]),
+			this.pool.query('SELECT COUNT(*)::bigint AS count FROM posts WHERE user_id = $1 AND repost_to IS NULL', [id]),
+		]);
+
+		return {
+			userId: id,
+			followerCount: Number(followerRes.rows[0]?.count || 0),
+			followingCount: Number(followingRes.rows[0]?.count || 0),
+			postCount: Number(postRes.rows[0]?.count || 0),
+		};
+	}
+
 	async getPostMetricsBatch(postIds, currentUserId = null) {
 		const ids = [...new Set((postIds || []).map(Number)
 			.filter((id) => Number.isSafeInteger(id) && id > 0))];

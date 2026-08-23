@@ -228,6 +228,14 @@ class DatabaseAdapter {
 		}
 
 		
+	async auditAndHealPostCounters(postId) {
+		return null;
+	}
+
+	async auditAndHealUserCounters(userId) {
+		return null;
+	}
+
 	async updatePost(postId, fields) {
 		throw new Error('updatePost() must be implemented');
 	}

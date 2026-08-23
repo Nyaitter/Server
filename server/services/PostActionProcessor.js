@@ -26,6 +26,21 @@ const {
   listActiveGroupMemberIds,
 } = require('./GroupService');
 
+const idempotencyCache = new Map();
+const recentUserPostSignatures = new Map();
+
+function pruneIdempotencyCache(now = Date.now()) {
+  for (const [key, entry] of idempotencyCache) {
+    if (!entry || now - entry.createdAt > 60000) idempotencyCache.delete(key);
+  }
+  for (const [userId, entry] of recentUserPostSignatures) {
+    if (!entry || now - entry.createdAt > 5000) recentUserPostSignatures.delete(userId);
+  }
+}
+
+const idempotencyPruner = setInterval(pruneIdempotencyCache, 30000);
+idempotencyPruner.unref();
+
 function decodeBase64File(value) {
   if (typeof value !== 'string' || value.length === 0 || value.length % 4 !== 0) {
     throw new Error('Invalid base64 file data');
@@ -197,6 +212,22 @@ async function processCreatePostAction(context, payload) {
   let group = null;
   const isSimpleRepost = content.length === 0 && repostTo != null;
 
+  const clientNonce = typeof payload.clientNonce === 'string' ? payload.clientNonce.trim() : (
+    typeof payload.client_nonce === 'string' ? payload.client_nonce.trim() : null
+  );
+  const idempotencyKey = clientNonce ? `${userId}:${clientNonce}` : null;
+  if (idempotencyKey && idempotencyCache.has(idempotencyKey)) {
+    return idempotencyCache.get(idempotencyKey).post;
+  }
+
+  // 短時間の完全同一ポスト連投検知 (Flood Protection)
+  const now = Date.now();
+  const signature = `${userId}:${replyTo || 0}:${repostTo || 0}:${groupId || 0}:${content}`;
+  const recentSignature = recentUserPostSignatures.get(userId);
+  if (recentSignature && recentSignature.signature === signature && (now - recentSignature.createdAt) < 2500 && attachments.length === 0) {
+    return recentSignature.post;
+  }
+
   if (!content && attachments.length === 0 && !isSimpleRepost) {
     throw new Error('content, attachments, or repost_to is required');
   }
@@ -275,6 +306,11 @@ async function processCreatePostAction(context, payload) {
     replyTo,
     repostTo,
   });
+
+  if (idempotencyKey) {
+    idempotencyCache.set(idempotencyKey, { post, createdAt: now });
+  }
+  recentUserPostSignatures.set(userId, { signature, createdAt: now, post });
 
   const replyTarget = replyTo ? relatedPosts.get(replyTo) : null;
   const repostTarget = repostTo ? relatedPosts.get(repostTo) : null;
