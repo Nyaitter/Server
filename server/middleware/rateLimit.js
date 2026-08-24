@@ -2,15 +2,37 @@
 
 const config = require('../config');
 
+/**
+ * 堅牢なIPアドレス抽出ヘルパー
+ * プロキシ背後（CF-Connecting-IP, X-Forwarded-For等）および直接接続から安全にIPを取得
+ */
+function getClientIp(req) {
+  if (config.server?.trustProxy) {
+    const cfIp = req.headers['cf-connecting-ip'];
+    if (typeof cfIp === 'string' && cfIp.trim()) return cfIp.trim();
+
+    const xRealIp = req.headers['x-real-ip'];
+    if (typeof xRealIp === 'string' && xRealIp.trim()) return xRealIp.trim();
+
+    const xForwardedFor = req.headers['x-forwarded-for'];
+    if (typeof xForwardedFor === 'string' && xForwardedFor.trim()) {
+      const ips = xForwardedFor.split(',');
+      const clientIp = ips[0]?.trim();
+      if (clientIp) return clientIp;
+    }
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
 function createRateLimiter(options = {}) {
   const windowMs = options.windowMs || config.rateLimit?.general?.windowMs || 60000;
   const max = options.max || config.rateLimit?.general?.max || 1000;
   const keyGenerator = options.keyGenerator || ((req) => {
     if (req.user?.id) return `user:${req.user.id}`;
-    return req.ip || 'unknown';
+    return `ip:${getClientIp(req)}`;
   });
 
-  const store = new Map(); // key -> { count, resetTime }
+  const store = new Map(); // key -> { count, resetTime, blockedUntil }
   const maxTrackedKeys = Math.max(
     100,
     Number(options.maxTrackedKeys ?? config.rateLimit?.maxTrackedKeys) || 10000,
@@ -18,14 +40,14 @@ function createRateLimiter(options = {}) {
 
   const pruneExpiredEntries = (now = Date.now()) => {
     for (const [key, entry] of store) {
-      if (!entry || entry.resetTime <= now) store.delete(key);
+      if (!entry || (entry.resetTime <= now && (!entry.blockedUntil || entry.blockedUntil <= now))) {
+        store.delete(key);
+      }
     }
   };
 
   const trimStore = (now = Date.now()) => {
     pruneExpiredEntries(now);
-    // Map iteration is insertion-ordered, so evict the oldest active keys only
-    // under unusually high cardinality to bound memory use.
     while (store.size >= maxTrackedKeys) {
       const oldestKey = store.keys().next().value;
       if (oldestKey === undefined) break;
@@ -33,7 +55,6 @@ function createRateLimiter(options = {}) {
     }
   };
 
-  // Background pruning on an unref interval keeps expired keys from accumulating.
   const timer = setInterval(() => {
     pruneExpiredEntries();
   }, Math.max(10000, windowMs));
@@ -48,13 +69,33 @@ function createRateLimiter(options = {}) {
     const now = Date.now();
     let entry = store.get(key);
 
+    // 継続的過剰リクエスト（DoS / Brute Force）による一時ブロック判定
+    if (entry?.blockedUntil && now < entry.blockedUntil) {
+      const retryAfterSec = Math.max(1, Math.ceil((entry.blockedUntil - now) / 1000));
+      res.setHeader('Retry-After', retryAfterSec);
+      return res.status(429).json({
+        error: 'Too Many Requests',
+        message: '過剰なリクエストが検出されたため、一時的にアクセスを制限しています。',
+      });
+    }
+
     if (!entry || now >= entry.resetTime) {
       if (!entry) trimStore(now);
-      entry = { count: 0, resetTime: now + windowMs };
+      entry = { count: 0, resetTime: now + windowMs, blockedUntil: 0 };
       store.set(key, entry);
     }
 
     entry.count += 1;
+
+    // 上限の2倍を超える過剰リクエストを発行した場合はクールダウンブロック（5分）
+    if (entry.count > max * 2) {
+      entry.blockedUntil = now + Math.max(windowMs * 5, 300000);
+      res.setHeader('Retry-After', Math.max(1, Math.ceil((entry.blockedUntil - now) / 1000)));
+      return res.status(429).json({
+        error: 'Too Many Requests',
+        message: '過剰なリクエストが検出されたため、一時的にアクセスを制限しています。',
+      });
+    }
 
     if (entry.count > max) {
       res.setHeader('Retry-After', Math.max(1, Math.ceil((entry.resetTime - now) / 1000)));
@@ -82,4 +123,5 @@ module.exports = {
   createRateLimiter,
   generalLimiter,
   authLimiter,
+  getClientIp,
 };

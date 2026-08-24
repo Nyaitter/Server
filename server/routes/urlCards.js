@@ -5,7 +5,7 @@ const { getUrlCard } = require('../services/UrlCardService');
 const { getPublicUrl } = require('../utils/nyaitterAddress');
 
 const router = express.Router();
-const urlCardLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 300 });
+const urlCardLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 60 });
 
 router.get('/', optionalAuth, urlCardLimiter, async (req, res) => {
   const url = typeof req.query.url === 'string' ? req.query.url : '';

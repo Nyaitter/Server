@@ -187,9 +187,9 @@ class TimelineCacheManager {
 }
 
 const timelineCacheManager = new TimelineCacheManager({
-	ttlMs: 300000, // 300s (5 minutes) durable TTL
-	maxEntries: 1000,
-	maxTimelineSize: 60,
+	ttlMs: 900000, // 900s (15 minutes) durable TTL
+	maxEntries: 5000,
+	maxTimelineSize: 100,
 });
 
 module.exports = timelineCacheManager;

@@ -6,16 +6,16 @@ const { serializePost } = require('../utils/serialize');
 const MAX_URL_LENGTH = 2048;
 const MAX_HTML_BYTES = 128 * 1024;
 const MAX_OEMBED_BYTES = 64 * 1024;
-const MAX_REDIRECTS = 10;
-const REQUEST_TIMEOUT_MS = 20000;
-const CACHE_TTL_MS = 10 * 60 * 1000;
-const MAX_CACHE_ENTRIES = 200;
+const MAX_REDIRECTS = 5;
+const REQUEST_TIMEOUT_MS = 8000;
+const CACHE_TTL_MS = 15 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 1000;
 const cardCache = new Map();
 
 const urlCardAgent = new https.Agent({
   keepAlive: true,
   keepAliveMsecs: 10000,
-  maxSockets: 20,
+  maxSockets: 30,
   maxFreeSockets: 5,
   timeout: REQUEST_TIMEOUT_MS,
 });

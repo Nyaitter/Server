@@ -513,6 +513,11 @@ router.get('/recommended', optionalAuth, async (req, res) => {
 router.get('/page', optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const mode = String(req.query.mode || 'timeline');
+	if (mode === 'search') {
+		let blocked = false;
+		searchLimiter(req, res, () => {});
+		if (res.headersSent) return;
+	}
 	const tab = String(req.query.tab || 'foryou');
 	const isDiscoverableMode = [
 		'timeline',

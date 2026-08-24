@@ -22,6 +22,7 @@ class ConnectionManager {
     this.connectionsByUser = new Map();
     // 生のセッショントークンを保持せず、Push購読に保存されている値と同じハッシュだけを紐付ける。
     this.sessionHashBySocket = new WeakMap();
+    this.maxConnectionsPerUser = 20; // 1ユーザーあたりの最大WebSocket接続数（DoS/リソース枯渇防止）
   }
 
   register(userId, socket, sessionTokenHash = null) {
@@ -33,7 +34,21 @@ class ConnectionManager {
     if (!this.connectionsByUser.has(normalizedUserId)) {
       this.connectionsByUser.set(normalizedUserId, new Set());
     }
-    this.connectionsByUser.get(normalizedUserId).add(socket);
+    const userSockets = this.connectionsByUser.get(normalizedUserId);
+
+    // 接続数制限を超えた場合、最も古い接続を切断して新規接続を受け入れる
+    if (userSockets.size >= this.maxConnectionsPerUser) {
+      const oldestSocket = userSockets.values().next().value;
+      if (oldestSocket) {
+        userSockets.delete(oldestSocket);
+        this.sessionHashBySocket.delete(oldestSocket);
+        try {
+          oldestSocket.close(1008, 'Max concurrent connections exceeded');
+        } catch (_) {}
+      }
+    }
+
+    userSockets.add(socket);
     if (typeof sessionTokenHash === 'string' && sessionTokenHash) {
       this.sessionHashBySocket.set(socket, sessionTokenHash);
     }
