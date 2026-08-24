@@ -360,6 +360,7 @@ router.post('/link/:provider/verify', requireAuth, async (req, res) => {
     const result = await authService.linkProvider(provider, req.user.id, req, req.body, {
       config,
       db,
+      verifyTurnstile: verifyTurnstileToken,
     });
     res.json({
       success: true,
