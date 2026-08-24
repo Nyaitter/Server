@@ -5220,12 +5220,13 @@ class PostgresAdapter extends DatabaseAdapter {
 				[pId, uId],
 			);
 
-			// 新規投票を挿入
+			// 新規投票を挿入（アダプター共通でアプリ側でユニークIDを明示的に生成）
 			for (const optId of targetOptionIds) {
+				const voteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
 				await client.query(
-					`INSERT INTO poll_votes (poll_id, user_id, option_id, other_text, created_at)
-					 VALUES ($1, $2, $3, $4, NOW())`,
-					[Number(pId) || pId, Number(uId) || uId, optId, optId === -1 ? sanitizedOtherText : null],
+					`INSERT INTO poll_votes (id, poll_id, user_id, option_id, other_text, created_at)
+					 VALUES ($1, $2, $3, $4, $5, NOW())`,
+					[voteId, Number(pId) || pId, Number(uId) || uId, optId, optId === -1 ? sanitizedOtherText : null],
 				);
 			}
 

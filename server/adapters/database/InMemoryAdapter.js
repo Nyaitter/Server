@@ -3865,9 +3865,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 		}
 
-		// 新規投票を挿入（UUID生成）
+		// 新規投票を挿入（アダプター共通でアプリ側でユニークIDを明示的に生成）
 		for (const optId of targetOptionIds) {
-			const newVoteId = crypto.randomUUID();
+			const newVoteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
 			const vote = {
 				id: newVoteId,
 				poll_id: pId,
@@ -3877,6 +3877,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				created_at: new Date().toISOString(),
 			};
 			this.pollVotes.set(newVoteId, vote);
+			this.pollVotes.set(String(newVoteId), vote);
 			voteIds.add(newVoteId);
 		}
 

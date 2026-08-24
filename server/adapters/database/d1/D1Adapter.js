@@ -1534,6 +1534,36 @@ class D1Adapter extends DatabaseAdapter {
 		const res = await this._read(`/polls/${requireId(pollId, 'pollId')}/voters`, { cacheSeconds: 0 });
 		return Array.isArray(res) ? res : [];
 	}
+
+	// ==================== Post Activities ====================
+
+	async getRepostsOfPost(postId, limit = 50) {
+		const list = await this._read(this._query(`/posts/${requireId(postId, 'postId')}/reposts`, {
+			limit: this._limit(limit, 50, 100),
+		}), { cacheSeconds: 0 });
+		return Array.isArray(list) ? list : [];
+	}
+
+	async getLikesOfPost(postId, limit = 50) {
+		const list = await this._read(this._query(`/posts/${requireId(postId, 'postId')}/likes`, {
+			limit: this._limit(limit, 50, 100),
+		}), { cacheSeconds: 0 });
+		return Array.isArray(list) ? list : [];
+	}
+
+	async getStarsOfPost(postId, limit = 50) {
+		const list = await this._read(this._query(`/posts/${requireId(postId, 'postId')}/stars`, {
+			limit: this._limit(limit, 50, 100),
+		}), { cacheSeconds: 0 });
+		return Array.isArray(list) ? list : [];
+	}
+
+	async getQuotesOfPost(postId, limit = 50) {
+		const list = await this._read(this._query(`/posts/${requireId(postId, 'postId')}/quotes`, {
+			limit: this._limit(limit, 50, 100),
+		}), { cacheSeconds: 0 });
+		return Array.isArray(list) ? list.map(normalizePost) : [];
+	}
 }
 
 module.exports = D1Adapter;
