@@ -21,6 +21,7 @@ const {
 const { normalizeSnapshot } = require('../../../services/DataMigrationService');
 const { scoreRecommendedPosts } = require('../../../utils/recommendation');
 const { extractViewContent } = require('../../../utils/viewContent');
+const { isFuzzyMatch, calculateStringSimilarity } = require('../../../utils/fuzzySearch');
 
 function parseJsonSafe(value, fallback = null) {
 	if (value === null || value === undefined) return fallback;
@@ -850,22 +851,40 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	async searchUsers(query, limit = 20, offset = 0) {
 		const q = String(query || '').trim();
-		const queryPattern = `%${q.toLowerCase()}%`;
-		const digits = q.replace(/^#/, '').replace(/\D/g, '');
+		if (!q) return [];
 		const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
 		const safeOffset = Math.max(Number(offset) || 0, 0);
+		const digits = q.replace(/^#/, '').replace(/\D/g, '');
 
+		// 80% あいまい検索のため、多めに取得してフィルタ
 		const { rows } = await this.pool.query(
 			`SELECT *
 			 FROM users
-			 WHERE LOWER(COALESCE(scid, '')) LIKE $1
-				OR LOWER(COALESCE(name, '')) LIKE $1
-				OR LOWER(COALESCE(handle, '')) LIKE $1
-				OR CAST(id AS TEXT) LIKE $4
-			 ORDER BY id DESC LIMIT $2 OFFSET $3`,
-			[queryPattern, safeLimit, safeOffset, digits ? `%${digits}%` : queryPattern],
+			 ORDER BY id DESC LIMIT 500`,
 		);
-		return rows.map(normalizeUserRow);
+
+		const normalizedQ = q.toLowerCase();
+		const matched = [];
+		for (const row of rows) {
+			const user = normalizeUserRow(row);
+			const nyaitterId = String(user.nyaitter_id || user.id || '').toLowerCase();
+			const scid = String(user.scid || '').toLowerCase();
+			const name = String(user.name || '').toLowerCase();
+			const profile = String(user.me || '').toLowerCase();
+			const idStr = String(user.id || '');
+
+			if (
+				(digits && idStr.includes(digits)) ||
+				nyaitterId.includes(normalizedQ) ||
+				isFuzzyMatch(scid, normalizedQ, 0.8) ||
+				isFuzzyMatch(name, normalizedQ, 0.8) ||
+				isFuzzyMatch(profile, normalizedQ, 0.8)
+			) {
+				matched.push(user);
+			}
+		}
+
+		return matched.slice(safeOffset, safeOffset + safeLimit);
 	}
 
 	async getAllUsers() {
@@ -2934,38 +2953,56 @@ class PostgresAdapter extends DatabaseAdapter {
 		const normalizedBeforeId = Number.isInteger(Number(beforeId)) && Number(beforeId) > 0
 			? Number(beforeId)
 			: null;
-		const pattern = `%${q.toLowerCase()}%`;
+
+		// 検索候補を広めに取得して80%あいまい判定を適用
+		const fetchLimit = Math.max(200, (normalizedOffset + normalizedLimit) * 3);
 		const { rows } = normalizedBeforeId != null
 			? await this.pool.query(
-				`SELECT id FROM posts WHERE group_id IS NULL AND (LOWER(COALESCE(view_content, content)) LIKE $1 OR LOWER(content) LIKE $1) AND id < $2
-					 ORDER BY created_at DESC, id DESC LIMIT $3`,
-				[pattern, normalizedBeforeId, normalizedLimit + 1],
+				`SELECT id, content, view_content, tags FROM posts
+				 WHERE group_id IS NULL AND id < $1
+				 ORDER BY created_at DESC, id DESC LIMIT $2`,
+				[normalizedBeforeId, fetchLimit],
 			)
 			: await this.pool.query(
-				`SELECT id FROM posts WHERE group_id IS NULL AND (LOWER(COALESCE(view_content, content)) LIKE $1 OR LOWER(content) LIKE $1)
-					 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
-				[pattern, normalizedLimit + 1, normalizedOffset],
+				`SELECT id, content, view_content, tags FROM posts
+				 WHERE group_id IS NULL
+				 ORDER BY created_at DESC, id DESC LIMIT $1`,
+				[fetchLimit],
 			);
-		const ids = rows.slice(0, normalizedLimit).map((row) => Number(row.id));
+
+		const matched = [];
+		for (const row of rows) {
+			const targetText = String(row.view_content || extractViewContent(row.content || '')).toLowerCase();
+			const contentText = String(row.content || '').toLowerCase();
+			const rawTags = parseJsonSafe(row.tags, []);
+			const tags = Array.isArray(rawTags) ? rawTags : [];
+			if (
+				isFuzzyMatch(targetText, q, 0.8) ||
+				isFuzzyMatch(contentText, q, 0.8) ||
+				tags.some((tag) => isFuzzyMatch(String(tag), q, 0.8))
+			) {
+				matched.push(Number(row.id));
+			}
+		}
+
+		const window = matched.slice(normalizedOffset, normalizedOffset + normalizedLimit + 1);
+		const ids = window.slice(0, normalizedLimit);
 		return {
 			ids,
-			has_more: rows.length > normalizedLimit,
-			next_cursor: rows.length > normalizedLimit && ids.length > 0 ? ids[ids.length - 1] : null,
+			has_more: window.length > normalizedLimit,
+			next_cursor: window.length > normalizedLimit && ids.length > 0 ? ids[ids.length - 1] : null,
 		};
 	}
 
 	async searchPosts(query, limit = 20) {
-		const q = String(query || '').trim();
-		if (!q) return [];
-		const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+		const result = await this.searchPostIds(query, limit, 0);
+		if (!result.ids.length) return [];
 		const { rows } = await this.pool.query(
-			`SELECT * FROM posts 
-				 WHERE group_id IS NULL AND (LOWER(COALESCE(view_content, content)) LIKE $1 OR LOWER(content) LIKE $1)
-			 ORDER BY created_at DESC, id DESC
-			 LIMIT $2`,
-			[`%${q.toLowerCase()}%`, safeLimit],
+			'SELECT * FROM posts WHERE id = ANY($1::int[])',
+			[result.ids],
 		);
-		return rows.map(normalizePostRow);
+		const map = new Map(rows.map((r) => [Number(r.id), normalizePostRow(r)]));
+		return result.ids.map((id) => map.get(id)).filter(Boolean);
 	}
 
 	async getReplyPostIds(parentPostId, limit = 50, offset = 0) {
@@ -3163,18 +3200,89 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 		}
 
-		const mapToSortedList = (userMap) =>
-			Array.from(userMap.entries())
-				.sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0], 'ja'))
-				.slice(0, normalizedLimit)
-				.map(([tag_name, userSet]) => ({
-					tag_name,
-					occurrence_count: userSet.size,
-				}));
+		const calculateTagSimilarity = (str1, str2) => {
+			const s1 = String(str1 || '').trim().toLowerCase().replace(/^[#＃]/, '');
+			const s2 = String(str2 || '').trim().toLowerCase().replace(/^[#＃]/, '');
+			if (s1 === s2) return 1.0;
+			if (!s1 || !s2) return 0.0;
 
-		const hashtagsList = mapToSortedList(hashtagUsers);
-		const wordsList = mapToSortedList(wordUsers);
-		const tagsList = mapToSortedList(tagUsers);
+			const len1 = s1.length;
+			const len2 = s2.length;
+			const maxLen = Math.max(len1, len2);
+			const minLen = Math.min(len1, len2);
+
+			const isSubstring = s1.includes(s2) || s2.includes(s1);
+			const substringSim = isSubstring ? minLen / maxLen : 0;
+
+			const d = Array.from({ length: len1 + 1 }, () => new Array(len2 + 1).fill(0));
+			for (let i = 0; i <= len1; i++) d[i][0] = i;
+			for (let j = 0; j <= len2; j++) d[0][j] = j;
+			for (let i = 1; i <= len1; i++) {
+				for (let j = 1; j <= len2; j++) {
+					const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+					d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+				}
+			}
+			const levSim = 1 - d[len1][len2] / maxLen;
+
+			let diceSim = 0;
+			if (len1 >= 2 && len2 >= 2) {
+				const bg1 = new Map();
+				for (let i = 0; i < len1 - 1; i++) {
+					const bg = s1.slice(i, i + 2);
+					bg1.set(bg, (bg1.get(bg) || 0) + 1);
+				}
+				const bg2 = new Map();
+				for (let i = 0; i < len2 - 1; i++) {
+					const bg = s2.slice(i, i + 2);
+					bg2.set(bg, (bg2.get(bg) || 0) + 1);
+				}
+				let intersection = 0;
+				for (const [bg, count1] of bg1.entries()) {
+					if (bg2.has(bg)) intersection += Math.min(count1, bg2.get(bg));
+				}
+				diceSim = (2 * intersection) / ((len1 - 1) + (len2 - 1));
+			}
+
+			return Math.max(substringSim, levSim, diceSim);
+		};
+
+		const mapToMergedSortedList = (userMap, threshold = 0.75) => {
+			const sorted = Array.from(userMap.entries())
+				.sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0], 'ja'));
+
+			const clusters = [];
+			for (const [tag, users] of sorted) {
+				let merged = false;
+				for (const cluster of clusters) {
+					const isBothHashtags = cluster.representative.startsWith('#') && tag.startsWith('#');
+					const isBothNonHashtags = !cluster.representative.startsWith('#') && !tag.startsWith('#');
+					if (isBothHashtags || isBothNonHashtags) {
+						const sim = calculateTagSimilarity(cluster.representative, tag);
+						if (sim > threshold) {
+							for (const u of users) cluster.users.add(u);
+							merged = true;
+							break;
+						}
+					}
+				}
+				if (!merged) {
+					clusters.push({ representative: tag, users: new Set(users) });
+				}
+			}
+
+			return clusters
+				.sort((a, b) => b.users.size - a.users.size || a.representative.localeCompare(b.representative, 'ja'))
+				.slice(0, normalizedLimit)
+				.map((c) => ({
+					tag_name: c.representative,
+					occurrence_count: c.users.size,
+				}));
+		};
+
+		const hashtagsList = mapToMergedSortedList(hashtagUsers);
+		const wordsList = mapToMergedSortedList(wordUsers);
+		const tagsList = mapToMergedSortedList(tagUsers);
 
 		const type = typeof options === 'string' ? options : options?.type;
 		if (type === 'hashtags') return hashtagsList;
@@ -3194,7 +3302,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
 			for (const u of set) mergedUsers.get(k).add(u);
 		}
-		const trendsList = mapToSortedList(mergedUsers);
+		const trendsList = mapToMergedSortedList(mergedUsers);
 
 		if (options?.summary || options?.detailed) {
 			return {

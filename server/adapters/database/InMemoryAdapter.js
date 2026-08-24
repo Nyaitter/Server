@@ -12,6 +12,7 @@ const {
 } = require('../../utils/attachmentKeys');
 const { scoreRecommendedPosts } = require('../../utils/recommendation');
 const { extractViewContent } = require('../../utils/viewContent');
+const { isFuzzyMatch, calculateStringSimilarity } = require('../../utils/fuzzySearch');
 
 class InMemoryAdapter extends DatabaseAdapter {
 	constructor() {
@@ -797,7 +798,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			return [];
 		}
 
-		const q = query.toLowerCase();
+		const q = query.toLowerCase().trim();
 		const safeLimit = Math.max(Number(limit) || 0, 0);
 		const safeOffset = Math.max(Number(offset) || 0, 0);
 		const results = [];
@@ -813,9 +814,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 			const profile = String(user.me || '').toLowerCase();
 			if (
 				nyaitterId.includes(q.replace(/^#/, '#')) ||
-				scid.includes(q) ||
-				name.includes(q) ||
-				profile.includes(q)
+				isFuzzyMatch(scid, q, 0.8) ||
+				isFuzzyMatch(name, q, 0.8) ||
+				isFuzzyMatch(profile, q, 0.8)
 			) {
 				results.push(this._normalizeUserBlockList(user));
 			}
@@ -3022,7 +3023,13 @@ class InMemoryAdapter extends DatabaseAdapter {
 				const post = this.posts.get(id);
 				if (!post || post.groupId || post.group_id || (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)) continue;
 				const targetText = String(post.viewContent || post.view_content || extractViewContent(post.content || '')).toLowerCase();
-				if (!targetText.includes(q) && !(post.content || '').toLowerCase().includes(q)) continue;
+				const contentText = String(post.content || '').toLowerCase();
+				const tags = Array.isArray(post.tags) ? post.tags : [];
+				const isMatched =
+					isFuzzyMatch(targetText, q, 0.8) ||
+					isFuzzyMatch(contentText, q, 0.8) ||
+					tags.some((tag) => isFuzzyMatch(String(tag), q, 0.8));
+				if (!isMatched) continue;
 				matched.push(id);
 				if (matched.length >= normalizedOffset + normalizedLimit + 1) break;
 			}
@@ -3092,18 +3099,89 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 		}
 
-		const mapToSortedList = (userMap) =>
-			Array.from(userMap.entries())
-				.sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0], 'ja'))
-				.slice(0, normalizedLimit)
-				.map(([tag_name, userSet]) => ({
-					tag_name,
-					occurrence_count: userSet.size,
-				}));
+		const calculateTagSimilarity = (str1, str2) => {
+			const s1 = String(str1 || '').trim().toLowerCase().replace(/^[#＃]/, '');
+			const s2 = String(str2 || '').trim().toLowerCase().replace(/^[#＃]/, '');
+			if (s1 === s2) return 1.0;
+			if (!s1 || !s2) return 0.0;
 
-		const hashtagsList = mapToSortedList(hashtagUsers);
-		const wordsList = mapToSortedList(wordUsers);
-		const tagsList = mapToSortedList(tagUsers);
+			const len1 = s1.length;
+			const len2 = s2.length;
+			const maxLen = Math.max(len1, len2);
+			const minLen = Math.min(len1, len2);
+
+			const isSubstring = s1.includes(s2) || s2.includes(s1);
+			const substringSim = isSubstring ? minLen / maxLen : 0;
+
+			const d = Array.from({ length: len1 + 1 }, () => new Array(len2 + 1).fill(0));
+			for (let i = 0; i <= len1; i++) d[i][0] = i;
+			for (let j = 0; j <= len2; j++) d[0][j] = j;
+			for (let i = 1; i <= len1; i++) {
+				for (let j = 1; j <= len2; j++) {
+					const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+					d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+				}
+			}
+			const levSim = 1 - d[len1][len2] / maxLen;
+
+			let diceSim = 0;
+			if (len1 >= 2 && len2 >= 2) {
+				const bg1 = new Map();
+				for (let i = 0; i < len1 - 1; i++) {
+					const bg = s1.slice(i, i + 2);
+					bg1.set(bg, (bg1.get(bg) || 0) + 1);
+				}
+				const bg2 = new Map();
+				for (let i = 0; i < len2 - 1; i++) {
+					const bg = s2.slice(i, i + 2);
+					bg2.set(bg, (bg2.get(bg) || 0) + 1);
+				}
+				let intersection = 0;
+				for (const [bg, count1] of bg1.entries()) {
+					if (bg2.has(bg)) intersection += Math.min(count1, bg2.get(bg));
+				}
+				diceSim = (2 * intersection) / ((len1 - 1) + (len2 - 1));
+			}
+
+			return Math.max(substringSim, levSim, diceSim);
+		};
+
+		const mapToMergedSortedList = (userMap, threshold = 0.75) => {
+			const sorted = Array.from(userMap.entries())
+				.sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0], 'ja'));
+
+			const clusters = [];
+			for (const [tag, users] of sorted) {
+				let merged = false;
+				for (const cluster of clusters) {
+					const isBothHashtags = cluster.representative.startsWith('#') && tag.startsWith('#');
+					const isBothNonHashtags = !cluster.representative.startsWith('#') && !tag.startsWith('#');
+					if (isBothHashtags || isBothNonHashtags) {
+						const sim = calculateTagSimilarity(cluster.representative, tag);
+						if (sim > threshold) {
+							for (const u of users) cluster.users.add(u);
+							merged = true;
+							break;
+						}
+					}
+				}
+				if (!merged) {
+					clusters.push({ representative: tag, users: new Set(users) });
+				}
+			}
+
+			return clusters
+				.sort((a, b) => b.users.size - a.users.size || a.representative.localeCompare(b.representative, 'ja'))
+				.slice(0, normalizedLimit)
+				.map((c) => ({
+					tag_name: c.representative,
+					occurrence_count: c.users.size,
+				}));
+		};
+
+		const hashtagsList = mapToMergedSortedList(hashtagUsers);
+		const wordsList = mapToMergedSortedList(wordUsers);
+		const tagsList = mapToMergedSortedList(tagUsers);
 
 		const type = typeof options === 'string' ? options : options?.type;
 		if (type === 'hashtags') return hashtagsList;
@@ -3124,7 +3202,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
 			for (const u of set) mergedUsers.get(k).add(u);
 		}
-		const trendsList = mapToSortedList(mergedUsers);
+		const trendsList = mapToMergedSortedList(mergedUsers);
 
 		if (options?.summary || options?.detailed) {
 			return {

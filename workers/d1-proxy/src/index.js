@@ -82,6 +82,74 @@ function normalizePostTags(value) {
 		.slice(0, 10);
 }
 
+function calculateStringSimilarity(str1, str2) {
+	const s1 = String(str1 || '').trim().toLowerCase().replace(/^[#＃]/, '');
+	const s2 = String(str2 || '').trim().toLowerCase().replace(/^[#＃]/, '');
+	if (s1 === s2) return 1.0;
+	if (!s1 || !s2) return 0.0;
+
+	const len1 = s1.length;
+	const len2 = s2.length;
+	const maxLen = Math.max(len1, len2);
+	const minLen = Math.min(len1, len2);
+
+	const isSubstring = s1.includes(s2) || s2.includes(s1);
+	const substringSim = isSubstring ? minLen / maxLen : 0;
+
+	const d = Array.from({ length: len1 + 1 }, () => new Array(len2 + 1).fill(0));
+	for (let i = 0; i <= len1; i++) d[i][0] = i;
+	for (let j = 0; j <= len2; j++) d[0][j] = j;
+
+	for (let i = 1; i <= len1; i++) {
+		for (let j = 1; j <= len2; j++) {
+			const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+			d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+		}
+	}
+	const levSim = 1 - d[len1][len2] / maxLen;
+
+	let diceSim = 0;
+	if (len1 >= 2 && len2 >= 2) {
+		const bg1 = new Map();
+		for (let i = 0; i < len1 - 1; i++) {
+			const bg = s1.slice(i, i + 2);
+			bg1.set(bg, (bg1.get(bg) || 0) + 1);
+		}
+		let intersection = 0;
+		for (let i = 0; i < len2 - 1; i++) {
+			const bg = s2.slice(i, i + 2);
+			if (bg1.has(bg) && bg1.get(bg) > 0) {
+				intersection++;
+				bg1.set(bg, bg1.get(bg) - 1);
+			}
+		}
+		diceSim = (2 * intersection) / ((len1 - 1) + (len2 - 1));
+	}
+
+	return Math.max(substringSim, levSim, diceSim);
+}
+
+function isFuzzyMatch(text, query, threshold = 0.8) {
+	const target = String(text || '').trim().toLowerCase();
+	const q = String(query || '').trim().toLowerCase().replace(/^[#＃]/, '');
+	if (!target || !q) return false;
+	if (target.includes(q)) return true;
+
+	const qLen = q.length;
+	if (qLen <= 1) return false;
+
+	for (const windowLen of [qLen, qLen - 1, qLen + 1]) {
+		if (windowLen <= 0 || windowLen > target.length) continue;
+		for (let i = 0; i <= target.length - windowLen; i++) {
+			const sub = target.slice(i, i + windowLen);
+			const sim = calculateStringSimilarity(sub, q);
+			if (sim >= threshold) return true;
+		}
+	}
+
+	return false;
+}
+
 function createAttachmentReplacementMap(replacements) {
 	const replacementMap = new Map();
 	for (const replacement of Array.isArray(replacements) ? replacements : []) {
@@ -1908,30 +1976,61 @@ export default {
 				const offset = beforeId == null ? Number(url.searchParams.get('offset') || 0) : 0;
 				if (!q.trim()) return json({ ids: [], has_more: false, next_cursor: null });
 
+				const fetchLimit = Math.max(200, (offset + limit) * 3);
 				const { results } = beforeId != null
 					? await db.prepare(
-						'SELECT id FROM posts WHERE group_id IS NULL AND LOWER(content) LIKE ? AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?'
-					).bind(`%${q.toLowerCase()}%`, beforeId, limit + 1).all()
+						'SELECT id, content, tags FROM posts WHERE group_id IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?'
+					).bind(beforeId, fetchLimit).all()
 					: await db.prepare(
-						'SELECT id FROM posts WHERE group_id IS NULL AND LOWER(content) LIKE ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
-					).bind(`%${q.toLowerCase()}%`, limit + 1, offset).all();
+						'SELECT id, content, tags FROM posts WHERE group_id IS NULL ORDER BY created_at DESC, id DESC LIMIT ?'
+					).bind(fetchLimit).all();
 
 				const rows = results || [];
-				const ids = rows.slice(0, limit).map((r) => r.id);
+				const matched = [];
+				for (const row of rows) {
+					const content = String(row.content || '').toLowerCase();
+					const tags = normalizePostTags(row.tags);
+					if (
+						isFuzzyMatch(content, q, 0.8) ||
+						tags.some((tag) => isFuzzyMatch(String(tag), q, 0.8))
+					) {
+						matched.push(row.id);
+					}
+				}
+
+				const ids = matched.slice(offset, offset + limit);
 				return json({
 					ids,
-					has_more: rows.length > limit,
-					next_cursor: rows.length > limit && ids.length > 0 ? ids[ids.length - 1] : null,
+					has_more: matched.length > offset + limit,
+					next_cursor: matched.length > offset + limit && ids.length > 0 ? ids[ids.length - 1] : null,
 				});
 			}
 
 			if (method === 'GET' && pathname === '/posts/search') {
 				const q = url.searchParams.get('q') || '';
 				const limit = Math.min(Number(url.searchParams.get('limit') || 20), 100);
+				if (!q.trim()) return json([]);
+
+				const fetchLimit = Math.max(200, limit * 3);
 				const { results } = await db.prepare(
-					'SELECT * FROM posts WHERE group_id IS NULL AND LOWER(content) LIKE ? ORDER BY created_at DESC, id DESC LIMIT ?'
-				).bind(`%${q.toLowerCase()}%`, limit).all();
-				return json((results || []).map(normalizePostRow));
+					'SELECT * FROM posts WHERE group_id IS NULL ORDER BY created_at DESC, id DESC LIMIT ?'
+				).bind(fetchLimit).all();
+
+				const rows = results || [];
+				const matched = [];
+				for (const row of rows) {
+					const content = String(row.content || '').toLowerCase();
+					const tags = normalizePostTags(row.tags);
+					if (
+						isFuzzyMatch(content, q, 0.8) ||
+						tags.some((tag) => isFuzzyMatch(String(tag), q, 0.8))
+					) {
+						matched.push(normalizePostRow(row));
+						if (matched.length >= limit) break;
+					}
+				}
+
+				return json(matched);
 			}
 
 			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/reply-ids$/)) {
@@ -2094,15 +2193,86 @@ export default {
 					}
 				}
 
-				const mapToSortedList = (userMap) =>
-					Array.from(userMap.entries())
-						.sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0], 'ja'))
-						.slice(0, limit)
-						.map(([tag_name, userSet]) => ({ tag_name, occurrence_count: userSet.size }));
+				const calculateTagSimilarity = (str1, str2) => {
+					const s1 = String(str1 || '').trim().toLowerCase().replace(/^[#＃]/, '');
+					const s2 = String(str2 || '').trim().toLowerCase().replace(/^[#＃]/, '');
+					if (s1 === s2) return 1.0;
+					if (!s1 || !s2) return 0.0;
 
-				const hashtagsList = mapToSortedList(hashtagUsers);
-				const wordsList = mapToSortedList(wordUsers);
-				const tagsList = mapToSortedList(tagUsers);
+					const len1 = s1.length;
+					const len2 = s2.length;
+					const maxLen = Math.max(len1, len2);
+					const minLen = Math.min(len1, len2);
+
+					const isSubstring = s1.includes(s2) || s2.includes(s1);
+					const substringSim = isSubstring ? minLen / maxLen : 0;
+
+					const d = Array.from({ length: len1 + 1 }, () => new Array(len2 + 1).fill(0));
+					for (let i = 0; i <= len1; i++) d[i][0] = i;
+					for (let j = 0; j <= len2; j++) d[0][j] = j;
+					for (let i = 1; i <= len1; i++) {
+						for (let j = 1; j <= len2; j++) {
+							const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+							d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+						}
+					}
+					const levSim = 1 - d[len1][len2] / maxLen;
+
+					let diceSim = 0;
+					if (len1 >= 2 && len2 >= 2) {
+						const bg1 = new Map();
+						for (let i = 0; i < len1 - 1; i++) {
+							const bg = s1.slice(i, i + 2);
+							bg1.set(bg, (bg1.get(bg) || 0) + 1);
+						}
+						const bg2 = new Map();
+						for (let i = 0; i < len2 - 1; i++) {
+							const bg = s2.slice(i, i + 2);
+							bg2.set(bg, (bg2.get(bg) || 0) + 1);
+						}
+						let intersection = 0;
+						for (const [bg, count1] of bg1.entries()) {
+							if (bg2.has(bg)) intersection += Math.min(count1, bg2.get(bg));
+						}
+						diceSim = (2 * intersection) / ((len1 - 1) + (len2 - 1));
+					}
+
+					return Math.max(substringSim, levSim, diceSim);
+				};
+
+				const mapToMergedSortedList = (userMap, threshold = 0.75) => {
+					const sorted = Array.from(userMap.entries())
+						.sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0], 'ja'));
+
+					const clusters = [];
+					for (const [tag, users] of sorted) {
+						let merged = false;
+						for (const cluster of clusters) {
+							const isBothHashtags = cluster.representative.startsWith('#') && tag.startsWith('#');
+							const isBothNonHashtags = !cluster.representative.startsWith('#') && !tag.startsWith('#');
+							if (isBothHashtags || isBothNonHashtags) {
+								const sim = calculateTagSimilarity(cluster.representative, tag);
+								if (sim > threshold) {
+									for (const u of users) cluster.users.add(u);
+									merged = true;
+									break;
+								}
+							}
+						}
+						if (!merged) {
+							clusters.push({ representative: tag, users: new Set(users) });
+						}
+					}
+
+					return clusters
+						.sort((a, b) => b.users.size - a.users.size || a.representative.localeCompare(b.representative, 'ja'))
+						.slice(0, limit)
+						.map((c) => ({ tag_name: c.representative, occurrence_count: c.users.size }));
+				};
+
+				const hashtagsList = mapToMergedSortedList(hashtagUsers);
+				const wordsList = mapToMergedSortedList(wordUsers);
+				const tagsList = mapToMergedSortedList(tagUsers);
 
 				if (type === 'hashtags') return json(hashtagsList);
 				if (type === 'words') return json(wordsList);
@@ -2121,7 +2291,7 @@ export default {
 					if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
 					for (const u of set) mergedUsers.get(k).add(u);
 				}
-				const trendsList = mapToSortedList(mergedUsers);
+				const trendsList = mapToMergedSortedList(mergedUsers);
 
 				if (isSummary) {
 					return json({
