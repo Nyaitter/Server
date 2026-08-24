@@ -3687,6 +3687,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 	}
 
 	async createPoll({
+		id = null,
 		postId,
 		userId,
 		title,
@@ -3705,7 +3706,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			throw new Error('投票には最低2つの選択肢が必要です');
 		}
 
-		const pollId = this.nextPollId++;
+		const pollId = id ? String(id).trim() : crypto.randomUUID();
 		const pId = String(postId).trim();
 		const uId = String(userId).trim();
 		const poll = {
@@ -3798,9 +3799,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 		}
 
-		// 新規投票を挿入
+		// 新規投票を挿入（UUID生成）
 		for (const optId of targetOptionIds) {
-			const newVoteId = this.nextPollVoteId++;
+			const newVoteId = crypto.randomUUID();
 			const vote = {
 				id: newVoteId,
 				poll_id: pId,

@@ -11,7 +11,7 @@ function getDbAdapter(req) {
 function safeParsePollId(id) {
 	if (id == null) return null;
 	const s = String(id).trim();
-	return /^\d+$/.test(s) && s !== '0' ? s : null;
+	return /^[A-Za-z0-9_-]+$/.test(s) ? s : null;
 }
 
 // 投票の取得
