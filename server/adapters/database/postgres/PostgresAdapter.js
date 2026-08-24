@@ -3714,7 +3714,7 @@ class PostgresAdapter extends DatabaseAdapter {
 	async getRepostsOfPost(postId, limit = 50) {
 		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
 		const { rows } = await this.pool.query(
-			`SELECT u.id as user_id, u.name, u.handle, u.icon_url, u.verify, u.admin, u.bio, r.created_at as reposted_at
+			`SELECT u.id as user_id, u.name, u.handle, u.icon_data, u.verify, u.admin, u.bio, r.created_at as reposted_at
 			 FROM reposts r
 			 JOIN users u ON u.id = r.user_id
 			 WHERE r.post_id = $1
@@ -3727,7 +3727,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			id: Number(r.user_id),
 			name: r.name,
 			handle: r.handle,
-			icon_url: r.icon_url,
+			icon_data: r.icon_data,
 			verify: Boolean(r.verify),
 			admin: Boolean(r.admin),
 			bio: r.bio,
@@ -3738,7 +3738,7 @@ class PostgresAdapter extends DatabaseAdapter {
 	async getLikesOfPost(postId, limit = 50) {
 		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
 		const { rows } = await this.pool.query(
-			`SELECT u.id as user_id, u.name, u.handle, u.icon_url, u.verify, u.admin, u.bio, l.created_at as liked_at
+			`SELECT u.id as user_id, u.name, u.handle, u.icon_data, u.verify, u.admin, u.bio, l.created_at as liked_at
 			 FROM likes l
 			 JOIN users u ON u.id = l.user_id
 			 WHERE l.post_id = $1
@@ -3751,7 +3751,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			id: Number(r.user_id),
 			name: r.name,
 			handle: r.handle,
-			icon_url: r.icon_url,
+			icon_data: r.icon_data,
 			verify: Boolean(r.verify),
 			admin: Boolean(r.admin),
 			bio: r.bio,
@@ -3762,7 +3762,7 @@ class PostgresAdapter extends DatabaseAdapter {
 	async getStarsOfPost(postId, limit = 50) {
 		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
 		const { rows } = await this.pool.query(
-			`SELECT u.id as user_id, u.name, u.handle, u.icon_url, u.verify, u.admin, u.bio, s.created_at as starred_at
+			`SELECT u.id as user_id, u.name, u.handle, u.icon_data, u.verify, u.admin, u.bio, s.created_at as starred_at
 			 FROM stars s
 			 JOIN users u ON u.id = s.user_id
 			 WHERE s.post_id = $1
@@ -3775,7 +3775,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			id: Number(r.user_id),
 			name: r.name,
 			handle: r.handle,
-			icon_url: r.icon_url,
+			icon_data: r.icon_data,
 			verify: Boolean(r.verify),
 			admin: Boolean(r.admin),
 			bio: r.bio,
@@ -5220,13 +5220,12 @@ class PostgresAdapter extends DatabaseAdapter {
 				[pId, uId],
 			);
 
-			// 新規投票を挿入（アプリ側でUUIDを生成）
+			// 新規投票を挿入
 			for (const optId of targetOptionIds) {
-				const voteId = crypto.randomUUID();
 				await client.query(
-					`INSERT INTO poll_votes (id, poll_id, user_id, option_id, other_text, created_at)
-					 VALUES ($1, $2, $3, $4, $5, NOW())`,
-					[voteId, pId, uId, optId, optId === -1 ? sanitizedOtherText : null],
+					`INSERT INTO poll_votes (poll_id, user_id, option_id, other_text, created_at)
+					 VALUES ($1, $2, $3, $4, NOW())`,
+					[Number(pId) || pId, Number(uId) || uId, optId, optId === -1 ? sanitizedOtherText : null],
 				);
 			}
 
