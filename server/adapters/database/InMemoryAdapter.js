@@ -1523,7 +1523,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				content: postData.content,
 				viewContent,
 				view_content: viewContent,
-				tags: Array.isArray(postData.tags) ? [...new Set(postData.tags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean))].slice(0, 5) : [],
+				tags: Array.isArray(postData.tags) ? [...new Set(postData.tags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean))].slice(0, 10) : [],
 				tagsGeneratedAt: postData.tagsGeneratedAt || null,
 				attachments: postData.attachments || null,
 			mask: !!postData.mask,
@@ -1660,7 +1660,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				post.viewContent = String(fields.viewContent ?? fields.view_content ?? '');
 				post.view_content = post.viewContent;
 			}
-			if (fields.tags !== undefined) post.tags = Array.isArray(fields.tags) ? [...new Set(fields.tags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean))].slice(0, 5) : [];
+			if (fields.tags !== undefined) post.tags = Array.isArray(fields.tags) ? [...new Set(fields.tags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean))].slice(0, 10) : [];
 			if (fields.tagsGeneratedAt !== undefined) post.tagsGeneratedAt = fields.tagsGeneratedAt || null;
 			if (fields.attachments !== undefined) post.attachments = fields.attachments;
 					if (fields.mask !== undefined) post.mask = !!fields.mask;
@@ -3037,8 +3037,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 	async getTrendingHashtags(limit = 10, options = {}) {
 		const normalizedLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
-		const hashtagCounts = new Map();
-		const tagCounts = new Map();
+		const hashtagUsers = new Map(); // tag -> Set<userId>
+		const tagUsers = new Map();     // tag -> Set<userId>
+		const wordUsers = new Map();    // word -> Set<userId>
 		const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
 
 		for (const post of this.posts.values()) {
@@ -3046,6 +3047,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			const createdAtTime = new Date(post.createdAt || post.created_at || 0).getTime();
 			if (createdAtTime && createdAtTime < threeDaysAgo) continue;
 
+			const userId = post.userId || post.user_id || 'anonymous';
 			const content = post.viewContent || post.view_content || extractViewContent(post.content || '');
 			const hashtagMatches = content.match(/(?:#|＃)([\p{L}\p{N}_-]{1,48})/gu) || [];
 			const postHashtags = new Set(
@@ -3056,48 +3058,80 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 			for (const tag of postHashtags) {
 				const fullTag = `#${tag}`;
-				hashtagCounts.set(fullTag, (hashtagCounts.get(fullTag) || 0) + 1);
+				if (!hashtagUsers.has(fullTag)) hashtagUsers.set(fullTag, new Set());
+				hashtagUsers.get(fullTag).add(userId);
 			}
 
 			const rawTags = Array.isArray(post.tags) ? post.tags : [];
-			const postTags = new Set(
+			const postWords = new Set(
 				rawTags
 					.map((rawTag) => String(rawTag || '').trim().toLowerCase().replace(/^[#＃]/, ''))
 					.filter((tag) => tag.length > 2 && !postHashtags.has(tag))
 			);
 
-			for (const tag of postTags) {
-				tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+			for (const word of postWords) {
+				if (!wordUsers.has(word)) wordUsers.set(word, new Set());
+				wordUsers.get(word).add(userId);
+			}
+
+			// tags: 「単語より1段階広い範囲」（複合語・フレーズ）
+			const sanitizedContent = content
+				.replace(/https?:\/\/[^\s]+/giu, ' ')
+				.replace(/@[\p{L}\p{N}_-]+/giu, ' ')
+				.replace(/[#＃][\p{L}\p{N}_-]+/gu, ' ');
+			const phraseMatches = sanitizedContent.match(/([\p{Script=Han}\p{Script=Katakana}a-zA-Z0-9_-]{2,10}(?:の[\p{Script=Han}\p{Script=Katakana}a-zA-Z0-9_-]{2,10}|[\p{Script=Han}\p{Script=Katakana}a-zA-Z0-9_-]{2,10}))/gu) || [];
+			const postCompoundTags = new Set(
+				phraseMatches
+					.map((p) => p.trim().toLowerCase().replace(/^[#＃]/, ''))
+					.filter((tag) => tag.length >= 3 && tag.length <= 30 && !postHashtags.has(tag) && !postWords.has(tag))
+			);
+
+			for (const tag of postCompoundTags) {
+				if (!tagUsers.has(tag)) tagUsers.set(tag, new Set());
+				tagUsers.get(tag).add(userId);
 			}
 		}
 
-		const mapToSortedList = (map) =>
-			Array.from(map.entries())
-				.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ja'))
+		const mapToSortedList = (userMap) =>
+			Array.from(userMap.entries())
+				.sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0], 'ja'))
 				.slice(0, normalizedLimit)
-				.map(([tag_name, occurrence_count]) => ({
+				.map(([tag_name, userSet]) => ({
 					tag_name,
-					occurrence_count,
+					occurrence_count: userSet.size,
 				}));
 
-		const hashtagsList = mapToSortedList(hashtagCounts);
-		const tagsList = mapToSortedList(tagCounts);
+		const hashtagsList = mapToSortedList(hashtagUsers);
+		const wordsList = mapToSortedList(wordUsers);
+		const tagsList = mapToSortedList(tagUsers);
 
 		const type = typeof options === 'string' ? options : options?.type;
 		if (type === 'hashtags') return hashtagsList;
-		if (type === 'tags') return tagsList;
+		if (type === 'words') return wordsList;
+		if (type === 'tags') return tagsList.length > 0 ? tagsList : wordsList;
 
 		// 全体マージソート（互換用）
-		const mergedCounts = new Map();
-		for (const [k, v] of hashtagCounts) mergedCounts.set(k, v);
-		for (const [k, v] of tagCounts) mergedCounts.set(k, v);
-		const trendsList = mapToSortedList(mergedCounts);
+		const mergedUsers = new Map();
+		for (const [k, set] of hashtagUsers) {
+			if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
+			for (const u of set) mergedUsers.get(k).add(u);
+		}
+		for (const [k, set] of wordUsers) {
+			if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
+			for (const u of set) mergedUsers.get(k).add(u);
+		}
+		for (const [k, set] of tagUsers) {
+			if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
+			for (const u of set) mergedUsers.get(k).add(u);
+		}
+		const trendsList = mapToSortedList(mergedUsers);
 
 		if (options?.summary || options?.detailed) {
 			return {
 				trends: trendsList,
 				hashtags: hashtagsList,
-				tags: tagsList,
+				tags: tagsList.length > 0 ? tagsList : wordsList,
+				words: wordsList,
 			};
 		}
 

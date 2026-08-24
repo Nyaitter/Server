@@ -1094,6 +1094,7 @@ class D1Adapter extends DatabaseAdapter {
 				trends: Array.isArray(res.trends) ? res.trends : [],
 				hashtags: Array.isArray(res.hashtags) ? res.hashtags : [],
 				tags: Array.isArray(res.tags) ? res.tags : [],
+				words: Array.isArray(res.words) ? res.words : (Array.isArray(res.tags) ? res.tags : []),
 			};
 		}
 		return Array.isArray(res) ? res : [];

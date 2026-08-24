@@ -79,7 +79,7 @@ function normalizePostTags(value) {
 	return [...new Set(rawTags
 		.map((tag) => String(tag || '').trim().toLocaleLowerCase('ja-JP'))
 		.filter((tag) => tag.length > 0 && tag.length <= 48))]
-		.slice(0, 4);
+		.slice(0, 10);
 }
 
 function createAttachmentReplacementMap(replacements) {
@@ -2039,11 +2039,17 @@ export default {
 
 			if (method === 'GET' && pathname === '/posts/trending-hashtags') {
 				const limit = Math.min(Number(url.searchParams.get('limit') || 10), 50);
+				const type = String(url.searchParams.get('type') || '').trim().toLowerCase();
+				const isSummary = url.searchParams.get('summary') === 'true' || url.searchParams.get('detailed') === 'true';
 				const { results } = await db.prepare(
-					"SELECT content, tags FROM posts WHERE group_id IS NULL AND created_at >= datetime('now', '-3 days') ORDER BY created_at DESC LIMIT 500"
+					"SELECT user_id, content, tags FROM posts WHERE group_id IS NULL AND created_at >= datetime('now', '-3 days') ORDER BY created_at DESC LIMIT 500"
 				).all();
-				const counts = new Map();
+				const hashtagUsers = new Map();
+				const tagUsers = new Map();
+				const wordUsers = new Map();
+
 				for (const row of results || []) {
+					const userId = row.user_id || 'anonymous';
 					const content = row.content || '';
 					const hashtagMatches = content.match(/(?:#|＃)([\p{L}\p{N}_-]{1,48})/gu) || [];
 					const postHashtags = new Set(
@@ -2052,28 +2058,81 @@ export default {
 							.filter((tag) => tag.length > 2)
 					);
 
-					const uniqueItems = new Set();
 					for (const tag of postHashtags) {
-						uniqueItems.add(`#${tag}`);
+						const fullTag = `#${tag}`;
+						if (!hashtagUsers.has(fullTag)) hashtagUsers.set(fullTag, new Set());
+						hashtagUsers.get(fullTag).add(userId);
 					}
 
 					const tags = normalizePostTags(row.tags);
-					for (const rawTag of tags) {
-						const tag = String(rawTag || '').trim().toLowerCase().replace(/^[#＃]/, '');
-						if (tag.length > 2 && !postHashtags.has(tag)) {
-							uniqueItems.add(tag);
-						}
+					const postWords = new Set(
+						tags
+							.map((rawTag) => String(rawTag || '').trim().toLowerCase().replace(/^[#＃]/, ''))
+							.filter((tag) => tag.length > 2 && !postHashtags.has(tag))
+					);
+
+					for (const word of postWords) {
+						if (!wordUsers.has(word)) wordUsers.set(word, new Set());
+						wordUsers.get(word).add(userId);
 					}
 
-					for (const item of uniqueItems) {
-						counts.set(item, (counts.get(item) || 0) + 1);
+					// tags: 「単語より1段階広い範囲」（複合語・フレーズ）
+					const sanitizedContent = content
+						.replace(/https?:\/\/[^\s]+/giu, ' ')
+						.replace(/@[\p{L}\p{N}_-]+/giu, ' ')
+						.replace(/[#＃][\p{L}\p{N}_-]+/gu, ' ');
+					const phraseMatches = sanitizedContent.match(/([\p{Script=Han}\p{Script=Katakana}a-zA-Z0-9_-]{2,10}(?:の[\p{Script=Han}\p{Script=Katakana}a-zA-Z0-9_-]{2,10}|[\p{Script=Han}\p{Script=Katakana}a-zA-Z0-9_-]{2,10}))/gu) || [];
+					const postCompoundTags = new Set(
+						phraseMatches
+							.map((p) => p.trim().toLowerCase().replace(/^[#＃]/, ''))
+							.filter((tag) => tag.length >= 3 && tag.length <= 30 && !postHashtags.has(tag) && !postWords.has(tag))
+					);
+
+					for (const tag of postCompoundTags) {
+						if (!tagUsers.has(tag)) tagUsers.set(tag, new Set());
+						tagUsers.get(tag).add(userId);
 					}
 				}
-				const sorted = Array.from(counts.entries())
-					.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ja'))
-					.slice(0, limit)
-					.map(([tag_name, occurrence_count]) => ({ tag_name, occurrence_count }));
-				return json(sorted);
+
+				const mapToSortedList = (userMap) =>
+					Array.from(userMap.entries())
+						.sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0], 'ja'))
+						.slice(0, limit)
+						.map(([tag_name, userSet]) => ({ tag_name, occurrence_count: userSet.size }));
+
+				const hashtagsList = mapToSortedList(hashtagUsers);
+				const wordsList = mapToSortedList(wordUsers);
+				const tagsList = mapToSortedList(tagUsers);
+
+				if (type === 'hashtags') return json(hashtagsList);
+				if (type === 'words') return json(wordsList);
+				if (type === 'tags') return json(tagsList.length > 0 ? tagsList : wordsList);
+
+				const mergedUsers = new Map();
+				for (const [k, set] of hashtagUsers) {
+					if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
+					for (const u of set) mergedUsers.get(k).add(u);
+				}
+				for (const [k, set] of wordUsers) {
+					if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
+					for (const u of set) mergedUsers.get(k).add(u);
+				}
+				for (const [k, set] of tagUsers) {
+					if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
+					for (const u of set) mergedUsers.get(k).add(u);
+				}
+				const trendsList = mapToSortedList(mergedUsers);
+
+				if (isSummary) {
+					return json({
+						trends: trendsList,
+						hashtags: hashtagsList,
+						tags: tagsList.length > 0 ? tagsList : wordsList,
+						words: wordsList,
+					});
+				}
+
+				return json(trendsList);
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/posts\/count$/)) {

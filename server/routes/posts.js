@@ -682,13 +682,14 @@ router.get('/trending-hashtags', optionalAuth, async (req, res) => {
 		const result = await db.getTrendingHashtags(limit, { type, detailed: true });
 		if (Array.isArray(result)) {
 			const hashtags = result.filter((item) => String(item.tag_name || '').startsWith('#'));
-			const tags = result.filter((item) => !String(item.tag_name || '').startsWith('#'));
-			res.json({ trends: result, hashtags, tags });
+			const words = result.filter((item) => !String(item.tag_name || '').startsWith('#'));
+			res.json({ trends: result, hashtags, tags: words, words });
 		} else {
 			res.json({
 				trends: result.trends || [],
 				hashtags: result.hashtags || [],
-				tags: result.tags || [],
+				tags: result.tags || result.words || [],
+				words: result.words || result.tags || [],
 			});
 		}
 	} catch (err) {
