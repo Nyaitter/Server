@@ -2911,8 +2911,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 				: null;
 			const normalizedOffset = normalizedBeforeId == null ? Math.max(0, Number(offset) || 0) : 0;
 			const followSet = tab === 'following'
-				? (viewerId != null && this.followingsByUser
-					? new Set([...(this.followingsByUser.get(Number(viewerId)) || new Set()), Number(viewerId)])
+				? (viewerId != null && this.followingIdsByUser
+					? new Set([...(this.followingIdsByUser.get(Number(viewerId)) || new Set())])
 					: new Set((followIds || []).map(Number)))
 				: null;
 			const matched = [];

@@ -2305,13 +2305,24 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 			const post = normalizePostRow(rows[0] || null);
 			if (post) {
-				if (post.replyTo) {
-					await client.query('UPDATE posts SET reply_count = reply_count + 1 WHERE id = $1', [Number(post.replyTo)]);
-				}
-				if (post.repostTo) {
-					await client.query('UPDATE posts SET repost_count = repost_count + 1 WHERE id = $1', [Number(post.repostTo)]);
-				}
-				await this._adjustUserKeywordAffinitiesForTags(client, post.userId, post.tags, 1);
+				// reply/repost カウント更新は並列実行
+				await Promise.all([
+					post.replyTo
+						? client.query('UPDATE posts SET reply_count = reply_count + 1 WHERE id = $1', [Number(post.replyTo)])
+						: null,
+					post.repostTo
+						? client.query('UPDATE posts SET repost_count = repost_count + 1 WHERE id = $1', [Number(post.repostTo)])
+						: null,
+				].filter(Boolean));
+				// キーワード親和度はトランザクション外でバックグラウンド更新（COMMITをブロックしない）
+				const savedPost = post;
+				setImmediate(() => {
+					this.pool.connect().then((bgClient) => {
+						this._adjustUserKeywordAffinitiesForTags(bgClient, savedPost.userId, savedPost.tags, 1)
+							.catch((err) => console.warn('[postgres] keyword affinity update failed:', err.message))
+							.finally(() => bgClient.release());
+					}).catch((err) => console.warn('[postgres] keyword affinity connect failed:', err.message));
+				});
 				this._getPostCache()?.set(post.id, post);
 			}
 			return post;
@@ -2384,6 +2395,43 @@ class PostgresAdapter extends DatabaseAdapter {
 		}
 
 		return ids.map((id) => postMap.get(id)).filter(Boolean);
+	}
+
+	/**
+	 * WITH RECURSIVE で 1 クエリで祖先ポストを全取得。
+	 * 返り値は [直接の親, ..., ルートポスト] の配列（浅い→深い順）。
+	 * PostgreSQL・CockroachDB 両方互換。
+	 */
+	async getPostAncestors(postId, maxDepth = 20) {
+		const rootId = Number(postId);
+		if (!Number.isSafeInteger(rootId) || rootId <= 0) return [];
+		const limit = Math.min(50, Math.max(1, Number(maxDepth) || 20));
+
+		// WITH RECURSIVE: 起点を direct parent、JOIN で上方向に再帰
+		// p.* に depth 計算列を含める形ではなく、depth は CTE の独立列として管理し
+		// 外側 SELECT では posts の実カラムのみを取得（CockroachDB 互換）
+		const { rows } = await this.pool.query(
+			`WITH RECURSIVE ancestors(post_id, anc_depth) AS (
+			   SELECT reply_to, 1
+			   FROM posts
+			   WHERE id = $1 AND reply_to IS NOT NULL
+			 UNION ALL
+			   SELECT p.reply_to, a.anc_depth + 1
+			   FROM posts p
+			   JOIN ancestors a ON p.id = a.post_id
+			   WHERE p.reply_to IS NOT NULL AND a.anc_depth < $2
+			 )
+			 SELECT p.* FROM posts p
+			 JOIN ancestors a ON p.id = a.post_id
+			 ORDER BY a.anc_depth`,
+			[rootId, limit],
+		);
+		const cache = this._getPostCache();
+		return rows.map((row) => {
+			const post = normalizePostRow(row);
+			if (post) cache?.set(post.id, post);
+			return post;
+		}).filter(Boolean);
 	}
 
 	async getPostReferencesByIds(postIds, maxDepth = 2) {
@@ -2695,14 +2743,14 @@ class PostgresAdapter extends DatabaseAdapter {
 				if (normalizedBeforeId != null) {
 					query = `SELECT p.* FROM posts p
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
-						  AND (p.user_id = $1 OR p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1))
+						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
 						  AND p.id < $2
 						ORDER BY p.created_at DESC, p.id DESC LIMIT $3`;
 					values = [validViewerId, normalizedBeforeId, normalizedLimit + 1];
 				} else {
 					query = `SELECT p.* FROM posts p
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
-						  AND (p.user_id = $1 OR p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1))
+						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
 						ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`;
 					values = [validViewerId, normalizedLimit + 1, normalizedOffset];
 				}

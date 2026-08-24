@@ -1017,10 +1017,15 @@ class D1Adapter extends DatabaseAdapter {
 		return { posts, hasMore: posts.length === limit };
 	}
 
-	async getTimelinePostIds({ tab = 'foryou', followIds = [], limit = 30, offset = 0, beforeId = null } = {}) {
+	async getTimelinePostIds({ tab = 'foryou', followIds = [], viewerId = null, limit = 30, offset = 0, beforeId = null } = {}) {
+		let resolvedFollowIds = this._normalizeIds(followIds);
+		if (tab === 'following' && resolvedFollowIds.length === 0 && viewerId != null) {
+			const followingUsers = await this.getFollowing(viewerId, 1000);
+			resolvedFollowIds = this._normalizeIds((followingUsers || []).map((u) => u.id));
+		}
 		const body = {
 			tab: String(tab),
-			followIds: this._normalizeIds(followIds),
+			followIds: resolvedFollowIds,
 			limit: this._limit(limit, 30),
 			offset: this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),

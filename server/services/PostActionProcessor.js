@@ -277,21 +277,32 @@ async function processCreatePostAction(context, payload) {
     }
     if (replyTarget) {
       let rootPost = replyTarget;
-      let currentAncestor = replyTarget;
-      const visited = new Set([Number(replyTarget.id)]);
-      while (currentAncestor && (currentAncestor.replyTo || currentAncestor.reply_to)) {
-        const nextParentId = Number(currentAncestor.replyTo || currentAncestor.reply_to);
-        if (!Number.isInteger(nextParentId) || visited.has(nextParentId)) break;
-        visited.add(nextParentId);
-        let nextParent = relatedPosts.get(nextParentId);
-        if (!nextParent && typeof context.db.getPostById === 'function') {
-          nextParent = await context.db.getPostById(nextParentId);
+
+      // WITH RECURSIVE で祖先を 1 クエリで取得（利用可能な場合）
+      if (typeof context.db.getPostAncestors === 'function') {
+        const ancestors = await context.db.getPostAncestors(replyTo);
+        for (const ancestor of ancestors) {
+          relatedPosts.set(Number(ancestor.id), ancestor);
+          rootPost = ancestor; // 最後が最も深い祖先（ルート）
         }
-        if (nextParent) {
-          rootPost = nextParent;
-          currentAncestor = nextParent;
-        } else {
-          break;
+      } else {
+        // フォールバック: 旧来の直列走査
+        let currentAncestor = replyTarget;
+        const visited = new Set([Number(replyTarget.id)]);
+        while (currentAncestor && (currentAncestor.replyTo || currentAncestor.reply_to)) {
+          const nextParentId = Number(currentAncestor.replyTo || currentAncestor.reply_to);
+          if (!Number.isInteger(nextParentId) || visited.has(nextParentId)) break;
+          visited.add(nextParentId);
+          let nextParent = relatedPosts.get(nextParentId);
+          if (!nextParent && typeof context.db.getPostById === 'function') {
+            nextParent = await context.db.getPostById(nextParentId);
+          }
+          if (nextParent) {
+            rootPost = nextParent;
+            currentAncestor = nextParent;
+          } else {
+            break;
+          }
         }
       }
 
@@ -384,45 +395,52 @@ async function processCreatePostAction(context, payload) {
   const canNotifyPostRecipient = (recipientId) => (
     !activeGroupMemberIds || activeGroupMemberIds.has(Number(recipientId))
   );
+
+  // 通知タスクを収集して並列実行
+  const notificationTasks = [];
+  const excludedNotificationIds = new Set([
+    userId,
+    replyTarget ? Number(replyTarget.userId) : null,
+    repostTarget ? Number(repostTarget.userId) : null,
+  ].filter((id) => id != null && Number.isInteger(id)));
+
   if (replyTarget && canNotifyPostRecipient(replyTarget.userId)) {
-    await notifyPostAction(context, {
+    notificationTasks.push(notifyPostAction(context, {
       userId: replyTarget.userId,
       type: 'reply',
       fromUserId: userId,
       postId: post.id,
-    });
+    }));
   }
   if (repostTarget && canNotifyPostRecipient(repostTarget.userId)) {
-    await notifyPostAction(context, {
+    notificationTasks.push(notifyPostAction(context, {
       userId: repostTarget.userId,
       type: isSimpleRepost ? 'repost' : 'quote',
       fromUserId: userId,
       postId: post.id,
-    });
+    }));
   }
 
-  const excludedNotificationIds = new Set([
-    userId,
-    Number(replyTarget?.userId),
-    Number(repostTarget?.userId),
-  ]);
+  // メンション通知
   for (const match of content.matchAll(/@(\d+)/g)) {
     const mentionedUserId = Number(match[1]);
     if (!Number.isInteger(mentionedUserId) || mentionedUserId <= 0) continue;
     if (excludedNotificationIds.has(mentionedUserId)) continue;
     excludedNotificationIds.add(mentionedUserId);
     if (!canNotifyPostRecipient(mentionedUserId)) continue;
-    await notifyPostAction(context, {
+    notificationTasks.push(notifyPostAction(context, {
       userId: mentionedUserId,
       type: 'mention',
       fromUserId: userId,
       postId: post.id,
-    });
+    }));
   }
 
-  if (groupAnnouncement && group) await notifyGroupAnnouncement(context, group, post);
+  if (groupAnnouncement && group) {
+    notificationTasks.push(notifyGroupAnnouncement(context, group, post));
+  }
 
-  // 通知設定されたフォロワー/購読者への新規ポスト通知 (返信・リポスト以外)
+  // 購読者通知（返信・単純リポスト以外）
   if (!replyTo && !isSimpleRepost && typeof context.db.getUserPostSubscribers === 'function') {
     try {
       const subscribers = await context.db.getUserPostSubscribers(userId);
@@ -449,12 +467,12 @@ async function processCreatePostAction(context, payload) {
 
           if (shouldNotify) {
             excludedNotificationIds.add(subId);
-            await notifyPostAction(context, {
+            notificationTasks.push(notifyPostAction(context, {
               userId: subId,
               type: 'post',
               fromUserId: userId,
               postId: post.id,
-            });
+            }));
           }
         }
       }
@@ -462,6 +480,9 @@ async function processCreatePostAction(context, payload) {
       console.warn('[post-actions] failed to notify post subscribers:', err.message);
     }
   }
+
+  // 全通知を並列実行（失敗しても投稿自体はロールバックしない）
+  await Promise.allSettled(notificationTasks);
 
   await publishNewTimelinePost(context, post);
   timelineCacheManager.onPostCreated(post);
