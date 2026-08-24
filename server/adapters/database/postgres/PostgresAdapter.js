@@ -4903,8 +4903,8 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	_formatPoll(pollRow, voteRows = [], currentUserId = null) {
 		if (!pollRow) return null;
-		const parsedUserId = Number(currentUserId);
-		const validUserId = Number.isSafeInteger(parsedUserId) && parsedUserId > 0 ? parsedUserId : null;
+		const parsedUserId = currentUserId != null ? String(currentUserId).trim() : null;
+		const validUserId = parsedUserId && /^\d+$/.test(parsedUserId) ? parsedUserId : null;
 		let rawOptions = [];
 		if (Array.isArray(pollRow.options)) {
 			rawOptions = pollRow.options;
@@ -4924,7 +4924,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const uniqueVoters = new Set();
 
 		for (const vote of voteRows) {
-			const vUserId = Number(vote.user_id);
+			const vUserId = String(vote.user_id);
 			uniqueVoters.add(vUserId);
 			const optId = Number(vote.option_id);
 			voteCounts.set(optId, (voteCounts.get(optId) || 0) + 1);
@@ -4964,9 +4964,9 @@ class PostgresAdapter extends DatabaseAdapter {
 		const showResultsBeforeVoting = Boolean(pollRow.show_results_before_voting);
 
 		return {
-			id: Number(pollRow.id),
-			post_id: Number(pollRow.post_id),
-			user_id: Number(pollRow.user_id),
+			id: String(pollRow.id),
+			post_id: String(pollRow.post_id),
+			user_id: String(pollRow.user_id),
 			title: String(pollRow.title || ''),
 			options,
 			allow_multiple: Boolean(pollRow.allow_multiple),
@@ -5006,13 +5006,16 @@ class PostgresAdapter extends DatabaseAdapter {
 			throw new Error('投票には最低2つの選択肢が必要です');
 		}
 
+		const pId = String(postId).trim();
+		const uId = String(userId).trim();
+
 		const { rows } = await this.pool.query(
 			`INSERT INTO polls (post_id, user_id, title, options, allow_multiple, allow_other, show_results_before_voting, expires_at)
 			 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
 			 RETURNING *`,
 			[
-				Number(postId),
-				Number(userId),
+				pId,
+				uId,
 				String(title || '').trim() || '投票',
 				JSON.stringify(normOptions),
 				Boolean(allowMultiple),
@@ -5021,12 +5024,12 @@ class PostgresAdapter extends DatabaseAdapter {
 				expiresAt ? toIsoString(expiresAt) : null,
 			],
 		);
-		return this._formatPoll(rows[0], [], userId);
+		return this._formatPoll(rows[0], [], uId);
 	}
 
 	async getPollByPostId(postId, currentUserId = null) {
-		const pId = Number(postId);
-		if (!Number.isSafeInteger(pId) || pId <= 0) return null;
+		const pId = postId != null ? String(postId).trim() : '';
+		if (!/^\d+$/.test(pId)) return null;
 
 		const { rows: pollRows } = await this.pool.query(
 			'SELECT * FROM polls WHERE post_id = $1',
@@ -5036,15 +5039,15 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		const { rows: voteRows } = await this.pool.query(
 			'SELECT * FROM poll_votes WHERE poll_id = $1',
-			[Number(pollRows[0].id)],
+			[String(pollRows[0].id)],
 		);
 
 		return this._formatPoll(pollRows[0], voteRows, currentUserId);
 	}
 
 	async getPollById(pollId, currentUserId = null) {
-		const pId = Number(pollId);
-		if (!Number.isSafeInteger(pId) || pId <= 0) return null;
+		const pId = pollId != null ? String(pollId).trim() : '';
+		if (!/^\d+$/.test(pId)) return null;
 
 		const { rows: pollRows } = await this.pool.query(
 			'SELECT * FROM polls WHERE id = $1',
@@ -5061,40 +5064,40 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async getPollsByPostIds(postIds, currentUserId = null) {
-		const ids = [...new Set((postIds || []).map(Number).filter(Number.isSafeInteger))];
+		const ids = [...new Set((postIds || []).map((id) => String(id).trim()).filter((id) => /^\d+$/.test(id)))];
 		if (ids.length === 0) return new Map();
 
 		const { rows: pollRows } = await this.pool.query(
-			'SELECT * FROM polls WHERE post_id = ANY($1::int[])',
+			'SELECT * FROM polls WHERE post_id = ANY($1::bigint[])',
 			[ids],
 		);
 		if (pollRows.length === 0) return new Map();
 
-		const pollIds = pollRows.map((r) => Number(r.id));
+		const pollIds = pollRows.map((r) => String(r.id));
 		const { rows: voteRows } = await this.pool.query(
-			'SELECT * FROM poll_votes WHERE poll_id = ANY($1::int[])',
+			'SELECT * FROM poll_votes WHERE poll_id = ANY($1::bigint[])',
 			[pollIds],
 		);
 
 		const votesByPollId = new Map();
 		for (const v of voteRows) {
-			const pId = Number(v.poll_id);
+			const pId = String(v.poll_id);
 			if (!votesByPollId.has(pId)) votesByPollId.set(pId, []);
 			votesByPollId.get(pId).push(v);
 		}
 
 		const map = new Map();
 		for (const pollRow of pollRows) {
-			const formatted = this._formatPoll(pollRow, votesByPollId.get(Number(pollRow.id)) || [], currentUserId);
+			const formatted = this._formatPoll(pollRow, votesByPollId.get(String(pollRow.id)) || [], currentUserId);
 			if (formatted) map.set(Number(pollRow.post_id), formatted);
 		}
 		return map;
 	}
 
 	async votePoll({ pollId, userId, optionIds = [], otherText = null }) {
-		const pId = Number(pollId);
-		const uId = Number(userId);
-		if (!Number.isSafeInteger(pId) || pId <= 0 || !Number.isSafeInteger(uId) || uId <= 0) {
+		const pId = pollId != null ? String(pollId).trim() : '';
+		const uId = userId != null ? String(userId).trim() : '';
+		if (!/^\d+$/.test(pId) || !/^\d+$/.test(uId)) {
 			throw new Error('無効なパラメータです');
 		}
 
@@ -5109,7 +5112,17 @@ class PostgresAdapter extends DatabaseAdapter {
 			const isExpired = Boolean(poll.expires_at && new Date(poll.expires_at) <= new Date()) || Boolean(poll.closed);
 			if (isExpired) throw new Error('この投票は既に終了しています');
 
-			const rawOptions = Array.isArray(poll.options) ? poll.options : [];
+			let rawOptions = [];
+			if (Array.isArray(poll.options)) {
+				rawOptions = poll.options;
+			} else if (typeof poll.options === 'string') {
+				try {
+					rawOptions = JSON.parse(poll.options);
+				} catch (_) {
+					rawOptions = [];
+				}
+			}
+
 			const validOptionIds = new Set(rawOptions.map((o) => Number(o.id)));
 			if (poll.allow_other) {
 				validOptionIds.add(-1); // その他用のID
@@ -5162,8 +5175,8 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async markPollClosedNotified(pollId) {
-		const pId = Number(pollId);
-		if (!Number.isSafeInteger(pId) || pId <= 0) return;
+		const pId = pollId != null ? String(pollId).trim() : '';
+		if (!/^\d+$/.test(pId)) return;
 
 		await this.pool.query(
 			'UPDATE polls SET closed = TRUE, closed_notified = TRUE WHERE id = $1',
@@ -5172,14 +5185,14 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async getPollVoters(pollId) {
-		const pId = Number(pollId);
-		if (!Number.isSafeInteger(pId) || pId <= 0) return [];
+		const pId = pollId != null ? String(pollId).trim() : '';
+		if (!/^\d+$/.test(pId)) return [];
 
 		const { rows } = await this.pool.query(
 			'SELECT DISTINCT user_id FROM poll_votes WHERE poll_id = $1',
 			[pId],
 		);
-		return rows.map((r) => Number(r.user_id)).filter(Number.isSafeInteger);
+		return rows.map((r) => String(r.user_id)).filter((id) => /^\d+$/.test(id));
 	}
 }
 

@@ -8,10 +8,16 @@ function getDbAdapter(req) {
 	return req.app.locals.dbAdapter;
 }
 
+function safeParsePollId(id) {
+	if (id == null) return null;
+	const s = String(id).trim();
+	return /^\d+$/.test(s) && s !== '0' ? s : null;
+}
+
 // 投票の取得
 router.get('/:pollId', optionalAuth, async (req, res) => {
-	const pollId = Number(req.params.pollId);
-	if (!Number.isSafeInteger(pollId) || pollId <= 0) {
+	const pollId = safeParsePollId(req.params.pollId);
+	if (!pollId) {
 		return res.status(400).json({ error: '無効な投票IDです' });
 	}
 
@@ -30,8 +36,8 @@ router.get('/:pollId', optionalAuth, async (req, res) => {
 
 // 投票の実行
 router.post('/:pollId/vote', requireAuth, async (req, res) => {
-	const pollId = Number(req.params.pollId);
-	if (!Number.isSafeInteger(pollId) || pollId <= 0) {
+	const pollId = safeParsePollId(req.params.pollId);
+	if (!pollId) {
 		return res.status(400).json({ error: '無効な投票IDです' });
 	}
 

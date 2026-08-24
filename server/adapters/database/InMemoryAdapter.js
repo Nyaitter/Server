@@ -3612,8 +3612,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 	_formatPoll(poll, voteRows = [], currentUserId = null) {
 		if (!poll) return null;
-		const parsedUserId = Number(currentUserId);
-		const validUserId = Number.isSafeInteger(parsedUserId) && parsedUserId > 0 ? parsedUserId : null;
+		const parsedUserId = currentUserId != null ? String(currentUserId).trim() : null;
+		const validUserId = parsedUserId && /^\d+$/.test(parsedUserId) ? parsedUserId : null;
 		const rawOptions = Array.isArray(poll.options) ? poll.options : [];
 
 		const voteCounts = new Map();
@@ -3623,7 +3623,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		const uniqueVoters = new Set();
 
 		for (const vote of voteRows) {
-			const vUserId = Number(vote.user_id);
+			const vUserId = String(vote.user_id);
 			uniqueVoters.add(vUserId);
 			const optId = Number(vote.option_id);
 			voteCounts.set(optId, (voteCounts.get(optId) || 0) + 1);
@@ -3663,9 +3663,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 		const showResultsBeforeVoting = Boolean(poll.show_results_before_voting);
 
 		return {
-			id: Number(poll.id),
-			post_id: Number(poll.post_id),
-			user_id: Number(poll.user_id),
+			id: String(poll.id),
+			post_id: String(poll.post_id),
+			user_id: String(poll.user_id),
 			title: String(poll.title || ''),
 			options,
 			allow_multiple: Boolean(poll.allow_multiple),
@@ -3706,10 +3706,12 @@ class InMemoryAdapter extends DatabaseAdapter {
 		}
 
 		const pollId = this.nextPollId++;
+		const pId = String(postId).trim();
+		const uId = String(userId).trim();
 		const poll = {
 			id: pollId,
-			post_id: Number(postId),
-			user_id: Number(userId),
+			post_id: pId,
+			user_id: uId,
 			title: String(title || '').trim() || '投票',
 			options: normOptions,
 			allow_multiple: Boolean(allowMultiple),
@@ -3722,25 +3724,27 @@ class InMemoryAdapter extends DatabaseAdapter {
 		};
 
 		this.polls.set(pollId, poll);
-		this.pollByPostId.set(Number(postId), pollId);
+		this.polls.set(String(pollId), poll);
+		this.pollByPostId.set(pId, pollId);
 		this.pollVoteIdsByPoll.set(pollId, new Set());
+		this.pollVoteIdsByPoll.set(String(pollId), new Set());
 
-		return this._formatPoll(poll, [], userId);
+		return this._formatPoll(poll, [], uId);
 	}
 
 	async getPollByPostId(postId, currentUserId = null) {
-		const pId = Number(postId);
-		const pollId = this.pollByPostId.get(pId);
+		const pId = postId != null ? String(postId).trim() : '';
+		const pollId = this.pollByPostId.get(pId) ?? this.pollByPostId.get(Number(pId));
 		if (!pollId) return null;
 		return this.getPollById(pollId, currentUserId);
 	}
 
 	async getPollById(pollId, currentUserId = null) {
-		const pId = Number(pollId);
-		const poll = this.polls.get(pId);
+		const pId = pollId != null ? String(pollId).trim() : '';
+		const poll = this.polls.get(pId) ?? this.polls.get(Number(pId));
 		if (!poll) return null;
 
-		const voteIds = this.pollVoteIdsByPoll.get(pId) || new Set();
+		const voteIds = this.pollVoteIdsByPoll.get(pId) ?? this.pollVoteIdsByPoll.get(Number(pId)) ?? new Set();
 		const voteRows = Array.from(voteIds).map((id) => this.pollVotes.get(id)).filter(Boolean);
 
 		return this._formatPoll(poll, voteRows, currentUserId);
@@ -3749,20 +3753,20 @@ class InMemoryAdapter extends DatabaseAdapter {
 	async getPollsByPostIds(postIds, currentUserId = null) {
 		const map = new Map();
 		for (const postId of postIds || []) {
-			const pId = Number(postId);
-			const pollId = this.pollByPostId.get(pId);
+			const pId = String(postId).trim();
+			const pollId = this.pollByPostId.get(pId) ?? this.pollByPostId.get(Number(pId));
 			if (pollId) {
 				const formatted = await this.getPollById(pollId, currentUserId);
-				if (formatted) map.set(pId, formatted);
+				if (formatted) map.set(Number(pId) || pId, formatted);
 			}
 		}
 		return map;
 	}
 
 	async votePoll({ pollId, userId, optionIds = [], otherText = null }) {
-		const pId = Number(pollId);
-		const uId = Number(userId);
-		const poll = this.polls.get(pId);
+		const pId = pollId != null ? String(pollId).trim() : '';
+		const uId = userId != null ? String(userId).trim() : '';
+		const poll = this.polls.get(pId) ?? this.polls.get(Number(pId));
 		if (!poll) throw new Error('投票が見つかりません');
 
 		const isExpired = Boolean(poll.expires_at && new Date(poll.expires_at) <= new Date()) || Boolean(poll.closed);
@@ -3785,10 +3789,10 @@ class InMemoryAdapter extends DatabaseAdapter {
 		}
 
 		// 既存の投票を削除
-		const voteIds = this.pollVoteIdsByPoll.get(pId) || new Set();
+		const voteIds = this.pollVoteIdsByPoll.get(pId) ?? this.pollVoteIdsByPoll.get(Number(pId)) ?? new Set();
 		for (const vId of Array.from(voteIds)) {
 			const v = this.pollVotes.get(vId);
-			if (v && Number(v.user_id) === uId) {
+			if (v && String(v.user_id) === uId) {
 				voteIds.delete(vId);
 				this.pollVotes.delete(vId);
 			}
