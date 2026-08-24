@@ -1115,10 +1115,12 @@ class D1Adapter extends DatabaseAdapter {
 		return Number(res?.count ?? res ?? 0);
 	}
 
-	async getMediaPosts(userId, limit = 15, offset = 0) {
-		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/media`, {
-			limit: this._limit(limit, 15, 100), offset: this._offset(offset),
-		}), { cacheSeconds: 0 });
+	async getMediaPosts(userId, limit = 15, offset = 0, type = null) {
+		const query = { limit: this._limit(limit, 15, 100), offset: this._offset(offset) };
+		if (type && (type === 'image' || type === 'video')) {
+			query.type = type;
+		}
+		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/media`, query), { cacheSeconds: 0 });
 		return Array.isArray(list) ? list : [];
 	}
 

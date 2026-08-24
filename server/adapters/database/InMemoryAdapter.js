@@ -2903,7 +2903,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 	}
 
 	
-	async getMediaPosts(userId, limit = 15, offset = 0) {
+	async getMediaPosts(userId, limit = 15, offset = 0, type = null) {
 		const userPosts = (this.postIdsByUser.get(Number(userId)) || [])
 			.map((postId) => this.posts.get(postId))
 			.filter(Boolean);
@@ -2912,11 +2912,13 @@ class InMemoryAdapter extends DatabaseAdapter {
 		for (const post of userPosts) {
 			if (!Array.isArray(post.attachments)) continue;
 			for (const att of post.attachments) {
+				const attType = att.type || 'file';
+				if (type && attType !== type) continue;
 				items.push({
 					post_id: post.id,
 					file_id: att.id,
-					file_type: att.type || 'file',
-					type: att.type || 'file',
+					file_type: attType,
+					type: attType,
 				});
 			}
 		}

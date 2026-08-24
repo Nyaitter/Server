@@ -288,7 +288,7 @@ class DatabaseAdapter {
 		throw new Error('getMediaCount() must be implemented');
 	}
 
-	async getMediaPosts(userId, limit = 15, offset = 0) {
+	async getMediaPosts(userId, limit = 15, offset = 0, type = null) {
 		throw new Error('getMediaPosts() must be implemented');
 	}
 

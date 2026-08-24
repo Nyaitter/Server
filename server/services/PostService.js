@@ -26,7 +26,7 @@ class PostService {
           attachmentData.push({
             id: att.id,
             ...(att.url ? { url: att.url } : {}),
-            type: att.type || (att.contentType?.startsWith('image/') ? 'image' : 'file'),
+            type: att.type || (att.contentType?.startsWith('image/') ? 'image' : (att.contentType?.startsWith('video/') ? 'video' : 'file')),
             name: att.name || att.fileName || '添付ファイル',
           });
           continue;
@@ -46,7 +46,7 @@ class PostService {
         attachmentData.push({
           id: uploaded.id,
           url: uploaded.url,
-          type: att.contentType?.startsWith('image/') ? 'image' : 'file',
+          type: att.contentType?.startsWith('image/') ? 'image' : (att.contentType?.startsWith('video/') ? 'video' : 'file'),
           name: att.fileName,
         });
       }

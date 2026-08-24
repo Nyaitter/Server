@@ -3384,23 +3384,26 @@ class PostgresAdapter extends DatabaseAdapter {
 		return Number(rows[0]?.count || 0);
 	}
 
-	async getMediaPosts(userId, limit = 15, offset = 0) {
+	async getMediaPosts(userId, limit = 15, offset = 0, type = null) {
 		const normalizedLimit = Math.max(1, Math.min(Number(limit) || 15, 100));
 		const normalizedOffset = Math.max(0, Number(offset) || 0);
-		const { rows } = await this.pool.query(
-			`SELECT p.id AS post_id,
-					attachment.file->>'id' AS file_id,
-					COALESCE(attachment.file->>'type', 'file') AS file_type
-			 FROM posts p
-			 CROSS JOIN LATERAL jsonb_array_elements(p.attachments) WITH ORDINALITY AS attachment(file, position)
-			 WHERE p.user_id = $1
-			   AND p.attachments IS NOT NULL
-			   AND jsonb_typeof(p.attachments) = 'array'
-			   AND jsonb_array_length(p.attachments) > 0
-			 ORDER BY p.created_at DESC, p.id DESC, attachment.position ASC
-			 LIMIT $2 OFFSET $3`,
-			[Number(userId), normalizedLimit, normalizedOffset],
-		);
+		let query = `SELECT p.id AS post_id,
+				attachment.file->>'id' AS file_id,
+				COALESCE(attachment.file->>'type', 'file') AS file_type
+		 FROM posts p
+		 CROSS JOIN LATERAL jsonb_array_elements(p.attachments) WITH ORDINALITY AS attachment(file, position)
+		 WHERE p.user_id = $1
+		   AND p.attachments IS NOT NULL
+		   AND jsonb_typeof(p.attachments) = 'array'
+		   AND jsonb_array_length(p.attachments) > 0`;
+		const params = [Number(userId)];
+		if (type && (type === 'image' || type === 'video')) {
+			query += ` AND COALESCE(attachment.file->>'type', 'file') = $${params.length + 1}`;
+			params.push(type);
+		}
+		query += ` ORDER BY p.created_at DESC, p.id DESC, attachment.position ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+		params.push(normalizedLimit, normalizedOffset);
+		const { rows } = await this.pool.query(query, params);
 		return rows.map((row) => ({
 			post_id: Number(row.post_id),
 			file_id: row.file_id,

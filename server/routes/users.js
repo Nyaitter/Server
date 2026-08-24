@@ -562,6 +562,10 @@ router.get('/:userId/media', optionalAuth, async (req, res) => {
 	const userId = parseInt(req.params.userId, 10);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 15, 50);
 	const offset = parseInt(req.query.offset, 10) || 0;
+	const type = req.query.type;
+	if (type && !['image', 'video'].includes(type)) {
+		return res.status(400).json({ error: 'Invalid type parameter' });
+	}
 
 	if (!Number.isInteger(userId) || userId < 0) {
 		return res.status(400).json({ error: 'Invalid user id' });
@@ -571,7 +575,7 @@ router.get('/:userId/media', optionalAuth, async (req, res) => {
 		if (req.user?.id && await hasBlockRelationship(db, req.user.id, userId)) {
 			return res.json({ media_items: [] });
 		}
-		const mediaItems = await db.getMediaPosts(userId, limit, offset);
+		const mediaItems = await db.getMediaPosts(userId, limit, offset, type);
 		res.json({ media_items: mediaItems });
 	} catch (err) {
 		console.error('[users] media error:', err);
