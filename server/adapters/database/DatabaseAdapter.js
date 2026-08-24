@@ -640,6 +640,36 @@ class DatabaseAdapter {
 	async getUserPostSubscribers(authorUserId) {
 		return [];
 	}
+
+	// ==================== Polls ====================
+
+	async createPoll(pollData) {
+		throw new Error('createPoll() must be implemented');
+	}
+
+	async getPollByPostId(postId, currentUserId = null) {
+		throw new Error('getPollByPostId() must be implemented');
+	}
+
+	async getPollById(pollId, currentUserId = null) {
+		throw new Error('getPollById() must be implemented');
+	}
+
+	async votePoll(params) {
+		throw new Error('votePoll() must be implemented');
+	}
+
+	async getExpiredUnnotifiedPolls() {
+		return [];
+	}
+
+	async markPollClosedNotified(pollId) {
+		throw new Error('markPollClosedNotified() must be implemented');
+	}
+
+	async getPollVoters(pollId) {
+		return [];
+	}
 }
 
 module.exports = DatabaseAdapter;

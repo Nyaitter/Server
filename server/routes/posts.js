@@ -224,6 +224,13 @@ function validateAttachmentReferences(attachments, userId) {
 		if (!attachment || typeof attachment !== 'object') {
 			throw new Error('Invalid attachment');
 		}
+		if (attachment.type === 'poll') {
+			const options = Array.isArray(attachment.options) ? attachment.options : [];
+			if (options.length < 2) {
+				throw new Error('投票には最低2つの選択肢が必要です');
+			}
+			continue;
+		}
 		if (attachment.data !== undefined) {
 			// MIMEタイプはクライアント申告値を保存するだけで、形式による拒否は行わない。
 			normalizeContentType(attachment.contentType);

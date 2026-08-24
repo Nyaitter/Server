@@ -4898,6 +4898,289 @@ class PostgresAdapter extends DatabaseAdapter {
 			mode: r.mode,
 		}));
 	}
+
+	// ==================== Polls ====================
+
+	_formatPoll(pollRow, voteRows = [], currentUserId = null) {
+		if (!pollRow) return null;
+		const parsedUserId = Number(currentUserId);
+		const validUserId = Number.isSafeInteger(parsedUserId) && parsedUserId > 0 ? parsedUserId : null;
+		let rawOptions = [];
+		if (Array.isArray(pollRow.options)) {
+			rawOptions = pollRow.options;
+		} else if (typeof pollRow.options === 'string') {
+			try {
+				rawOptions = JSON.parse(pollRow.options);
+			} catch (_) {
+				rawOptions = [];
+			}
+		}
+		
+		// 票の集計
+		const voteCounts = new Map();
+		const otherVotes = [];
+		const myVotes = [];
+		let myOtherText = null;
+		const uniqueVoters = new Set();
+
+		for (const vote of voteRows) {
+			const vUserId = Number(vote.user_id);
+			uniqueVoters.add(vUserId);
+			const optId = Number(vote.option_id);
+			voteCounts.set(optId, (voteCounts.get(optId) || 0) + 1);
+
+			if (optId === -1 && vote.other_text) {
+				otherVotes.push({
+					text: String(vote.other_text),
+					userId: vUserId,
+				});
+			}
+
+			if (validUserId && vUserId === validUserId) {
+				myVotes.push(optId);
+				if (optId === -1 && vote.other_text) {
+					myOtherText = String(vote.other_text);
+				}
+			}
+		}
+
+		const totalVotesCount = voteRows.length;
+		const totalVotersCount = uniqueVoters.size;
+
+		const options = rawOptions.map((opt) => {
+			const id = Number(opt.id);
+			const count = voteCounts.get(id) || 0;
+			return {
+				id,
+				text: String(opt.text || ''),
+				votes_count: count,
+				percentage: totalVotesCount > 0 ? Math.round((count / totalVotesCount) * 100) : 0,
+			};
+		});
+
+		const otherCount = voteCounts.get(-1) || 0;
+		const isExpired = Boolean(pollRow.expires_at && new Date(pollRow.expires_at) <= new Date()) || Boolean(pollRow.closed);
+		const hasVoted = myVotes.length > 0;
+		const showResultsBeforeVoting = Boolean(pollRow.show_results_before_voting);
+
+		return {
+			id: Number(pollRow.id),
+			post_id: Number(pollRow.post_id),
+			user_id: Number(pollRow.user_id),
+			title: String(pollRow.title || ''),
+			options,
+			allow_multiple: Boolean(pollRow.allow_multiple),
+			allow_other: Boolean(pollRow.allow_other),
+			show_results_before_voting: showResultsBeforeVoting,
+			other_count: otherCount,
+			other_percentage: totalVotesCount > 0 ? Math.round((otherCount / totalVotesCount) * 100) : 0,
+			other_votes: isExpired || hasVoted || showResultsBeforeVoting ? otherVotes : [],
+			total_votes: totalVotesCount,
+			total_voters: totalVotersCount,
+			my_votes: myVotes,
+			my_other_text: myOtherText,
+			has_voted: hasVoted,
+			expires_at: pollRow.expires_at ? toIsoString(pollRow.expires_at) : null,
+			is_expired: isExpired,
+			closed: Boolean(pollRow.closed),
+			created_at: toIsoString(pollRow.created_at),
+		};
+	}
+
+	async createPoll({
+		postId,
+		userId,
+		title,
+		options,
+		allowMultiple = false,
+		allowOther = false,
+		showResultsBeforeVoting = true,
+		expiresAt = null,
+	}) {
+		const normOptions = Array.isArray(options) ? options.map((opt, idx) => ({
+			id: Number(opt.id ?? idx + 1),
+			text: String(opt.text ?? opt).trim(),
+		})).filter((opt) => opt.text.length > 0) : [];
+
+		if (normOptions.length < 2) {
+			throw new Error('投票には最低2つの選択肢が必要です');
+		}
+
+		const { rows } = await this.pool.query(
+			`INSERT INTO polls (post_id, user_id, title, options, allow_multiple, allow_other, show_results_before_voting, expires_at)
+			 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+			 RETURNING *`,
+			[
+				Number(postId),
+				Number(userId),
+				String(title || '').trim() || '投票',
+				JSON.stringify(normOptions),
+				Boolean(allowMultiple),
+				Boolean(allowOther),
+				Boolean(showResultsBeforeVoting),
+				expiresAt ? toIsoString(expiresAt) : null,
+			],
+		);
+		return this._formatPoll(rows[0], [], userId);
+	}
+
+	async getPollByPostId(postId, currentUserId = null) {
+		const pId = Number(postId);
+		if (!Number.isSafeInteger(pId) || pId <= 0) return null;
+
+		const { rows: pollRows } = await this.pool.query(
+			'SELECT * FROM polls WHERE post_id = $1',
+			[pId],
+		);
+		if (!pollRows[0]) return null;
+
+		const { rows: voteRows } = await this.pool.query(
+			'SELECT * FROM poll_votes WHERE poll_id = $1',
+			[Number(pollRows[0].id)],
+		);
+
+		return this._formatPoll(pollRows[0], voteRows, currentUserId);
+	}
+
+	async getPollById(pollId, currentUserId = null) {
+		const pId = Number(pollId);
+		if (!Number.isSafeInteger(pId) || pId <= 0) return null;
+
+		const { rows: pollRows } = await this.pool.query(
+			'SELECT * FROM polls WHERE id = $1',
+			[pId],
+		);
+		if (!pollRows[0]) return null;
+
+		const { rows: voteRows } = await this.pool.query(
+			'SELECT * FROM poll_votes WHERE poll_id = $1',
+			[pId],
+		);
+
+		return this._formatPoll(pollRows[0], voteRows, currentUserId);
+	}
+
+	async getPollsByPostIds(postIds, currentUserId = null) {
+		const ids = [...new Set((postIds || []).map(Number).filter(Number.isSafeInteger))];
+		if (ids.length === 0) return new Map();
+
+		const { rows: pollRows } = await this.pool.query(
+			'SELECT * FROM polls WHERE post_id = ANY($1::int[])',
+			[ids],
+		);
+		if (pollRows.length === 0) return new Map();
+
+		const pollIds = pollRows.map((r) => Number(r.id));
+		const { rows: voteRows } = await this.pool.query(
+			'SELECT * FROM poll_votes WHERE poll_id = ANY($1::int[])',
+			[pollIds],
+		);
+
+		const votesByPollId = new Map();
+		for (const v of voteRows) {
+			const pId = Number(v.poll_id);
+			if (!votesByPollId.has(pId)) votesByPollId.set(pId, []);
+			votesByPollId.get(pId).push(v);
+		}
+
+		const map = new Map();
+		for (const pollRow of pollRows) {
+			const formatted = this._formatPoll(pollRow, votesByPollId.get(Number(pollRow.id)) || [], currentUserId);
+			if (formatted) map.set(Number(pollRow.post_id), formatted);
+		}
+		return map;
+	}
+
+	async votePoll({ pollId, userId, optionIds = [], otherText = null }) {
+		const pId = Number(pollId);
+		const uId = Number(userId);
+		if (!Number.isSafeInteger(pId) || pId <= 0 || !Number.isSafeInteger(uId) || uId <= 0) {
+			throw new Error('無効なパラメータです');
+		}
+
+		return this._withTransaction(async (client) => {
+			const { rows: pollRows } = await client.query(
+				'SELECT * FROM polls WHERE id = $1 FOR UPDATE',
+				[pId],
+			);
+			const poll = pollRows[0];
+			if (!poll) throw new Error('投票が見つかりません');
+
+			const isExpired = Boolean(poll.expires_at && new Date(poll.expires_at) <= new Date()) || Boolean(poll.closed);
+			if (isExpired) throw new Error('この投票は既に終了しています');
+
+			const rawOptions = Array.isArray(poll.options) ? poll.options : [];
+			const validOptionIds = new Set(rawOptions.map((o) => Number(o.id)));
+			if (poll.allow_other) {
+				validOptionIds.add(-1); // その他用のID
+			}
+
+			let targetOptionIds = [...new Set((optionIds || []).map(Number).filter((id) => validOptionIds.has(id)))];
+			const isOtherSelected = targetOptionIds.includes(-1);
+			const sanitizedOtherText = isOtherSelected && typeof otherText === 'string' ? otherText.trim().slice(0, 200) : null;
+
+			if (targetOptionIds.length === 0) {
+				throw new Error('選択肢を1つ以上選択してください');
+			}
+
+			if (!poll.allow_multiple && targetOptionIds.length > 1) {
+				targetOptionIds = [targetOptionIds[0]];
+			}
+
+			// 既存の投票を削除（再投票/更新）
+			await client.query(
+				'DELETE FROM poll_votes WHERE poll_id = $1 AND user_id = $2',
+				[pId, uId],
+			);
+
+			// 新規投票を挿入
+			for (const optId of targetOptionIds) {
+				await client.query(
+					`INSERT INTO poll_votes (poll_id, user_id, option_id, other_text, created_at)
+					 VALUES ($1, $2, $3, $4, NOW())`,
+					[pId, uId, optId, optId === -1 ? sanitizedOtherText : null],
+				);
+			}
+
+			// 更新後の全票を取得
+			const { rows: voteRows } = await client.query(
+				'SELECT * FROM poll_votes WHERE poll_id = $1',
+				[pId],
+			);
+
+			return this._formatPoll(poll, voteRows, uId);
+		});
+	}
+
+	async getExpiredUnnotifiedPolls() {
+		const { rows } = await this.pool.query(
+			`SELECT * FROM polls
+			 WHERE expires_at IS NOT NULL AND expires_at <= NOW() AND closed_notified = FALSE
+			 LIMIT 50`,
+		);
+		return rows;
+	}
+
+	async markPollClosedNotified(pollId) {
+		const pId = Number(pollId);
+		if (!Number.isSafeInteger(pId) || pId <= 0) return;
+
+		await this.pool.query(
+			'UPDATE polls SET closed = TRUE, closed_notified = TRUE WHERE id = $1',
+			[pId],
+		);
+	}
+
+	async getPollVoters(pollId) {
+		const pId = Number(pollId);
+		if (!Number.isSafeInteger(pId) || pId <= 0) return [];
+
+		const { rows } = await this.pool.query(
+			'SELECT DISTINCT user_id FROM poll_votes WHERE poll_id = $1',
+			[pId],
+		);
+		return rows.map((r) => Number(r.user_id)).filter(Number.isSafeInteger);
+	}
 }
 
 module.exports = PostgresAdapter;

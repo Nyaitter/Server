@@ -23,6 +23,7 @@ const NOTIFICATION_TYPES = new Set([
   'appeal_rejected',
   'verification_approved',
   'verification_rejected',
+  'poll_ended',
 ]);
 
 const TARGET_KINDS = new Set(['post', 'dm', 'user', 'route']);

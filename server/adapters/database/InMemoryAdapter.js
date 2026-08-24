@@ -57,7 +57,13 @@ class InMemoryAdapter extends DatabaseAdapter {
 		this.groupDms = new Map(); // dmId -> { id, title, member, host_id, time, post, unread }
 		this.groupDmIdsByMember = new Map(); // userId -> Set(dmId)
 		this.groupDmUnreadTotalByMember = new Map(); // userId -> unread total
-					this.dmE2EKeys = new Map(); // userId -> { public_key, created_at, updated_at }
+		this.dmE2EKeys = new Map(); // userId -> { public_key, created_at, updated_at }
+		this.polls = new Map(); // pollId -> poll
+		this.pollByPostId = new Map(); // postId -> pollId
+		this.pollVotes = new Map(); // voteId -> vote
+		this.pollVoteIdsByPoll = new Map(); // pollId -> Set(voteId)
+		this.nextPollId = 1;
+		this.nextPollVoteId = 1;
 
 		this.follows = new Map(); // `${followerId}:${followingId}` -> true
 		this.followingIdsByUser = new Map(); // followerId -> Set(followingId)
@@ -3600,6 +3606,241 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 		}
 		return subscribers;
+	}
+
+	// ==================== Polls ====================
+
+	_formatPoll(poll, voteRows = [], currentUserId = null) {
+		if (!poll) return null;
+		const parsedUserId = Number(currentUserId);
+		const validUserId = Number.isSafeInteger(parsedUserId) && parsedUserId > 0 ? parsedUserId : null;
+		const rawOptions = Array.isArray(poll.options) ? poll.options : [];
+
+		const voteCounts = new Map();
+		const otherVotes = [];
+		const myVotes = [];
+		let myOtherText = null;
+		const uniqueVoters = new Set();
+
+		for (const vote of voteRows) {
+			const vUserId = Number(vote.user_id);
+			uniqueVoters.add(vUserId);
+			const optId = Number(vote.option_id);
+			voteCounts.set(optId, (voteCounts.get(optId) || 0) + 1);
+
+			if (optId === -1 && vote.other_text) {
+				otherVotes.push({
+					text: String(vote.other_text),
+					userId: vUserId,
+				});
+			}
+
+			if (validUserId && vUserId === validUserId) {
+				myVotes.push(optId);
+				if (optId === -1 && vote.other_text) {
+					myOtherText = String(vote.other_text);
+				}
+			}
+		}
+
+		const totalVotesCount = voteRows.length;
+		const totalVotersCount = uniqueVoters.size;
+
+		const options = rawOptions.map((opt) => {
+			const id = Number(opt.id);
+			const count = voteCounts.get(id) || 0;
+			return {
+				id,
+				text: String(opt.text || ''),
+				votes_count: count,
+				percentage: totalVotesCount > 0 ? Math.round((count / totalVotesCount) * 100) : 0,
+			};
+		});
+
+		const otherCount = voteCounts.get(-1) || 0;
+		const isExpired = Boolean(poll.expires_at && new Date(poll.expires_at) <= new Date()) || Boolean(poll.closed);
+		const hasVoted = myVotes.length > 0;
+		const showResultsBeforeVoting = Boolean(poll.show_results_before_voting);
+
+		return {
+			id: Number(poll.id),
+			post_id: Number(poll.post_id),
+			user_id: Number(poll.user_id),
+			title: String(poll.title || ''),
+			options,
+			allow_multiple: Boolean(poll.allow_multiple),
+			allow_other: Boolean(poll.allow_other),
+			show_results_before_voting: showResultsBeforeVoting,
+			other_count: otherCount,
+			other_percentage: totalVotesCount > 0 ? Math.round((otherCount / totalVotesCount) * 100) : 0,
+			other_votes: isExpired || hasVoted || showResultsBeforeVoting ? otherVotes : [],
+			total_votes: totalVotesCount,
+			total_voters: totalVotersCount,
+			my_votes: myVotes,
+			my_other_text: myOtherText,
+			has_voted: hasVoted,
+			expires_at: poll.expires_at || null,
+			is_expired: isExpired,
+			closed: Boolean(poll.closed),
+			created_at: poll.created_at,
+		};
+	}
+
+	async createPoll({
+		postId,
+		userId,
+		title,
+		options,
+		allowMultiple = false,
+		allowOther = false,
+		showResultsBeforeVoting = true,
+		expiresAt = null,
+	}) {
+		const normOptions = Array.isArray(options) ? options.map((opt, idx) => ({
+			id: Number(opt.id ?? idx + 1),
+			text: String(opt.text ?? opt).trim(),
+		})).filter((opt) => opt.text.length > 0) : [];
+
+		if (normOptions.length < 2) {
+			throw new Error('投票には最低2つの選択肢が必要です');
+		}
+
+		const pollId = this.nextPollId++;
+		const poll = {
+			id: pollId,
+			post_id: Number(postId),
+			user_id: Number(userId),
+			title: String(title || '').trim() || '投票',
+			options: normOptions,
+			allow_multiple: Boolean(allowMultiple),
+			allow_other: Boolean(allowOther),
+			show_results_before_voting: Boolean(showResultsBeforeVoting),
+			expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+			closed: false,
+			closed_notified: false,
+			created_at: new Date().toISOString(),
+		};
+
+		this.polls.set(pollId, poll);
+		this.pollByPostId.set(Number(postId), pollId);
+		this.pollVoteIdsByPoll.set(pollId, new Set());
+
+		return this._formatPoll(poll, [], userId);
+	}
+
+	async getPollByPostId(postId, currentUserId = null) {
+		const pId = Number(postId);
+		const pollId = this.pollByPostId.get(pId);
+		if (!pollId) return null;
+		return this.getPollById(pollId, currentUserId);
+	}
+
+	async getPollById(pollId, currentUserId = null) {
+		const pId = Number(pollId);
+		const poll = this.polls.get(pId);
+		if (!poll) return null;
+
+		const voteIds = this.pollVoteIdsByPoll.get(pId) || new Set();
+		const voteRows = Array.from(voteIds).map((id) => this.pollVotes.get(id)).filter(Boolean);
+
+		return this._formatPoll(poll, voteRows, currentUserId);
+	}
+
+	async getPollsByPostIds(postIds, currentUserId = null) {
+		const map = new Map();
+		for (const postId of postIds || []) {
+			const pId = Number(postId);
+			const pollId = this.pollByPostId.get(pId);
+			if (pollId) {
+				const formatted = await this.getPollById(pollId, currentUserId);
+				if (formatted) map.set(pId, formatted);
+			}
+		}
+		return map;
+	}
+
+	async votePoll({ pollId, userId, optionIds = [], otherText = null }) {
+		const pId = Number(pollId);
+		const uId = Number(userId);
+		const poll = this.polls.get(pId);
+		if (!poll) throw new Error('投票が見つかりません');
+
+		const isExpired = Boolean(poll.expires_at && new Date(poll.expires_at) <= new Date()) || Boolean(poll.closed);
+		if (isExpired) throw new Error('この投票は既に終了しています');
+
+		const rawOptions = Array.isArray(poll.options) ? poll.options : [];
+		const validOptionIds = new Set(rawOptions.map((o) => Number(o.id)));
+		if (poll.allow_other) validOptionIds.add(-1);
+
+		let targetOptionIds = [...new Set((optionIds || []).map(Number).filter((id) => validOptionIds.has(id)))];
+		const isOtherSelected = targetOptionIds.includes(-1);
+		const sanitizedOtherText = isOtherSelected && typeof otherText === 'string' ? otherText.trim().slice(0, 200) : null;
+
+		if (targetOptionIds.length === 0) {
+			throw new Error('選択肢を1つ以上選択してください');
+		}
+
+		if (!poll.allow_multiple && targetOptionIds.length > 1) {
+			targetOptionIds = [targetOptionIds[0]];
+		}
+
+		// 既存の投票を削除
+		const voteIds = this.pollVoteIdsByPoll.get(pId) || new Set();
+		for (const vId of Array.from(voteIds)) {
+			const v = this.pollVotes.get(vId);
+			if (v && Number(v.user_id) === uId) {
+				voteIds.delete(vId);
+				this.pollVotes.delete(vId);
+			}
+		}
+
+		// 新規投票を挿入
+		for (const optId of targetOptionIds) {
+			const newVoteId = this.nextPollVoteId++;
+			const vote = {
+				id: newVoteId,
+				poll_id: pId,
+				user_id: uId,
+				option_id: optId,
+				other_text: optId === -1 ? sanitizedOtherText : null,
+				created_at: new Date().toISOString(),
+			};
+			this.pollVotes.set(newVoteId, vote);
+			voteIds.add(newVoteId);
+		}
+
+		const voteRows = Array.from(voteIds).map((id) => this.pollVotes.get(id)).filter(Boolean);
+		return this._formatPoll(poll, voteRows, uId);
+	}
+
+	async getExpiredUnnotifiedPolls() {
+		const now = new Date();
+		const result = [];
+		for (const poll of this.polls.values()) {
+			if (poll.expires_at && new Date(poll.expires_at) <= now && !poll.closed_notified) {
+				result.push(poll);
+			}
+		}
+		return result;
+	}
+
+	async markPollClosedNotified(pollId) {
+		const poll = this.polls.get(Number(pollId));
+		if (poll) {
+			poll.closed = true;
+			poll.closed_notified = true;
+		}
+	}
+
+	async getPollVoters(pollId) {
+		const pId = Number(pollId);
+		const voteIds = this.pollVoteIdsByPoll.get(pId) || new Set();
+		const voters = new Set();
+		for (const vId of voteIds) {
+			const v = this.pollVotes.get(vId);
+			if (v) voters.add(Number(v.user_id));
+		}
+		return Array.from(voters);
 	}
 }
 

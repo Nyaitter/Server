@@ -72,6 +72,13 @@ function validateAttachmentReferences(attachments, userId) {
     if (!attachment || typeof attachment !== 'object') {
       throw new Error('Invalid attachment');
     }
+    if (attachment.type === 'poll') {
+      const options = Array.isArray(attachment.options) ? attachment.options : [];
+      if (options.length < 2) {
+        throw new Error('投票には最低2つの選択肢が必要です');
+      }
+      continue;
+    }
     if (attachment.data !== undefined) {
       normalizeContentType(attachment.contentType);
       decodeBase64File(attachment.data);
@@ -345,7 +352,10 @@ async function processCreatePostAction(context, payload) {
     if (groupAnnouncement) await requireGroupPermission(context.db, group, userId, 'announce');
   }
 
-  const processedAttachments = attachments.map((attachment) => {
+  const pollAttachment = attachments.find((a) => a && a.type === 'poll') || (payload.poll && typeof payload.poll === 'object' ? payload.poll : null);
+  const fileAttachments = attachments.filter((a) => a && a.type !== 'poll');
+
+  const processedAttachments = fileAttachments.map((attachment) => {
     if (attachment.data !== undefined) {
       return {
         buffer: decodeBase64File(attachment.data),
@@ -380,6 +390,24 @@ async function processCreatePostAction(context, payload) {
     replyTo,
     repostTo,
   });
+
+  if (pollAttachment && typeof context.db.createPoll === 'function') {
+    try {
+      const createdPoll = await context.db.createPoll({
+        postId: post.id,
+        userId,
+        title: pollAttachment.title || content || '投票',
+        options: pollAttachment.options,
+        allowMultiple: Boolean(pollAttachment.allow_multiple ?? pollAttachment.allowMultiple),
+        allowOther: Boolean(pollAttachment.allow_other ?? pollAttachment.allowOther),
+        showResultsBeforeVoting: Boolean(pollAttachment.show_results_before_voting ?? pollAttachment.showResultsBeforeVoting ?? true),
+        expiresAt: pollAttachment.expires_at ?? pollAttachment.expiresAt ?? null,
+      });
+      post.poll = createdPoll;
+    } catch (pollErr) {
+      console.warn('[post-actions] failed to create poll for post:', pollErr.message);
+    }
+  }
 
   if (idempotencyKey) {
     idempotencyCache.set(idempotencyKey, { post, createdAt: now });

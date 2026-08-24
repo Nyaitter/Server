@@ -30,6 +30,7 @@ const PushNotificationService = require('./services/PushNotificationService');
 const { ModerationReportService } = require('./services/ModerationReportService');
 const { startModerationAssignmentScheduler } = require('./services/ModerationAssignmentScheduler');
 const { AutoModerationService } = require('./services/AutoModerationService');
+const { startPollExpirationScheduler } = require('./services/PollExpirationScheduler');
 const PostActionQueue = require('./services/PostActionQueue');
 const PostKeywordBackfillService = require('./services/PostKeywordBackfillService');
 const { serializeNotification } = require('./utils/serialize');
@@ -290,6 +291,7 @@ app.get(apiPath('/ready'), async (req, res) => {
 const restRoutes = [
     ['', require('./routes/status')],
     ['posts', require('./routes/posts')],
+    ['polls', require('./routes/polls')],
     ['uploads', require('./routes/uploads')],
     ['url-cards', require('./routes/urlCards')],
     ['ranking', require('./routes/ranking')],
@@ -490,6 +492,7 @@ const dbAdapter = createDatabaseAdapter();
 const storageAdapter = createStorageAdapter();
 let operatorControl = null;
 let moderationScheduler = null;
+let pollExpirationScheduler = null;
 
 const pushNotificationService = new PushNotificationService({
     dbAdapter,
@@ -542,6 +545,7 @@ async function startServer() {
     app.locals.dbAdapter = dbAdapter;
     app.locals.storageAdapter = storageAdapter;
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
+    pollExpirationScheduler = startPollExpirationScheduler(dbAdapter, realtimeConnections, pushNotificationService);
     operatorControl = await startOperatorControlServer({
         dbAdapter,
         shutdown,
@@ -625,6 +629,8 @@ async function shutdown(signal) {
         clearInterval(realtimeHeartbeat);
         moderationScheduler?.stop();
         moderationScheduler = null;
+        pollExpirationScheduler?.stop();
+        pollExpirationScheduler = null;
         autoModerationService.stop();
         postKeywordBackfillService.stop();
         postKeywordBackfillQueue.stop();

@@ -607,6 +607,11 @@ async function serializePostsBatch(
 		}));
 	}
 
+	const allPostIds = allPosts.map((p) => Number(p.id)).filter((id) => Number.isInteger(id) && id > 0);
+	const pollsByPostId = typeof db.getPollsByPostIds === 'function'
+		? await db.getPollsByPostIds(allPostIds, currentUserId)
+		: new Map();
+
 	function getBriefUser(author) {
 		const authorId = Number(author?.id);
 		if (!briefUsersById.has(authorId)) {
@@ -714,6 +719,7 @@ async function serializePostsBatch(
 			repost_count: Number(metric.repost_count || 0),
 			liked_by_me: !!metric.liked_by_me,
 			starred_by_me: !!metric.starred_by_me,
+			poll: pollsByPostId.get(postId) || null,
 		};
 		visitingPostIds.delete(postId);
 		return serialized;
