@@ -369,20 +369,52 @@ async function filterViewablePosts(db, posts, viewerId = null, visibilityContext
 }
 
 /**
- * 検索除外ユーザーの投稿を発見可能な一覧へ載せるか判定する。
+ * NGワード一覧を正規化する。改行またはカンマ区切りの文字列またはstring[]を受け取り、
+ * 空でない小文字のトリム済みワードのSetを返す。
  */
-async function filterDiscoverablePosts(db, posts, viewerId = null, visibilityContext = null) {
+function normalizeNgWords(value) {
+	if (!value) return new Set();
+	const raw = Array.isArray(value) ? value : String(value).split(/[\n,]+/);
+	return new Set(
+		raw.map((w) => String(w).trim().toLowerCase()).filter((w) => w.length > 0),
+	);
+}
+
+/**
+ * ポストの検索対象テキストを返す（content / view_content を結合）。
+ */
+function getPostSearchText(post) {
+	const parts = [
+		post?.view_content ?? post?.viewContent ?? '',
+		post?.content ?? '',
+	].filter(Boolean);
+	return parts.join(' ').toLowerCase();
+}
+
+/**
+ * 検索除外ユーザーの投稿を発見可能な一覧へ載せるか判定する。
+ * ngWords が指定されている場合は、ポストのテキスト内にNGワードが含まれていれば除外する。
+ */
+async function filterDiscoverablePosts(db, posts, viewerId = null, visibilityContext = null, { ngWords = null } = {}) {
 	const values = (posts || []).filter(Boolean);
 	const context = visibilityContext || await createPostVisibilityContext(db, values, viewerId);
+	const activeNgWords = ngWords instanceof Set ? ngWords : normalizeNgWords(ngWords);
 	return values.filter((post) => {
 		// グループ投稿はグループ専用画面・タブでのみ公開する。
 		if (getPostGroupId(post)) return false;
 		const authorId = getPostAuthorId(post);
 		const author = context.authorsById?.get(authorId) || null;
-		if (!author?.shadow) return true;
-		if (context.viewerId == null) return false;
-		if (context.viewerId === authorId) return true;
-		return context.followingIds.has(authorId);
+		if (author?.shadow) {
+			if (context.viewerId == null) return false;
+			if (context.viewerId !== authorId && !context.followingIds.has(authorId)) return false;
+		}
+		if (activeNgWords.size > 0) {
+			const text = getPostSearchText(post);
+			for (const word of activeNgWords) {
+				if (text.includes(word)) return false;
+			}
+		}
+		return true;
 	});
 }
 
@@ -391,6 +423,7 @@ module.exports = {
 	canViewPostWithContext,
 	filterViewablePosts,
 	filterDiscoverablePosts,
+	normalizeNgWords,
 	createPostVisibilityContext,
 	extendPostVisibilityContext,
 	getFollowRelationshipSnapshot,

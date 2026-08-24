@@ -25,6 +25,7 @@ async function getDiscoverablePostPage({
 	limit = 30,
 	offset = 0,
 	beforeId = null,
+	ngWords = null,
 	fetchCandidatePage,
 }) {
 	if (typeof fetchCandidatePage !== 'function') {
@@ -130,6 +131,7 @@ async function getDiscoverablePostPage({
 			viewablePosts,
 			viewerId,
 			candidateVisibilityContext,
+			{ ngWords },
 		);
 
 		for (const post of discoverablePosts) {

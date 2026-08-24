@@ -22,6 +22,7 @@ const {
 	createPostVisibilityContext,
 	filterViewablePosts,
 	filterDiscoverablePosts,
+	normalizeNgWords,
 } = require('../utils/postVisibility');
 const {
 	getDiscoverablePostPage,
@@ -99,6 +100,13 @@ function safeParsePostId(idStr) {
 	return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+function getViewerNgWords(req) {
+	const ngWordsSetting = req.user?.settings?.ng_words;
+	if (!ngWordsSetting) return null;
+	const words = normalizeNgWords(ngWordsSetting);
+	return words.size > 0 ? words : null;
+}
+
 // 軽量なメトリクスAPIは投稿本体を返さないため、可視性検証だけを行う。
 async function getViewablePostIds(db, postIds, viewerId = null, knownViewer = null) {
 	const uniqueIds = [...new Set((postIds || []).map(Number).filter(Number.isInteger))];
@@ -127,6 +135,7 @@ async function getDiscoverableModePage(
 		limit,
 		offset,
 		beforeId = null,
+		ngWords = null,
 	},
 ) {
 	return getDiscoverablePostPage({
@@ -136,6 +145,7 @@ async function getDiscoverableModePage(
 		limit,
 		offset,
 		beforeId,
+		ngWords,
 		fetchCandidatePage: async ({ limit: candidateLimit, offset: candidateOffset, beforeId: candidateBeforeId }) => {
 			if (mode === 'timeline') {
 				return db.getTimelinePostIds({
@@ -336,6 +346,7 @@ router.get('/', optionalAuth, async (req, res) => {
 				viewablePosts,
 				currentUserId,
 				visibilityContext,
+				{ ngWords: getViewerNgWords(req) },
 			);
 
 				const enriched = await serializePostsBatch(
@@ -383,6 +394,7 @@ router.get('/trending', optionalAuth, async (req, res) => {
 				viewablePosts,
 				currentUserId,
 				visibilityContext,
+				{ ngWords: getViewerNgWords(req) },
 			);
 			const hydrated = await serializePostsBatch(
 				db,
@@ -430,6 +442,7 @@ router.get('/search', optionalAuth, searchLimiter, async (req, res) => {
 				limit,
 				offset,
 				beforeId,
+				ngWords: getViewerNgWords(req),
 			});
 			const posts = await serializePostsBatch(
 				db,
@@ -480,6 +493,7 @@ router.get('/recommended', optionalAuth, async (req, res) => {
 				limit,
 				offset,
 				beforeId,
+				ngWords: getViewerNgWords(req),
 			});
 			const posts = await serializePostsBatch(
 				db,
@@ -528,6 +542,7 @@ router.get('/page', optionalAuth, async (req, res) => {
 				limit,
 				offset,
 				beforeId,
+				ngWords: getViewerNgWords(req),
 			});
 			if (result?.ids) {
 				timelineCacheManager.setIds(cacheKey, result);
@@ -648,6 +663,7 @@ router.get('/ids', optionalAuth, async (req, res) => {
 				viewerId: currentUserId,
 				limit,
 				offset,
+				ngWords: getViewerNgWords(req),
 			});
 			res.json({ ids: result.ids, has_more: result.has_more });
 
