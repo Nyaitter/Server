@@ -1067,6 +1067,59 @@ router.delete('/admin/:id', requireAuth, postWriteLimiter, (req, res) => {
 	}
 });
 
+router.get('/:id/activity', optionalAuth, async (req, res) => {
+	const db = getDbAdapter(req);
+	const postId = safeParsePostId(req.params.id);
+	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+
+	if (!postId) {
+		return res.status(400).json({ error: 'Invalid post id' });
+	}
+
+	try {
+		const post = await db.getPostById(postId);
+		const currentUserId = req.user ? Number(req.user.id) : null;
+		if (!post || !(await canViewPost(db, post, currentUserId, null, null, req.user?.visibilityUser || null))) {
+			return res.status(404).json({ error: 'Post not found' });
+		}
+
+		const isAuthor = Boolean(currentUserId && Number(post.userId) === currentUserId);
+
+		// リポストしたユーザー一覧
+		const reposts = await db.getRepostsOfPost(postId, limit);
+
+		// 引用ポスト一覧
+		const quotePosts = await db.getQuotesOfPost(postId, limit);
+		const serializedQuotes = await serializePostsBatch(db, quotePosts, currentUserId, getPublicUrl(req));
+
+		// いいね・お気に入り（ポスト主のみ）
+		let likes = undefined;
+		let stars = undefined;
+		if (isAuthor) {
+			likes = await db.getLikesOfPost(postId, limit);
+			stars = await db.getStarsOfPost(postId, limit);
+		}
+
+		res.json({
+			success: true,
+			is_author: isAuthor,
+			reposts,
+			quotes: serializedQuotes,
+			likes,
+			stars,
+			counts: {
+				reposts: reposts.length,
+				quotes: serializedQuotes.length,
+				likes: isAuthor ? (likes ? likes.length : 0) : undefined,
+				stars: isAuthor ? (stars ? stars.length : 0) : undefined,
+			},
+		});
+	} catch (err) {
+		console.error('[posts] activity error:', err);
+		res.status(500).json({ error: 'ポストアクティビティの取得に失敗しました' });
+	}
+});
+
 router.get('/:id/reposts', optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const postId = safeParsePostId(req.params.id);

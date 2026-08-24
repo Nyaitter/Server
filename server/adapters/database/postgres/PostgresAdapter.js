@@ -3714,14 +3714,85 @@ class PostgresAdapter extends DatabaseAdapter {
 	async getRepostsOfPost(postId, limit = 50) {
 		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
 		const { rows } = await this.pool.query(
-			`SELECT u.id as user_id, u.name, u.handle FROM reposts r
+			`SELECT u.id as user_id, u.name, u.handle, u.icon_url, u.verify, u.admin, u.bio, r.created_at as reposted_at
+			 FROM reposts r
 			 JOIN users u ON u.id = r.user_id
 			 WHERE r.post_id = $1
 			 ORDER BY r.created_at DESC
 			 LIMIT $2`,
 			[Number(postId), safeLimit],
 		);
-		return rows.map((r) => ({ user_id: Number(r.user_id), name: r.name, handle: r.handle }));
+		return rows.map((r) => ({
+			user_id: Number(r.user_id),
+			id: Number(r.user_id),
+			name: r.name,
+			handle: r.handle,
+			icon_url: r.icon_url,
+			verify: Boolean(r.verify),
+			admin: Boolean(r.admin),
+			bio: r.bio,
+			reposted_at: toIsoString(r.reposted_at),
+		}));
+	}
+
+	async getLikesOfPost(postId, limit = 50) {
+		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+		const { rows } = await this.pool.query(
+			`SELECT u.id as user_id, u.name, u.handle, u.icon_url, u.verify, u.admin, u.bio, l.created_at as liked_at
+			 FROM likes l
+			 JOIN users u ON u.id = l.user_id
+			 WHERE l.post_id = $1
+			 ORDER BY l.created_at DESC
+			 LIMIT $2`,
+			[Number(postId), safeLimit],
+		);
+		return rows.map((r) => ({
+			user_id: Number(r.user_id),
+			id: Number(r.user_id),
+			name: r.name,
+			handle: r.handle,
+			icon_url: r.icon_url,
+			verify: Boolean(r.verify),
+			admin: Boolean(r.admin),
+			bio: r.bio,
+			liked_at: toIsoString(r.liked_at),
+		}));
+	}
+
+	async getStarsOfPost(postId, limit = 50) {
+		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+		const { rows } = await this.pool.query(
+			`SELECT u.id as user_id, u.name, u.handle, u.icon_url, u.verify, u.admin, u.bio, s.created_at as starred_at
+			 FROM stars s
+			 JOIN users u ON u.id = s.user_id
+			 WHERE s.post_id = $1
+			 ORDER BY s.created_at DESC
+			 LIMIT $2`,
+			[Number(postId), safeLimit],
+		);
+		return rows.map((r) => ({
+			user_id: Number(r.user_id),
+			id: Number(r.user_id),
+			name: r.name,
+			handle: r.handle,
+			icon_url: r.icon_url,
+			verify: Boolean(r.verify),
+			admin: Boolean(r.admin),
+			bio: r.bio,
+			starred_at: toIsoString(r.starred_at),
+		}));
+	}
+
+	async getQuotesOfPost(postId, limit = 50) {
+		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+		const { rows } = await this.pool.query(
+			`SELECT * FROM posts
+			 WHERE repost_to = $1 AND content IS NOT NULL AND content != ''
+			 ORDER BY created_at DESC
+			 LIMIT $2`,
+			[Number(postId), safeLimit],
+		);
+		return rows.map(normalizePostRow);
 	}
 
 	async getRepostCount(postId) {

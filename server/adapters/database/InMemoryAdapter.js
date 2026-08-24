@@ -2330,21 +2330,87 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 	async getRepostsOfPost(postId, limit = 50) {
 		const result = [];
-		for (const key of this.reposts.keys()) {
+		const pIdNum = Number(postId);
+		const userIds = this.repostsByPost?.get(pIdNum) || [];
+		for (const uId of userIds) {
+			const user = this.users.get(Number(uId));
+			if (user) {
+				result.push({
+					user_id: Number(user.id),
+					id: Number(user.id),
+					name: user.name,
+					handle: user.handle,
+					icon_url: user.icon_url,
+					verify: Boolean(user.verify),
+					admin: Boolean(user.admin),
+					bio: user.bio,
+				});
+				if (result.length >= limit) break;
+			}
+		}
+		return result;
+	}
+
+	async getLikesOfPost(postId, limit = 50) {
+		const result = [];
+		const pIdNum = Number(postId);
+		for (const [key] of this.likes.entries()) {
 			const [uId, pId] = key.split(':').map(Number);
-			if (pId === postId) {
+			if (pId === pIdNum) {
 				const user = this.users.get(uId);
 				if (user) {
 					result.push({
-						userId: uId,
+						user_id: Number(user.id),
+						id: Number(user.id),
 						name: user.name,
 						handle: user.handle,
+						icon_url: user.icon_url,
+						verify: Boolean(user.verify),
+						admin: Boolean(user.admin),
+						bio: user.bio,
 					});
 					if (result.length >= limit) break;
 				}
 			}
 		}
 		return result;
+	}
+
+	async getStarsOfPost(postId, limit = 50) {
+		const result = [];
+		const pIdNum = Number(postId);
+		for (const [key] of this.stars.entries()) {
+			const [uId, pId] = key.split(':').map(Number);
+			if (pId === pIdNum) {
+				const user = this.users.get(uId);
+				if (user) {
+					result.push({
+						user_id: Number(user.id),
+						id: Number(user.id),
+						name: user.name,
+						handle: user.handle,
+						icon_url: user.icon_url,
+						verify: Boolean(user.verify),
+						admin: Boolean(user.admin),
+						bio: user.bio,
+					});
+					if (result.length >= limit) break;
+				}
+			}
+		}
+		return result;
+	}
+
+	async getQuotesOfPost(postId, limit = 50) {
+		const pIdNum = Number(postId);
+		const result = [];
+		for (const post of this.posts.values()) {
+			if (Number(post.repostTo || post.repost_to) === pIdNum && post.content) {
+				result.push(post);
+			}
+		}
+		result.sort((a, b) => new Date(b.createdAt || b.time || 0) - new Date(a.createdAt || a.time || 0));
+		return result.slice(0, limit);
 	}
 
 	getRepostCountForPost(postId) {
