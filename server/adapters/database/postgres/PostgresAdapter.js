@@ -5035,13 +5035,13 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!/^[A-Za-z0-9_-]+$/.test(pId)) return null;
 
 		const { rows: pollRows } = await this.pool.query(
-			'SELECT * FROM polls WHERE post_id = $1',
+			'SELECT * FROM polls WHERE post_id::text = $1',
 			[pId],
 		);
 		if (!pollRows[0]) return null;
 
 		const { rows: voteRows } = await this.pool.query(
-			'SELECT * FROM poll_votes WHERE poll_id = $1',
+			'SELECT * FROM poll_votes WHERE poll_id::text = $1',
 			[String(pollRows[0].id)],
 		);
 
@@ -5053,13 +5053,13 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!/^[A-Za-z0-9_-]+$/.test(pId)) return null;
 
 		const { rows: pollRows } = await this.pool.query(
-			'SELECT * FROM polls WHERE id = $1',
+			'SELECT * FROM polls WHERE id::text = $1',
 			[pId],
 		);
 		if (!pollRows[0]) return null;
 
 		const { rows: voteRows } = await this.pool.query(
-			'SELECT * FROM poll_votes WHERE poll_id = $1',
+			'SELECT * FROM poll_votes WHERE poll_id::text = $1',
 			[pId],
 		);
 
@@ -5071,14 +5071,14 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (ids.length === 0) return new Map();
 
 		const { rows: pollRows } = await this.pool.query(
-			'SELECT * FROM polls WHERE post_id = ANY($1::bigint[])',
+			'SELECT * FROM polls WHERE post_id::text = ANY($1::text[])',
 			[ids],
 		);
 		if (pollRows.length === 0) return new Map();
 
 		const pollIds = pollRows.map((r) => String(r.id));
 		const { rows: voteRows } = await this.pool.query(
-			'SELECT * FROM poll_votes WHERE poll_id = ANY($1::text[])',
+			'SELECT * FROM poll_votes WHERE poll_id::text = ANY($1::text[])',
 			[pollIds],
 		);
 
@@ -5106,7 +5106,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		return this._withTransaction(async (client) => {
 			const { rows: pollRows } = await client.query(
-				'SELECT * FROM polls WHERE id = $1 FOR UPDATE',
+				'SELECT * FROM polls WHERE id::text = $1 FOR UPDATE',
 				[pId],
 			);
 			const poll = pollRows[0];
@@ -5145,7 +5145,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			// 既存の投票を削除（再投票/更新）
 			await client.query(
-				'DELETE FROM poll_votes WHERE poll_id = $1 AND user_id = $2',
+				'DELETE FROM poll_votes WHERE poll_id::text = $1 AND user_id::text = $2',
 				[pId, uId],
 			);
 
@@ -5161,7 +5161,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			// 更新後の全票を取得
 			const { rows: voteRows } = await client.query(
-				'SELECT * FROM poll_votes WHERE poll_id = $1',
+				'SELECT * FROM poll_votes WHERE poll_id::text = $1',
 				[pId],
 			);
 
@@ -5183,7 +5183,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!/^[A-Za-z0-9_-]+$/.test(pId)) return;
 
 		await this.pool.query(
-			'UPDATE polls SET closed = TRUE, closed_notified = TRUE WHERE id = $1',
+			'UPDATE polls SET closed = TRUE, closed_notified = TRUE WHERE id::text = $1',
 			[pId],
 		);
 	}
@@ -5193,7 +5193,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!/^[A-Za-z0-9_-]+$/.test(pId)) return [];
 
 		const { rows } = await this.pool.query(
-			'SELECT DISTINCT user_id FROM poll_votes WHERE poll_id = $1',
+			'SELECT DISTINCT user_id FROM poll_votes WHERE poll_id::text = $1',
 			[pId],
 		);
 		return rows.map((r) => String(r.user_id)).filter((id) => /^[A-Za-z0-9_-]+$/.test(id));

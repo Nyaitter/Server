@@ -30,3 +30,8 @@ CREATE TABLE IF NOT EXISTS poll_votes (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_poll_votes_unique ON poll_votes(poll_id, user_id, option_id);
 CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_id ON poll_votes(poll_id);
 CREATE INDEX IF NOT EXISTS idx_poll_votes_user_poll ON poll_votes(user_id, poll_id);
+
+-- 既存テーブルが存在する場合の型変更（INT/BIGINT -> TEXT）
+ALTER TABLE polls ALTER COLUMN id TYPE TEXT;
+ALTER TABLE poll_votes ALTER COLUMN id TYPE TEXT;
+ALTER TABLE poll_votes ALTER COLUMN poll_id TYPE TEXT;
