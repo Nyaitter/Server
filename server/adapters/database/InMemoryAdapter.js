@@ -34,16 +34,21 @@ class InMemoryAdapter extends DatabaseAdapter {
 		// 投稿読み取りを投稿総数に比例させないための補助インデックス。
 		this.postIdsNewest = []; // newest -> oldest
 		this.postIdsByUser = new Map(); // userId -> newest -> oldest post IDs
-			this.replyIdsByParent = new Map(); // parent post ID -> newest -> oldest reply IDs
-			this.replyCountByParent = new Map(); // post ID -> direct/indirect descendant reply count
+		this.groupPostIdsByGroup = new Map(); // groupId -> newest -> oldest post IDs
+		this.groupAnnouncementPostIdsByGroup = new Map(); // groupId -> newest -> oldest post IDs
+		this.repostsByPost = new Map(); // postId -> Set(userId)
+		this.repostsByUser = new Map(); // userId -> Set(postId)
+		this.userPostCount = new Map(); // userId -> count
+		this.replyIdsByParent = new Map(); // parent post ID -> newest -> oldest reply IDs
+		this.replyCountByParent = new Map(); // post ID -> direct/indirect descendant reply count
 		this.likeCountByPost = new Map();
 		this.starCountByPost = new Map();
 		this.repostCountByPost = new Map();
-					this.likes = new Map(); // `${userId}:${postId}` -> true
-			this.stars = new Map();
-			this.likedPostIdsByUser = new Map(); // userId -> Set(postId)
-						this.starredPostIdsByUser = new Map(); // userId -> Set(postId)
-			this.userKeywordAffinityByUser = new Map(); // userId -> Map(keyword -> score)
+		this.likes = new Map(); // `${userId}:${postId}` -> true
+		this.stars = new Map();
+		this.likedPostIdsByUser = new Map(); // userId -> Set(postId)
+		this.starredPostIdsByUser = new Map(); // userId -> Set(postId)
+		this.userKeywordAffinityByUser = new Map(); // userId -> Map(keyword -> score)
 
 
 
@@ -374,6 +379,19 @@ class InMemoryAdapter extends DatabaseAdapter {
 		this.postIdsNewest.unshift(postId);
 		if (!this.postIdsByUser.has(userId)) this.postIdsByUser.set(userId, []);
 		this.postIdsByUser.get(userId).unshift(postId);
+		if (!post.repostTo) {
+			this.userPostCount.set(userId, (this.userPostCount.get(userId) || 0) + 1);
+		}
+		const groupId = post.groupId || post.group_id;
+		if (groupId) {
+			const gid = String(groupId);
+			if (!this.groupPostIdsByGroup.has(gid)) this.groupPostIdsByGroup.set(gid, []);
+			this.groupPostIdsByGroup.get(gid).unshift(postId);
+			if (post.groupAnnouncement || post.group_announcement) {
+				if (!this.groupAnnouncementPostIdsByGroup.has(gid)) this.groupAnnouncementPostIdsByGroup.set(gid, []);
+				this.groupAnnouncementPostIdsByGroup.get(gid).unshift(postId);
+			}
+		}
 		if (post.replyTo != null) {
 			const parentId = Number(post.replyTo);
 			if (!this.replyIdsByParent.has(parentId)) this.replyIdsByParent.set(parentId, []);
@@ -393,7 +411,25 @@ class InMemoryAdapter extends DatabaseAdapter {
 			if (index >= 0) items.splice(index, 1);
 		};
 		removeId(this.postIdsNewest);
-		removeId(this.postIdsByUser.get(Number(post.userId)));
+		const userId = Number(post.userId);
+		removeId(this.postIdsByUser.get(userId));
+		if (!post.repostTo) {
+			const currentPostCount = this.userPostCount.get(userId) || 0;
+			if (currentPostCount <= 1) this.userPostCount.delete(userId);
+			else this.userPostCount.set(userId, currentPostCount - 1);
+		}
+		const groupId = post.groupId || post.group_id;
+		if (groupId) {
+			const gid = String(groupId);
+			const groupPosts = this.groupPostIdsByGroup.get(gid);
+			removeId(groupPosts);
+			if (!groupPosts || groupPosts.length === 0) this.groupPostIdsByGroup.delete(gid);
+			if (post.groupAnnouncement || post.group_announcement) {
+				const announcePosts = this.groupAnnouncementPostIdsByGroup.get(gid);
+				removeId(announcePosts);
+				if (!announcePosts || announcePosts.length === 0) this.groupAnnouncementPostIdsByGroup.delete(gid);
+			}
+		}
 		if (post.replyTo != null) {
 			const parentId = Number(post.replyTo);
 			const replies = this.replyIdsByParent.get(parentId);
@@ -475,7 +511,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			async dislikePost(userId, postId) {
 				const post = this.posts.get(Number(postId));
 				if (!post) return false;
-				this._adjustUserKeywordAffinities(Number(userId), Number(postId), -5);
+				this._adjustUserKeywordAffinities(Number(userId), Number(postId), -15);
 				return true;
 			}
 
@@ -1433,14 +1469,21 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return this._cloneGroupJoinRequest(request);
 	}
 
-	_groupPostResult(posts, limit, offset, beforeId) {
+	_groupPostResult(postIds, limit, offset, beforeId, filterFn = null) {
 		const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
-		const filtered = posts.filter((post) => !beforeId || Number(post.id) < Number(beforeId))
-			.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() || Number(b.id) - Number(a.id));
-		const useOffset = !beforeId;
-		const visible = useOffset ? filtered.slice(Math.max(0, Number(offset) || 0), Math.max(0, Number(offset) || 0) + safeLimit + 1) : filtered.slice(0, safeLimit + 1);
-		const ids = visible.slice(0, safeLimit).map((post) => Number(post.id));
-		return { ids, has_more: visible.length > safeLimit, next_cursor: visible.length > safeLimit ? ids.at(-1) || null : null };
+		const normalizedOffset = !beforeId ? Math.max(0, Number(offset) || 0) : 0;
+		const matched = [];
+		for (const id of postIds) {
+			if (beforeId && Number(id) >= Number(beforeId)) continue;
+			const post = this.posts.get(Number(id));
+			if (!post) continue;
+			if (filterFn && !filterFn(post)) continue;
+			matched.push(Number(id));
+			if (matched.length >= normalizedOffset + safeLimit + 1) break;
+		}
+		const window = matched.slice(normalizedOffset, normalizedOffset + safeLimit + 1);
+		const ids = window.slice(0, safeLimit);
+		return { ids, has_more: window.length > safeLimit, next_cursor: window.length > safeLimit ? ids.at(-1) || null : null };
 	}
 
 	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only' } = {}) {
@@ -1448,13 +1491,15 @@ class InMemoryAdapter extends DatabaseAdapter {
 			? null
 			: (Number.isInteger(Number(authorId)) && Number(authorId) >= 0 ? Number(authorId) : null);
 		const replyOnly = subType === 'replies_only';
-		return this._groupPostResult([...this.posts.values()].filter((post) => post.groupId === String(groupId)
-			&& (replyOnly ? post.replyTo != null : post.replyTo == null)
-			&& (normalizedAuthorId == null || Number(post.userId) === normalizedAuthorId)), limit, offset, beforeId);
+		const sourceIds = this.groupPostIdsByGroup.get(String(groupId)) || [];
+		return this._groupPostResult(sourceIds, limit, offset, beforeId, (post) =>
+			(replyOnly ? post.replyTo != null : post.replyTo == null)
+			&& (normalizedAuthorId == null || Number(post.userId) === normalizedAuthorId));
 	}
 
 	async getGroupAnnouncementPostIds(groupId, { limit = 30, offset = 0, beforeId = null } = {}) {
-		return this._groupPostResult([...this.posts.values()].filter((post) => post.groupId === String(groupId) && post.groupAnnouncement), limit, offset, beforeId);
+		const sourceIds = this.groupAnnouncementPostIdsByGroup.get(String(groupId)) || [];
+		return this._groupPostResult(sourceIds, limit, offset, beforeId, (post) => Boolean(post.groupAnnouncement || post.group_announcement));
 	}
 
 	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null } = {}) {
@@ -1578,10 +1623,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 			const followers = this.followerIdsByUser.get(id)?.size || 0;
 			const followings = this.followingIdsByUser.get(id)?.size || 0;
-			let posts = 0;
-			for (const candidate of this.posts.values()) {
-				if (Number(candidate.userId) === id && !candidate.repostTo) posts += 1;
-			}
+			const posts = this.userPostCount.get(id) || 0;
 
 			return {
 				userId: id,

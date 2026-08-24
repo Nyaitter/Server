@@ -3274,7 +3274,7 @@ class PostgresAdapter extends DatabaseAdapter {
 				tags = normalizePostTags(keywords);
 			}
 			if (tags.length > 0) {
-				await this._adjustUserKeywordAffinitiesForTags(client, uId, tags, -5);
+				await this._adjustUserKeywordAffinitiesForTags(client, uId, tags, -15);
 			}
 			return true;
 		});

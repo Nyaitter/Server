@@ -2227,6 +2227,14 @@ export default {
 				return json({ pinned: true });
 			}
 
+			if (method === 'POST' && pathname.match(/^\/posts\/(\d+)\/dislike$/)) {
+				const postId = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const userId = Number(body.userId);
+				await adjustUserKeywordAffinities(db, userId, postId, -15);
+				return json({ success: true });
+			}
+
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/pinned$/)) {
 				const userId = Number(pathname.split('/')[2]);
 				const { results } = await db.prepare(

@@ -684,7 +684,10 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	async dislikePost(userId, postId) {
-		return true;
+		const result = await this._write(`/posts/${requireId(postId, 'postId')}/dislike`, {
+			userId: requireId(userId, 'userId'),
+		});
+		return typeof result === 'boolean' ? result : !!result?.success;
 	}
 
 	async getFollowing(userId, limit = 100) {
