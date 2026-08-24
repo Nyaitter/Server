@@ -256,8 +256,13 @@ router.put('/:id/clicked', requireAuth, async (req, res) => {
 		if (Number(notification.userId ?? notification.user_id) !== Number(userId)) {
 			return res.status(403).json({ error: 'Forbidden' });
 		}
+		if (typeof db.markNotificationAsRead === 'function') {
+			await db.markNotificationAsRead(notificationId);
+		}
 		await db.markNotificationAsClicked(notificationId);
-		res.json({ success: true, read: Boolean(notification.read), clicked: true });
+		const unreadCount = await db.getUnreadNotificationCount(userId);
+		await publishNotificationUnreadCount(req, userId);
+		res.json({ success: true, read: true, clicked: true, notification_unread_count: unreadCount });
 	} catch (err) {
 		console.error('[notifications] mark clicked error:', err);
 		res.status(500).json({ error: 'クリック状態の更新に失敗しました' });

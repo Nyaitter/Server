@@ -85,6 +85,18 @@ class ConnectionManager {
     return false;
   }
 
+  hasActiveConnection(userId) {
+    const normalizedUserId = Number(userId);
+    if (!Number.isInteger(normalizedUserId) || normalizedUserId < 0) return false;
+    const sockets = this.connectionsByUser.get(normalizedUserId);
+    if (!sockets || sockets.size === 0) return false;
+    for (const socket of Array.from(sockets)) {
+      if (socket && socket.readyState === 1) return true;
+      this.unregister(normalizedUserId, socket);
+    }
+    return false;
+  }
+
   _sendSerializedToUser(userId, serialized) {
     const normalizedUserId = Number(userId);
     const sockets = this.connectionsByUser.get(normalizedUserId);
