@@ -69,11 +69,13 @@ class LogHubManager {
         const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
         const lines = text.split('\n');
 
+        let pendingErrorMessage = null;
+
         for (const line of lines) {
           if (!line.trim()) continue;
           let type = isError ? 'error' : 'system';
           let level = isError ? 'error' : 'info';
-          if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:')) {
+          if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
             type = 'error';
             level = 'error';
           } else if (line.includes('[SECURITY]') || line.includes('[RateLimit]')) {
@@ -89,6 +91,22 @@ class LogHubManager {
             message: line,
             source,
           });
+
+          if (type === 'error' && !/^\s+at\s+/.test(line)) {
+            pendingErrorMessage = line;
+          }
+        }
+
+        if (pendingErrorMessage) {
+          try {
+            const ErrorManager = require('./ErrorManager');
+            const cleanMessage = pendingErrorMessage
+              .replace(/^\[\d+:\d+:\d+\]\s*/, '')
+              .replace(/^\[ERROR\]\s*/, '')
+              .replace(/^\[server\]\s*/, '')
+              .trim();
+            ErrorManager.recordExternalError({ message: cleanMessage, stack: text }, { source });
+          } catch (_) {}
         }
       } catch (_) {}
     };
@@ -218,14 +236,36 @@ class LogHubManager {
         const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
         const lines = text.split('\n');
 
+        let pendingErrorMessage = null;
+
         for (const line of lines) {
           if (!line.trim()) continue;
+          let type = isError ? 'error' : 'system';
+          let level = isError ? 'error' : 'info';
+          if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
+            type = 'error';
+            level = 'error';
+          }
+
           this.addLog({
-            type: isError ? 'error' : 'system',
-            level: isError ? 'error' : 'info',
+            type,
+            level,
             message: line,
             source: 'console',
           }, false);
+
+          if (type === 'error' && !/^\s+at\s+/.test(line)) {
+            pendingErrorMessage = line;
+          }
+        }
+
+        if (pendingErrorMessage && this.errorManager && typeof this.errorManager.recordError === 'function') {
+          const cleanMessage = pendingErrorMessage
+            .replace(/^\[\d+:\d+:\d+\]\s*/, '')
+            .replace(/^\[ERROR\]\s*/, '')
+            .replace(/^\[server\]\s*/, '')
+            .trim();
+          this.errorManager.recordError({ message: cleanMessage, stack: text }, { source: 'console' });
         }
       } catch (_) {}
     };

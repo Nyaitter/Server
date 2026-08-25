@@ -239,7 +239,7 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     if (this.preferredModel && this.preferredModel !== 'auto') {
       return this.preferredModel;
     }
-    if (this.geminiApiKey) return 'google/gemini-2.0-flash';
+    if (this.geminiApiKey) return 'google/gemini-3.6-flash';
     if (this.openaiApiKey) return 'openai/gpt-4o';
     return 'zen/deepseek-v4-flash-free';
   }
@@ -285,8 +285,11 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
 
   _callGeminiApi(prompt) {
     return new Promise((resolve, reject) => {
-      const rawModel = this.preferredModel.replace(/^google\//, '');
-      const modelName = rawModel.startsWith('gemini') ? rawModel : 'gemini-2.0-flash';
+      const rawModel = this.preferredModel.replace(/^google\//, '').trim();
+      let modelName = rawModel && rawModel !== 'auto' ? rawModel : 'gemini-3.6-flash';
+      if (modelName === 'gemini-2.0-flash' || modelName === 'gemini-1.5-flash' || modelName === 'gemini-2.5-flash') {
+        modelName = 'gemini-3.6-flash';
+      }
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(this.geminiApiKey)}`;
       const payload = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
 
