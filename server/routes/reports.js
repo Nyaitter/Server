@@ -56,7 +56,7 @@ router.post({
 
   try {
     const report = await service.createReport({
-      reporterId: req.user.id,
+      reporterUserId: req.user.id,
       targetKind: target_kind,
       targetId: parsedTargetId,
       description: typeof description === 'string' ? description.trim() : '',

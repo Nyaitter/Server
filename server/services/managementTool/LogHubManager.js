@@ -150,6 +150,10 @@ class LogHubManager {
                 this.logs.push(item);
                 if (this.logs.length > MAX_LOG_LINES) this.logs.shift();
                 if (this.wss) this._broadcast(item);
+
+                if (item.type === 'error' && this.errorManager && typeof this.errorManager.checkNewErrors === 'function') {
+                  this.errorManager.checkNewErrors();
+                }
               }
             } catch (_) {}
           }

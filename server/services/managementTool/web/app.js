@@ -142,9 +142,11 @@ function renderErrors(errors = cachedErrorsData) {
       <div class="card-meta">
         <span>${new Date(err.timestamp).toLocaleTimeString()}</span>
         <span>Hits: ${err.occurrences || 1}</span>
-        ${err.fixed ? '<span style="color:#3fb950; font-weight:bold;">[Fixed]</span>' : ''}
+        ${err.analyzing ? '<span style="color:var(--primary-color);">[Analyzing]</span>' : ''}
+        ${err.fixing ? '<span style="color:#d29922;">[Fixing]</span>' : ''}
+        ${err.fixed ? '<span style="color:#3fb950;">[Fixed]</span>' : ''}
         ${err.analysis ? '<span style="color:var(--primary-color)">[Analyzed]</span>' : ''}
-        ${err.prUrl ? `<a href="${escapeHTML(err.prUrl)}" target="_blank" onclick="event.stopPropagation()" style="color:#58a6ff; font-weight:bold;">PR #${err.prUrl.split('/').pop()}</a>` : ''}
+        ${err.prUrl ? `<a href="${escapeHTML(err.prUrl)}" target="_blank" onclick="event.stopPropagation()" style="color:#58a6ff;">PR #${err.prUrl.split('/').pop()}</a>` : ''}
         ${err.issueUrl ? `<a href="${escapeHTML(err.issueUrl)}" target="_blank" onclick="event.stopPropagation()">Issue #${err.issueUrl.split('/').pop()}</a>` : ''}
       </div>
     </div>
@@ -206,13 +208,21 @@ async function openErrorDetail(errorId, showOverlay = true) {
         Request: ${escapeHTML(err.context?.method || 'GET')} ${escapeHTML(err.context?.url || 'N/A')}<br>
         IP: ${escapeHTML(err.context?.ip || 'N/A')} | UA: ${escapeHTML(err.context?.userAgent || 'N/A')}
       </div>
-      ${err.fixed ? `<div style="margin-top:0.4rem; color:#3fb950; font-size:12px;"><strong>Status:</strong> Automatically fixed${err.modifiedFiles?.length ? ` (${err.modifiedFiles.join(', ')})` : ''}</div>` : ''}
-      ${err.prUrl ? `<div style="margin-top:0.3rem;"><a href="${escapeHTML(err.prUrl)}" target="_blank" style="color:#58a6ff;">View Pull Request: #${err.prUrl.split('/').pop()}</a></div>` : ''}
+      ${err.fixed ? `<div style="margin-top:0.4rem; color:#3fb950; font-size:12px;"><strong>Status:</strong> Fixed${err.modifiedFiles?.length ? ` (${err.modifiedFiles.join(', ')})` : ''}</div>` : ''}
+      ${err.prUrl ? `<div style="margin-top:0.3rem;"><a href="${escapeHTML(err.prUrl)}" target="_blank" style="color:#58a6ff;">Pull Request: #${err.prUrl.split('/').pop()}</a></div>` : ''}
     </div>
     ${err.stack ? `<div><div class="code-box">${escapeHTML(err.stack)}</div></div>` : ''}
     <div id="modal-ai-section">
-      ${err.analysis ? `
-        <div class="ai-panel">
+      ${err.analyzing ? `
+        <div class="ai-panel" style="margin-top:0.8rem; font-size:12px; color:var(--primary-color);">
+          Analyzing with AI...
+        </div>
+      ` : err.fixing ? `
+        <div class="ai-panel" style="margin-top:0.8rem; font-size:12px; color:#d29922;">
+          Auto-fixing...
+        </div>
+      ` : err.analysis ? `
+        <div class="ai-panel" style="margin-top:0.8rem;">
           <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--secondary-text-color);">
             <strong style="color:var(--primary-color);">AI Analysis (${escapeHTML(err.analysis.model)})</strong>
             <span>${new Date(err.analysis.analyzedAt).toLocaleTimeString()}</span>
@@ -224,8 +234,8 @@ async function openErrorDetail(errorId, showOverlay = true) {
   `;
 
   modalFooter.innerHTML = `
-    <button class="btn btn-secondary btn-sm" id="modal-fix-btn">Auto Fix</button>
-    <button class="btn btn-secondary btn-sm" id="modal-analyze-btn">Analyze</button>
+    <button class="btn btn-secondary btn-sm" id="modal-fix-btn" ${err.fixing ? 'disabled' : ''}>${err.fixing ? 'Fixing...' : 'Auto Fix'}</button>
+    <button class="btn btn-secondary btn-sm" id="modal-analyze-btn" ${err.analyzing ? 'disabled' : ''}>${err.analyzing ? 'Analyzing...' : 'Analyze'}</button>
     ${err.fixed && !err.prUrl ? '<button class="btn btn-secondary btn-sm" id="modal-pr-btn">Create PR</button>' : ''}
     ${!err.issueUrl ? '<button class="btn btn-secondary btn-sm" id="modal-issue-btn">Create Issue</button>' : ''}
     ${err.status !== 'resolved' ? '<button class="btn btn-primary btn-sm" id="modal-resolve-btn">Resolve</button>' : '<button class="btn btn-secondary btn-sm" id="modal-reopen-btn">Reopen</button>'}

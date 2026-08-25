@@ -57,8 +57,8 @@ class ModerationReportService {
     this.now = now;
   }
 
-  async createReport({ reporterUserId, targetKind, targetId, description = '' }) {
-    const reporterId = toSafeInteger(reporterUserId, 'reporterUserId');
+  async createReport({ reporterUserId, reporterId: altReporterId, targetKind, targetId, description = '' }) {
+    const reporterId = toSafeInteger(reporterUserId ?? altReporterId, 'reporterUserId');
     const kind = String(targetKind || '');
     if (!REPORT_TARGET_KINDS.has(kind)) throw new Error('targetKind is invalid');
     const id = ['dm', 'dm_message'].includes(kind)
