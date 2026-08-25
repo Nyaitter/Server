@@ -43,16 +43,24 @@ async function checkAuth() {
     if (res.user && res.user.admin) {
       currentAdmin = res.user;
       document.getElementById('current-admin-name').textContent = currentAdmin?.name || `#${currentAdmin?.id}`;
+      
+      // 認証成功後にリアルタイム接続とタブデータを安全に起動
+      initUnifiedLogsWS();
+      initNotificationsSSE();
+      checkPendingApprovals();
+      setInterval(checkPendingApprovals, 15000);
       loadActiveTabData();
       return;
     }
-  } catch (_) {}
+  } catch (err) {
+    console.warn('[NMT] Auth check error:', err.message);
+  }
 
   // 3. 未認証時は NyaitterAuth へリダイレクト
   window.location.href = '/auth/login';
 }
 
-document.getElementById('logout-btn').addEventListener('click', () => {
+document.getElementById('logout-btn')?.addEventListener('click', () => {
   localStorage.removeItem('nmt_token');
   window.location.href = '/auth/login';
 });
@@ -70,14 +78,18 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
   });
 });
 
-function loadActiveTabData() {
+async function loadActiveTabData() {
   const activeTab = document.querySelector('.tab-pane.active')?.id;
-  if (activeTab === 'errors-tab') loadErrors();
-  if (activeTab === 'logs-tab') loadUnifiedLogs();
-  if (activeTab === 'admins-tab') { loadAdmins(); loadAuditLogs(); }
-  if (activeTab === 'security-tab') { loadSecurityEvents(); loadRecentAccessLogs(); }
-  if (activeTab === 'server-tab') loadServerTab();
-  if (activeTab === 'settings-tab') loadSettings();
+  try {
+    if (activeTab === 'errors-tab') await loadErrors();
+    else if (activeTab === 'logs-tab') await loadUnifiedLogs();
+    else if (activeTab === 'admins-tab') { await loadAdmins(); await loadAuditLogs(); }
+    else if (activeTab === 'security-tab') { await loadSecurityEvents(); await loadRecentAccessLogs(); }
+    else if (activeTab === 'server-tab') await loadServerTab();
+    else if (activeTab === 'settings-tab') await loadSettings();
+  } catch (err) {
+    console.error('[NMT] Failed to load tab data for', activeTab, err);
+  }
 }
 
 // ── 1. Errors ────────────────────────────────────────────────────────────
@@ -919,6 +931,27 @@ function formatLogLineHTML(l) {
 }
 
 async function loadUnifiedLogs() {
+  // 1. 即座に HTTP API から最新ログを fetch して描画
+  try {
+    const types = getSelectedLogTypes();
+    const search = document.getElementById('unified-log-search')?.value.trim() || '';
+    const level = document.getElementById('unified-log-level')?.value || 'all';
+    const params = new URLSearchParams({
+      types: types.join(','),
+      search,
+      level,
+      limit: '200',
+    });
+    const res = await api(`/logs?${params.toString()}`);
+    if (res.logs && Array.isArray(res.logs)) {
+      unifiedLogData = res.logs;
+      renderUnifiedLogs();
+    }
+  } catch (err) {
+    console.warn('[NMT] HTTP log fetch warning:', err.message);
+  }
+
+  // 2. WebSocket 接続の確認・初期化
   if (!unifiedLogWS || unifiedLogWS.readyState !== WebSocket.OPEN) {
     initUnifiedLogsWS();
   } else {
@@ -1203,6 +1236,3 @@ function debounce(fn, ms) {
 }
 
 checkAuth();
-setInterval(checkPendingApprovals, 15000);
-initNotificationsSSE();
-initUnifiedLogsWS();

@@ -443,17 +443,20 @@ class ManagementToolServer {
     });
 
     // ── 4.2. 統合ログ API ────────────────────────────────────────────────
-    this.app.get('/api/logs/all', authMiddleware, (req, res) => {
+    const handleGetLogs = (req, res) => {
       const { types, search, level, limit } = req.query;
-      const typeList = types ? types.split(',').map((s) => s.trim()).filter(Boolean) : ['error', 'security', 'ai'];
+      const typeList = types ? types.split(',').map((s) => s.trim()).filter(Boolean) : ['system', 'error', 'security', 'ai'];
       const logs = this.logHub.getLogs({
         types: typeList,
         search,
         level,
-        limit: Number(limit) || 200,
+        limit: Number(limit) || 300,
       });
       res.json({ logs });
-    });
+    };
+
+    this.app.get('/api/logs', authMiddleware, handleGetLogs);
+    this.app.get('/api/logs/all', authMiddleware, handleGetLogs);
 
     this.app.post('/api/logs/clear', authMiddleware, (req, res) => {
       this.logHub.clearLogs();
