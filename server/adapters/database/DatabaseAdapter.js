@@ -147,6 +147,9 @@ class DatabaseAdapter {
 	async deleteAccount(userId) {
 		throw new Error('deleteAccount() must be implemented');
 	}
+	async deleteUser(userId) {
+		return this.deleteAccount(userId);
+	}
 	async getAccountAttachmentKeys(userId) {
 		throw new Error('getAccountAttachmentKeys() must be implemented');
 	}

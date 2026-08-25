@@ -185,13 +185,13 @@ class ErrorManager {
       const shouldAutoAnalysis = process.env.NMT_AUTO_ANALYSIS === 'true' || this.autoAnalysis;
 
       if ((shouldAutoFix || shouldAutoAnalysis) && this.aiService) {
-        const unanalyzed = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing && !e.fixing);
+        const unanalyzed = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing);
         for (const record of unanalyzed) {
-          if (shouldAutoFix) {
-            this.triggerAutoFix(record.id).catch((e) => console.warn('[NMT-Errors] Auto fix error:', e.message));
-          } else if (shouldAutoAnalysis) {
-            this.triggerAnalysis(record.id).catch((e) => console.warn('[NMT-Errors] Auto AI analysis error:', e.message));
-          }
+          this.triggerAnalysis(record.id).then(() => {
+            if (shouldAutoFix && !record.fixing && !record.fixed) {
+              return this.triggerAutoFix(record.id);
+            }
+          }).catch((e) => console.warn('[NMT-Errors] Auto analysis/fix error:', e.message));
         }
       }
     } catch (_) {}

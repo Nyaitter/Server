@@ -250,7 +250,7 @@ router.delete({
       );
     }
 
-    await db.deleteUser(imposter.id);
+    await db.deleteAccount(imposter.id);
     res.json({ success: true });
   } catch (error) {
     console.error('[imposters] delete error:', error);

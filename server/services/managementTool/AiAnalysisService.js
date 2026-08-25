@@ -432,15 +432,49 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
   async _callOpencodeZenFreeModel(prompt) {
     const zenModels = await this.fetchZenModels();
     const freeModels = (Array.isArray(zenModels) ? zenModels : []).filter((m) => m.free === true || (m.id && m.id.includes('free')));
-    let targetModel = this.preferredModel;
-    if (!targetModel || targetModel === 'auto' || !freeModels.some((m) => m.id === targetModel)) {
-      targetModel = freeModels[0]?.id || 'nemotron-3.5-lightning-free';
+    
+    // 試行するモデル候補の順序を決定
+    const candidates = [];
+    if (this.preferredModel && this.preferredModel !== 'auto' && freeModels.some((m) => m.id === this.preferredModel)) {
+      candidates.push(this.preferredModel);
+    }
+    for (const m of freeModels) {
+      if (!candidates.includes(m.id)) candidates.push(m.id);
+    }
+    if (candidates.length === 0) candidates.push('nemotron-3.5-lightning-free', 'hy3-free', 'mimo-v2.5-free');
+
+    const maxRounds = 3; // 全モデル候補を最大3周巡回
+    const maxRetriesPerModel = 2; // 各モデルごとに最大2回試行
+    let lastError = null;
+
+    for (let round = 1; round <= maxRounds; round++) {
+      for (const modelName of candidates) {
+        for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
+          try {
+            const result = await this._callSingleZenModel(modelName, prompt);
+            if (result?.content) return result;
+          } catch (err) {
+            lastError = err;
+            console.warn(`[NMT-AI] Zen model ${modelName} (round ${round}, attempt ${attempt}) failed: ${err.message}`);
+            // 指数バックオフ待機
+            await new Promise((r) => setTimeout(r, Math.min(1000 * Math.pow(1.5, attempt), 4000)));
+          }
+        }
+      }
+      // ラウンド間に少し待機
+      if (round < maxRounds) {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
     }
 
+    throw lastError || new Error('All OpenCode Zen free models failed after multiple retries');
+  }
+
+  _callSingleZenModel(modelName, prompt) {
     return new Promise((resolve, reject) => {
       const url = 'https://opencode.ai/zen/v1/chat/completions';
       const payload = JSON.stringify({
-        model: targetModel,
+        model: modelName,
         messages: [{ role: 'user', content: prompt }],
       });
 
@@ -451,7 +485,7 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
           'User-Agent': 'NyaitterManagementTool/1.0',
           'Content-Length': Buffer.byteLength(payload),
         },
-        timeout: 25000,
+        timeout: 15000,
       }, (res) => {
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
@@ -459,11 +493,14 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
               const parsed = JSON.parse(data);
+              if (parsed.error) {
+                return reject(new Error(parsed.error.message || 'Provider error'));
+              }
               const content = parsed.choices?.[0]?.message?.content || parsed.response || parsed.text;
-              if (content) return resolve({ model: targetModel, content });
+              if (content) return resolve({ model: modelName, content });
             } catch (_) {}
           }
-          reject(new Error(`OpenCode Zen HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+          reject(new Error(`OpenCode Zen HTTP ${res.statusCode}: ${data.slice(0, 150)}`));
         });
       });
 
