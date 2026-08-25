@@ -494,7 +494,8 @@ async function serializePostsBatch(
 	// Extract embedded post URLs in content
 	const embeddedPostIds = [];
 	for (const post of initialPosts) {
-		if (post.repostTo == null && post.content) {
+		const repostTo = post.repostTo ?? post.repost_to;
+		if (repostTo == null && post.content) {
 			const embId = extractPostIdFromText(post.content, post.id);
 			if (embId && !postsById.has(embId)) embeddedPostIds.push(embId);
 		}
@@ -524,9 +525,11 @@ async function serializePostsBatch(
 		for (let depth = 0; depth < 2; depth += 1) {
 			const relationIds = [];
 			for (const post of frontier) {
-				if (post.replyTo != null && !postsById.has(Number(post.replyTo))) relationIds.push(post.replyTo);
-				if (post.repostTo != null && !postsById.has(Number(post.repostTo))) relationIds.push(post.repostTo);
-				if (post.content && post.repostTo == null) {
+				const replyTo = post.replyTo ?? post.reply_to ?? post.reply_id;
+				const repostTo = post.repostTo ?? post.repost_to;
+				if (replyTo != null && !postsById.has(Number(replyTo))) relationIds.push(replyTo);
+				if (repostTo != null && !postsById.has(Number(repostTo))) relationIds.push(repostTo);
+				if (post.content && repostTo == null) {
 					const embId = extractPostIdFromText(post.content, post.id);
 					if (embId && !postsById.has(embId)) relationIds.push(embId);
 				}
@@ -657,16 +660,17 @@ async function serializePostsBatch(
 		visitingPostIds.add(postId);
 		const metric = metricsByPostId.get(postId) || {};
 		const author = usersById.get(Number(post.userId)) || null;
-		const replyToPost = depth < 2 && post.replyTo != null
-			? composeReference(post.replyTo, depth)
+		const replyToId = post.replyTo ?? post.reply_to ?? post.reply_id;
+		const replyToPost = depth < 2 && replyToId != null
+			? composeReference(replyToId, depth)
 			: null;
 
 		let repostedPost = null;
-		let effectiveRepostTo = post.repostTo || null;
+		let effectiveRepostTo = post.repostTo ?? post.repost_to ?? null;
 		if (depth < 2) {
-			if (post.repostTo != null) {
+			if (effectiveRepostTo != null) {
 				// Explicit quote repost has top priority
-				repostedPost = composeReference(post.repostTo, depth);
+				repostedPost = composeReference(effectiveRepostTo, depth);
 			} else if (post.content) {
 				// Auto-detect post URL from content
 				const embeddedPostId = extractPostIdFromText(post.content, post.id);
