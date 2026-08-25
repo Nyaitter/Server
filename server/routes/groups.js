@@ -42,6 +42,14 @@ function getDb(req) {
   return req.app.locals.dbAdapter;
 }
 
+function errorResponse(res, error, contextMessage = 'server error') {
+  console.error(`[groups] ${contextMessage}:`, error);
+  const status = error.statusCode || error.status || (error.message?.includes('見つかりません') ? 404 : 500);
+  return res.status(status).json({
+    error: error.message || '内部エラーが発生しました。',
+  });
+}
+
 function groupPayload(group, { roles = null, membership = null, owner = null } = {}) {
   return {
     id: String(group.id),
@@ -171,7 +179,7 @@ router.get({
   const query = typeof req.query?.query === 'string' ? req.query.query.trim() : '';
 
   try {
-    const groups = await db.searchGroups({ query, limit, offset });
+    const groups = await db.getGroupsByVisibility({ query, visibility: ['open', 'open_invite'], limit, offset });
     res.json({
       groups: groups.map((g) => groupPayload(g)),
       limit,
@@ -248,7 +256,18 @@ router.get({
 }, requireAuth, async (req, res) => {
   const db = getDb(req);
   try {
-    const invites = await db.getGroupInvitesForUser(req.user.id);
+    const rawInvites = await db.getGroupInvites({ inviteeId: req.user.id, status: 'pending' });
+    const invites = await Promise.all(
+      rawInvites.map(async (inv) => {
+        const group = await db.getGroupById(inv.groupId ?? inv.group_id);
+        const inviter = await db.getUserById(inv.inviterId ?? inv.inviter_id);
+        return {
+          ...inv,
+          group: group ? groupPayload(group) : null,
+          inviter: inviter ? { id: inviter.id, name: inviter.name, scid: inviter.scid, icon: inviter.icon } : null,
+        };
+      })
+    );
     res.json({ invites });
   } catch (error) {
     console.error('[groups] user invites error:', error);
