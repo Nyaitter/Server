@@ -229,7 +229,7 @@ router.get({
   const offset = normalizeOffset(req.query?.offset, 0);
 
   try {
-    const groups = await db.getGroupsByUserId(req.user.id, { limit, offset });
+    const groups = await db.getUserGroups(req.user.id, { status: 'active', limit, offset });
     res.json({
       groups: groups.map((g) => groupPayload(g)),
       limit,
