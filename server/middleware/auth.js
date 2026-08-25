@@ -30,8 +30,12 @@ const DEFAULT_CSP = buildContentSecurityPolicy();
 const PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=(), usb=()';
 
 function parseCookies(req) {
-  const rawCookie = req.headers.cookie;
-  if (!rawCookie) return {};
+  if (req._parsedCookies) return req._parsedCookies;
+  const rawCookie = req.headers?.cookie;
+  if (!rawCookie) {
+    req._parsedCookies = {};
+    return req._parsedCookies;
+  }
 
   const cookies = {};
   const pairs = rawCookie.split(';');
@@ -48,6 +52,7 @@ function parseCookies(req) {
       cookies[name] = val;
     }
   }
+  req._parsedCookies = cookies;
   return cookies;
 }
 

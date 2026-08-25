@@ -288,6 +288,15 @@ async function fetchPostsByIds(db, postIds) {
 
 const userGroupBadgesCache = new Map();
 const BADGES_CACHE_TTL_MS = 300000; // 5 minutes TTL
+const MAX_BADGES_CACHE_ENTRIES = 5000;
+
+function pruneUserGroupBadgesCache(now = Date.now()) {
+	while (userGroupBadgesCache.size > MAX_BADGES_CACHE_ENTRIES) {
+		const oldestKey = userGroupBadgesCache.keys().next().value;
+		if (oldestKey === undefined) break;
+		userGroupBadgesCache.delete(oldestKey);
+	}
+}
 
 async function attachGroupBadgesToUsers(db, users) {
 	if (!Array.isArray(users) || users.length === 0) return users;
@@ -335,6 +344,7 @@ async function attachGroupBadgesToUsers(db, users) {
 			userGroupBadgesCache.set(uid, { badges, expiresAt: now + BADGES_CACHE_TTL_MS });
 			badgesMap.set(uid, badges);
 		}
+		pruneUserGroupBadgesCache(now);
 	}
 
 	for (const user of users) {
@@ -442,16 +452,16 @@ async function fetchPostMetrics(db, allPosts, currentUserId, knownViewer = null)
 	})));
 }
 
+const EMBEDDED_POST_PATTERNS = [
+	/(?:https?:\/\/[^\s/$.?#].[^\s]*)?(?:#post\/|\/posts\/|\?post=)(\d+)/i,
+	/(?:https?:\/\/[^\s/$.?#].[^\s]*\/@[^/\s]+\/posts\/)(\d+)/i,
+];
+
 function extractPostIdFromText(text, currentPostId = null) {
 	if (!text || typeof text !== 'string') return null;
 
-	const patterns = [
-		/(?:https?:\/\/[^\s/$.?#].[^\s]*)?(?:#post\/|\/posts\/|\?post=)(\d+)/i,
-		/(?:https?:\/\/[^\s/$.?#].[^\s]*\/@[^/\s]+\/posts\/)(\d+)/i,
-	];
-
-	for (const pattern of patterns) {
-		const match = text.match(pattern);
+	for (let i = 0; i < EMBEDDED_POST_PATTERNS.length; i += 1) {
+		const match = text.match(EMBEDDED_POST_PATTERNS[i]);
 		if (match && match[1]) {
 			const id = Number(match[1]);
 			if (Number.isInteger(id) && id > 0 && id !== Number(currentPostId)) {

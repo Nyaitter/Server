@@ -103,17 +103,17 @@ function httpCompression(req, res, next) {
     }
 
     const encoding = useGzip ? 'gzip' : 'deflate';
-    const compressFn = useGzip ? zlib.gzipSync : zlib.deflateSync;
+    const compressAsync = useGzip ? zlib.gzip : zlib.deflate;
 
-    try {
-      const compressed = compressFn(buffer, { level: 4 });
+    compressAsync(buffer, { level: 4 }, (err, compressed) => {
+      if (err || !compressed || res.destroyed) {
+        return originalSend.call(res, body);
+      }
       res.setHeader('Content-Encoding', encoding);
       res.removeHeader('Content-Length');
       res.setHeader('Vary', 'Accept-Encoding');
-      return originalSend.call(this, compressed);
-    } catch (_) {
-      return originalSend.call(this, body);
-    }
+      return originalSend.call(res, compressed);
+    });
   };
 
   next();
