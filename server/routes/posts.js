@@ -859,21 +859,42 @@ router.get({
 			});
 		}
 
+		// 先祖（親チェーン）の解決
+		const ancestorPosts = [];
+		let currentParentId = root.replyTo ?? root.reply_id ?? root.reply_to;
+		const visitedParentIds = new Set([postId]);
+		while (currentParentId != null) {
+			const numParentId = Number(currentParentId);
+			if (!Number.isInteger(numParentId) || numParentId <= 0 || visitedParentIds.has(numParentId)) {
+				break;
+			}
+			visitedParentIds.add(numParentId);
+			const parentPost = await db.getPostById(numParentId);
+			if (!parentPost) break;
+			ancestorPosts.unshift(parentPost); // ルート親から直前親への昇順
+			currentParentId = parentPost.replyTo ?? parentPost.reply_id ?? parentPost.reply_to;
+		}
+
+		const postsToSerialize = [...ancestorPosts, root, ...orderedReplyPosts];
 		const serializedPosts = await serializePostsBatch(
 			db,
-			[root, ...orderedReplyPosts],
+			postsToSerialize,
 			currentUserId,
 			getPublicUrl(req),
 			knownViewer,
 		);
-		const mainPost = serializedPosts[0] || null;
+		const serializedAncestors = serializedPosts.slice(0, ancestorPosts.length);
+		const mainPost = serializedPosts[ancestorPosts.length] || null;
+		const serializedReplies = serializedPosts.slice(ancestorPosts.length + 1);
+
 		if (!mainPost) {
 			return res.status(404).json({ error: 'Post not found' });
 		}
 
 		res.json({
 			post: mainPost,
-			replies: serializedPosts.slice(1),
+			ancestors: serializedAncestors,
+			replies: serializedReplies,
 			has_more: replyPage.has_more,
 			offset,
 			limit,
