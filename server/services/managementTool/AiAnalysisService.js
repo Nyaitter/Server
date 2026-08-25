@@ -221,10 +221,10 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
   async _callAi(prompt, taskType, options = {}) {
     const { allowEdit = false } = options;
 
-    // 1. Opencode Agent（CLI経由でマルチターン調査/自動修正）を実行（利用可能な場合のみ）
-    if (this._isOpencodeAvailable()) {
+    // 自動修正（allowEdit = true）の場合は Opencode CLI エージェントを優先実行
+    if (allowEdit && this._isOpencodeAvailable()) {
       try {
-        const cliResult = await this._callOpencodeAgent(prompt, { allowEdit });
+        const cliResult = await this._callOpencodeAgent(prompt, { allowEdit: true });
         if (cliResult) {
           const resolvedName = await this._resolveOpencodeModelName();
           return {
@@ -242,12 +242,12 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
       }
     }
 
-    // 2. フォールバック: OpenCode Zen / 各種 API 直接コール
+    // エラー解析・セキュリティ調査（リードオンリー）は Direct API を優先して高速処理
     const isAutoOrGemini = !this.preferredModel || this.preferredModel === 'auto' || this.preferredModel.includes('gemini') || this.preferredModel.includes('google');
     if (this.geminiApiKey && isAutoOrGemini) {
       try {
         const res = await this._callGeminiApi(prompt);
-        if (res) return { model: `Gemini Direct (${this.preferredModel === 'auto' ? 'gemini-3.6-flash' : this.preferredModel})`, content: res, provider: 'gemini' };
+        if (res) return { model: `Gemini (${this.preferredModel === 'auto' ? 'gemini-3.5-flash-lite' : this.preferredModel})`, content: res, provider: 'gemini' };
       } catch (e) {
         console.warn('[NMT-AI] Gemini direct call failed:', e.message);
       }
@@ -257,7 +257,7 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     if (this.openaiApiKey && isAutoOrOpenAi) {
       try {
         const res = await this._callOpenAiApi(prompt);
-        if (res) return { model: `OpenAI Direct (${this.preferredModel === 'auto' ? 'gpt-4o' : this.preferredModel})`, content: res, provider: 'openai' };
+        if (res) return { model: `OpenAI (${this.preferredModel === 'auto' ? 'gpt-4o' : this.preferredModel})`, content: res, provider: 'openai' };
       } catch (e) {
         console.warn('[NMT-AI] OpenAI direct call failed:', e.message);
       }
@@ -291,8 +291,9 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     if (this.openaiApiKey) return 'openai/gpt-4o';
 
     const zenModels = await this.fetchZenModels();
-    if (Array.isArray(zenModels) && zenModels.length > 0) {
-      const target = zenModels[0]?.id || '';
+    const freeModels = (Array.isArray(zenModels) ? zenModels : []).filter((m) => m.free === true || (m.id && m.id.includes('free')));
+    if (freeModels.length > 0) {
+      const target = freeModels[0]?.id || '';
       return target.includes('/') ? target : `opencode/${target}`;
     }
     return 'opencode/nemotron-3.5-lightning-free';
@@ -430,9 +431,10 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
 
   async _callOpencodeZenFreeModel(prompt) {
     const zenModels = await this.fetchZenModels();
+    const freeModels = (Array.isArray(zenModels) ? zenModels : []).filter((m) => m.free === true || (m.id && m.id.includes('free')));
     let targetModel = this.preferredModel;
-    if (!targetModel || targetModel === 'auto' || !zenModels.some((m) => m.id === targetModel)) {
-      targetModel = zenModels[0]?.id || 'deepseek-v4-flash-free';
+    if (!targetModel || targetModel === 'auto' || !freeModels.some((m) => m.id === targetModel)) {
+      targetModel = freeModels[0]?.id || 'nemotron-3.5-lightning-free';
     }
 
     return new Promise((resolve, reject) => {

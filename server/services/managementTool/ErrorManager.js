@@ -44,6 +44,10 @@ class ErrorManager {
     this.notificationManager = notificationManager;
   }
 
+  setAiService(aiService) {
+    this.aiService = aiService;
+  }
+
   setApprovalManager(approvalManager) {
     this.approvalManager = approvalManager;
   }
