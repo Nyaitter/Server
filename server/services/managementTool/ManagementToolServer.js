@@ -332,10 +332,13 @@ class ManagementToolServer {
       res.sendFile(path.join(webDir, 'index.html'));
     });
 
-    // サーバーリッスン開始
+    // サーバーリッスン開始 (IPv4 & IPv6 デュアルスタック対応)
     this.httpServer = http.createServer(this.app);
-    this.httpServer.listen(this.port, this.host, () => {
-      console.log(`\n🐾 [NyaitterManagementTool] Started on http://${this.host === '0.0.0.0' ? 'localhost' : this.host}:${this.port}`);
+    this.httpServer.keepAliveTimeout = 65000;
+    this.httpServer.headersTimeout = 66000;
+
+    this.httpServer.listen(this.port, () => {
+      console.log(`\n🐾 [NyaitterManagementTool] Started on port ${this.port} (IPv4/IPv6 dual-stack)`);
       console.log(`   - Error Logging & AI Assistance: Active`);
       console.log(`   - Admin Management: Active`);
       console.log(`   - Security & Anomaly Detection: Active\n`);
