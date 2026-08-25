@@ -1,8 +1,13 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const config = require('../../config');
 const { getPublicUrl } = require('../../utils/nyaitterAddress');
+
+const DATA_DIR = path.resolve(__dirname, '../../data');
+const PENDING_STORE_FILE = path.join(DATA_DIR, 'nyaitter-auth-pending.json');
 
 const STANDARD_SCOPES = {
   'profile:read': {
@@ -63,18 +68,59 @@ class NyaitterAuthManager {
     this.db = dbAdapter;
   }
 
-  // Static in-memory stores for pending requests and one-time codes
+  // Static stores synchronized across detached processes via pending store file
   static pendingRequests = new Map(); // requestId -> requestData
   static pendingCodes = new Map(); // code -> approvedData
 
+  static _loadPendingStore() {
+    try {
+      if (fs.existsSync(PENDING_STORE_FILE)) {
+        const raw = fs.readFileSync(PENDING_STORE_FILE, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          if (Array.isArray(parsed.requests)) {
+            for (const r of parsed.requests) {
+              if (r && r.requestId) NyaitterAuthManager.pendingRequests.set(r.requestId, r);
+            }
+          }
+          if (Array.isArray(parsed.codes)) {
+            for (const c of parsed.codes) {
+              if (c && c.code) NyaitterAuthManager.pendingCodes.set(c.code, c);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  static _savePendingStore() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      const data = {
+        requests: Array.from(NyaitterAuthManager.pendingRequests.values()),
+        codes: Array.from(NyaitterAuthManager.pendingCodes.values()),
+      };
+      fs.writeFileSync(PENDING_STORE_FILE, JSON.stringify(data, null, 2), 'utf8');
+    } catch (_) {}
+  }
+
   static _sweepExpired() {
+    NyaitterAuthManager._loadPendingStore();
     const now = Date.now();
+    let changed = false;
     for (const [key, value] of NyaitterAuthManager.pendingRequests.entries()) {
-      if (value.expiresAt <= now) NyaitterAuthManager.pendingRequests.delete(key);
+      if (value.expiresAt <= now) {
+        NyaitterAuthManager.pendingRequests.delete(key);
+        changed = true;
+      }
     }
     for (const [key, value] of NyaitterAuthManager.pendingCodes.entries()) {
-      if (value.expiresAt <= now) NyaitterAuthManager.pendingCodes.delete(key);
+      if (value.expiresAt <= now) {
+        NyaitterAuthManager.pendingCodes.delete(key);
+        changed = true;
+      }
     }
+    if (changed) NyaitterAuthManager._savePendingStore();
   }
 
   static computeAppTokenHash(appId, apiToken) {
@@ -187,7 +233,9 @@ class NyaitterAuthManager {
       expiresAt,
     };
 
+    NyaitterAuthManager._loadPendingStore();
     NyaitterAuthManager.pendingRequests.set(requestId, requestData);
+    NyaitterAuthManager._savePendingStore();
 
     const baseUrl = req ? getPublicUrl(req) : (config.federation?.publicUrl || 'http://localhost:3000');
     const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
@@ -331,6 +379,7 @@ class NyaitterAuthManager {
     const code = 'authcode_' + crypto.randomBytes(32).toString('hex');
     const codeExpiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes TTL
 
+    NyaitterAuthManager._loadPendingStore();
     NyaitterAuthManager.pendingCodes.set(code, {
       code,
       requestId: requestData.requestId,
@@ -345,6 +394,7 @@ class NyaitterAuthManager {
 
     // Remove pending request
     NyaitterAuthManager.pendingRequests.delete(requestId);
+    NyaitterAuthManager._savePendingStore();
 
     // Build redirect URI
     const targetUrl = new URL(requestData.redirectUri);

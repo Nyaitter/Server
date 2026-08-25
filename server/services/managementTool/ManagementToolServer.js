@@ -199,6 +199,7 @@ class ManagementToolServer {
 
       try {
         // One-time code から認可データを取得
+        NyaitterAuthManager._loadPendingStore();
         const approved = NyaitterAuthManager.pendingCodes.get(String(code));
         let userId = approved?.userId;
 
@@ -207,6 +208,7 @@ class ManagementToolServer {
         }
 
         NyaitterAuthManager.pendingCodes.delete(String(code));
+        NyaitterAuthManager._savePendingStore();
 
         const user = await this.dbAdapter.getUserById(userId);
         if (!user) {
