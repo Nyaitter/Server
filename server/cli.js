@@ -132,17 +132,48 @@ async function setAdministrator(userIdArgument, admin) {
 
 // ── NMT (Nyaitter Management Tool) CLI Controls ─────────────────────────────
 const NMT_PID_FILE = path.join(PROJECT_ROOT, 'data', 'nmt.pid');
+const NMT_PORT = 4040;
+
+function getPidListeningOnPort(port) {
+    const { execSync } = require('child_process');
+    try {
+        const out = execSync(`lsof -t -i :${port} 2>/dev/null || fuser ${port}/tcp 2>/dev/null`, { encoding: 'utf8' }).trim();
+        if (out) {
+            const pids = out.split(/\s+/).map((p) => parseInt(p, 10)).filter((p) => !isNaN(p) && p !== process.pid);
+            if (pids.length > 0) return pids[0];
+        }
+    } catch (_) {}
+    return null;
+}
 
 function getNmtPid() {
     try {
-        if (!fs.existsSync(NMT_PID_FILE)) return null;
-        const pid = parseInt(fs.readFileSync(NMT_PID_FILE, 'utf8').trim(), 10);
-        if (isNaN(pid)) return null;
-        process.kill(pid, 0); // 生存確認
-        return pid;
-    } catch (_) {
-        return null;
-    }
+        if (fs.existsSync(NMT_PID_FILE)) {
+            const pid = parseInt(fs.readFileSync(NMT_PID_FILE, 'utf8').trim(), 10);
+            if (!isNaN(pid)) {
+                try {
+                    process.kill(pid, 0);
+                    return pid;
+                } catch (_) {}
+            }
+        }
+    } catch (_) {}
+    return getPidListeningOnPort(NMT_PORT);
+}
+
+async function isPortAvailable(port) {
+    const net = require('net');
+    return new Promise((resolve) => {
+        const tester = net.createConnection({ port, host: '127.0.0.1' }, () => {
+            tester.end();
+            resolve(false); // ポート使用中
+        });
+        tester.on('error', () => resolve(true)); // ポート空き
+        tester.setTimeout(500, () => {
+            tester.destroy();
+            resolve(true);
+        });
+    });
 }
 
 async function startNmt() {
@@ -173,20 +204,32 @@ async function stopNmt() {
 
     try {
         process.kill(pid, 'SIGTERM');
-        console.log(`NMT (PID: ${pid}) へ停止シグナルを送信しました。`);
+        console.log(`NMT (PID: ${pid}) へ停止シグナルを送信しました。解放を待機中...`);
+
+        // ポート解放を最大 5 秒待機
+        for (let i = 0; i < 25; i++) {
+            await sleep(200);
+            if (await isPortAvailable(NMT_PORT)) {
+                console.log('NMT ポートが解放されました。');
+                return;
+            }
+        }
+
+        // 強制終了
+        try {
+            process.kill(pid, 'SIGKILL');
+            console.log(`NMT (PID: ${pid}) を強制終了しました。`);
+        } catch (_) {}
     } catch (err) {
-        throw new Error(`NMT 停止エラー: ${err.message}`);
+        console.warn(`NMT 停止処理注意: ${err.message}`);
     }
 }
 
 async function restartNmt() {
     const pid = getNmtPid();
     if (pid) {
-        try {
-            process.kill(pid, 'SIGTERM');
-            console.log(`旧 NMT プロセス (PID: ${pid}) を停止中...`);
-            await sleep(1000);
-        } catch (_) {}
+        await stopNmt();
+        await sleep(500);
     }
     await startNmt();
 }
@@ -194,7 +237,7 @@ async function restartNmt() {
 function printNmtStatus() {
     const pid = getNmtPid();
     if (pid) {
-        console.log(`NMT: 稼働中 (PID: ${pid}, Port: 4040)`);
+        console.log(`NMT: 稼働中 (PID: ${pid}, Port: ${NMT_PORT})`);
     } else {
         console.log('NMT: 停止中');
     }
