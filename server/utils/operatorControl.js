@@ -31,16 +31,18 @@ function writeResponse(socket, payload) {
   socket.end(`${JSON.stringify(payload)}\n`);
 }
 
-function createCommandHandler({ dbAdapter, shutdown, getStatus }) {
+function createCommandHandler({ dbAdapter, shutdown, getStatus, managers = {} }) {
   return async (command) => {
     if (!command || typeof command !== 'object' || Array.isArray(command)) {
       return { ok: false, error: 'Invalid operator command' };
     }
 
+    // ── ステータス ──────────────────────────────────────────────────────────
     if (command.action === 'status' || command.action === 'get-server-status') {
       return { ok: true, status: getStatus() };
     }
 
+    // ── ユーザー / 管理者 ──────────────────────────────────────────────────
     if (command.action === 'get-admins') {
       try {
         let admins = [];
@@ -112,6 +114,104 @@ function createCommandHandler({ dbAdapter, shutdown, getStatus }) {
       };
     }
 
+    // ── エラー管理 ─────────────────────────────────────────────────────────
+    if (command.action === 'get-errors') {
+      if (!managers.errorManager) return { ok: false, error: 'ErrorManager not available' };
+      try {
+        const errors = managers.errorManager.getErrors(command.filters || {});
+        return { ok: true, errors };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (command.action === 'update-error-status') {
+      if (!managers.errorManager) return { ok: false, error: 'ErrorManager not available' };
+      try {
+        const updated = managers.errorManager.updateStatus(command.errorId, command.status);
+        if (!updated) return { ok: false, error: 'Error not found' };
+        return { ok: true, error: updated };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    // ── セキュリティ ───────────────────────────────────────────────────────
+    if (command.action === 'get-security-events') {
+      if (!managers.securityManager) return { ok: false, error: 'SecurityManager not available' };
+      try {
+        const result = managers.securityManager.getSecurityEvents(command.filters || {});
+        return { ok: true, ...result };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (command.action === 'get-access-logs') {
+      if (!managers.securityManager) return { ok: false, error: 'SecurityManager not available' };
+      try {
+        const logs = managers.securityManager.getRecentAccessLogs(command.filters || {});
+        return { ok: true, logs: Array.isArray(logs) ? logs : logs?.logs || [] };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    // ── 通知 / 承認 ────────────────────────────────────────────────────────
+    if (command.action === 'get-notifications') {
+      if (!managers.notificationManager) return { ok: false, error: 'NotificationManager not available' };
+      try {
+        const notifications = managers.notificationManager.getNotifications(command.limit || 50);
+        return { ok: true, notifications };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (command.action === 'get-approvals') {
+      if (!managers.approvalManager) return { ok: false, error: 'ApprovalManager not available' };
+      try {
+        const requests = managers.approvalManager.getPendingRequests
+          ? managers.approvalManager.getPendingRequests()
+          : [];
+        return { ok: true, requests };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (command.action === 'approve-request') {
+      if (!managers.approvalManager) return { ok: false, error: 'ApprovalManager not available' };
+      try {
+        const result = managers.approvalManager.approveRequest(command.requestId, command.user);
+        return { ok: true, ...result };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (command.action === 'deny-request') {
+      if (!managers.approvalManager) return { ok: false, error: 'ApprovalManager not available' };
+      try {
+        const result = managers.approvalManager.denyRequest(command.requestId, command.user);
+        return { ok: true, ...result };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    // ── 監査ログ ───────────────────────────────────────────────────────────
+    if (command.action === 'get-audit-logs') {
+      if (!managers.adminAuditFn) return { ok: false, error: 'Audit log provider not available' };
+      try {
+        const logs = managers.adminAuditFn();
+        return { ok: true, logs };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    // ── データ操作 ─────────────────────────────────────────────────────────
     if (command.action === 'export-data') {
       const filePath = typeof command.filePath === 'string' ? command.filePath : '';
       if (!filePath) return { ok: false, error: 'export-data requires filePath' };
@@ -131,7 +231,6 @@ function createCommandHandler({ dbAdapter, shutdown, getStatus }) {
     }
 
     if (command.action === 'shutdown') {
-      // 応答を先に返すため、CLIは停止要求の受領を確認できる。
       setImmediate(() => shutdown('operator-cli'));
       return { ok: true, stopping: true };
     }
@@ -152,10 +251,10 @@ async function removeStaleSocket(socketPath) {
   }
 }
 
-async function startOperatorControlServer({ dbAdapter, shutdown, getStatus }) {
+async function startOperatorControlServer({ dbAdapter, shutdown, getStatus, managers = {} }) {
   const socketPath = getOperatorSocketPath();
   await removeStaleSocket(socketPath);
-  const handleCommand = createCommandHandler({ dbAdapter, shutdown, getStatus });
+  const handleCommand = createCommandHandler({ dbAdapter, shutdown, getStatus, managers });
 
   // クライアントは要求送信後に書込み側だけを閉じる。非同期操作の完了応答を返すため半閉接続を許可する。
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {

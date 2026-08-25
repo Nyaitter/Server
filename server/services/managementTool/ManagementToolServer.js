@@ -63,6 +63,12 @@ class ManagementToolServer {
     if (getStatusFn) this.serverControl.setStatusProvider(getStatusFn);
   }
 
+  // IPC 優先データ取得ヘルパー（NyaitterServer 本体の operatorControl 経由）
+  async _ipc(action, params = {}, { timeoutMs = 1500 } = {}) {
+    const { requestOperatorCommand } = require('../../utils/operatorControl');
+    return requestOperatorCommand({ action, ...params }, { timeoutMs });
+  }
+
   // ── メインサーバーからのフック ─────────────────────────────────────────
   recordError(err, context = {}) {
     const msg = typeof err === 'string' ? err : err.message || 'Unknown Error';
@@ -262,15 +268,18 @@ class ManagementToolServer {
     });
 
     // ── 1. エラー管理 API ────────────────────────────────────────────────
-    this.app.get('/api/errors', authMiddleware, (req, res) => {
-      const { status, search, limit, offset } = req.query;
-      const result = this.errorManager.getErrors({
-        status,
-        search,
-        limit: Number(limit) || 50,
-        offset: Number(offset) || 0,
-      });
-      res.json(result);
+    this.app.get('/api/errors', authMiddleware, async (req, res) => {
+      const filters = {
+        status: req.query.status,
+        search: req.query.search,
+        limit: Number(req.query.limit) || 50,
+        offset: Number(req.query.offset) || 0,
+      };
+      try {
+        const r = await this._ipc('get-errors', { filters });
+        if (r?.ok) return res.json({ errors: r.errors, total: r.errors.length });
+      } catch (_) {}
+      res.json(this.errorManager.getErrors(filters));
     });
 
     this.app.get('/api/errors/:id', authMiddleware, (req, res) => {
@@ -315,7 +324,11 @@ class ManagementToolServer {
       }
     });
 
-    this.app.patch('/api/errors/:id/status', authMiddleware, (req, res) => {
+    this.app.patch('/api/errors/:id/status', authMiddleware, async (req, res) => {
+      try {
+        const r = await this._ipc('update-error-status', { errorId: req.params.id, status: req.body.status });
+        if (r?.ok) return res.json({ success: true, error: r.error });
+      } catch (_) {}
       const updated = this.errorManager.updateStatus(req.params.id, req.body.status);
       if (!updated) return res.status(404).json({ error: 'エラーが見つかりません。' });
       res.json({ success: true, error: updated });
@@ -342,14 +355,21 @@ class ManagementToolServer {
       }
     });
 
-    this.app.get('/api/admins/audit-logs', authMiddleware, (req, res) => {
+    this.app.get('/api/admins/audit-logs', authMiddleware, async (req, res) => {
+      try {
+        const r = await this._ipc('get-audit-logs');
+        if (r?.ok) return res.json({ logs: r.logs });
+      } catch (_) {}
       res.json({ logs: this.adminManager.getAuditLogs() });
     });
 
     // ── 3. セキュリティ & 不審アクセス監視 API ──────────────────────────
-    this.app.get('/api/security/events', authMiddleware, (req, res) => {
-      const result = this.securityManager.getSecurityEvents(req.query);
-      res.json(result);
+    this.app.get('/api/security/events', authMiddleware, async (req, res) => {
+      try {
+        const r = await this._ipc('get-security-events', { filters: req.query });
+        if (r?.ok) return res.json({ events: r.events || [], total: r.total || 0 });
+      } catch (_) {}
+      res.json(this.securityManager.getSecurityEvents(req.query));
     });
 
     this.app.post('/api/security/events/:id/analyze', authMiddleware, async (req, res) => {
@@ -361,9 +381,12 @@ class ManagementToolServer {
       }
     });
 
-    this.app.get('/api/security/access-logs', authMiddleware, (req, res) => {
-      const logs = this.securityManager.getRecentAccessLogs(req.query);
-      res.json(logs);
+    this.app.get('/api/security/access-logs', authMiddleware, async (req, res) => {
+      try {
+        const r = await this._ipc('get-access-logs', { filters: req.query });
+        if (r?.ok) return res.json({ logs: r.logs });
+      } catch (_) {}
+      res.json(this.securityManager.getRecentAccessLogs(req.query));
     });
 
     // ── 4. 設定 API ──────────────────────────────────────────────────────
@@ -464,7 +487,11 @@ class ManagementToolServer {
     });
 
     // ── 4.5. 通知 & アクセス承認 API ──────────────────────────────────────
-    this.app.get('/api/notifications', authMiddleware, (req, res) => {
+    this.app.get('/api/notifications', authMiddleware, async (req, res) => {
+      try {
+        const r = await this._ipc('get-notifications', { limit: 50 });
+        if (r?.ok) return res.json({ notifications: r.notifications, isSubscribed: false });
+      } catch (_) {}
       res.json({
         notifications: this.notificationManager.getNotifications(50),
         isSubscribed: this.notificationManager.isUserSubscribed(req.adminUser.id),
@@ -503,13 +530,21 @@ class ManagementToolServer {
       res.json({ success: true });
     });
 
-    this.app.get('/api/approvals/pending', authMiddleware, (req, res) => {
+    this.app.get('/api/approvals/pending', authMiddleware, async (req, res) => {
+      try {
+        const r = await this._ipc('get-approvals');
+        if (r?.ok) return res.json({ requests: r.requests });
+      } catch (_) {}
       res.json({ requests: this.approvalManager.getPendingRequests() });
     });
 
-    this.app.post('/api/approvals/:id/approve', authMiddleware, (req, res) => {
+    this.app.post('/api/approvals/:id/approve', authMiddleware, async (req, res) => {
+      const { scope = 'session' } = req.body;
       try {
-        const { scope = 'session' } = req.body;
+        const r = await this._ipc('approve-request', { requestId: req.params.id, user: req.adminUser }, { timeoutMs: 2000 });
+        if (r?.ok) return res.json(r);
+      } catch (_) {}
+      try {
         const result = this.approvalManager.approveRequest(req.params.id, req.adminUser, { scope });
         res.json(result);
       } catch (err) {
@@ -517,7 +552,11 @@ class ManagementToolServer {
       }
     });
 
-    this.app.post('/api/approvals/:id/deny', authMiddleware, (req, res) => {
+    this.app.post('/api/approvals/:id/deny', authMiddleware, async (req, res) => {
+      try {
+        const r = await this._ipc('deny-request', { requestId: req.params.id, user: req.adminUser }, { timeoutMs: 2000 });
+        if (r?.ok) return res.json(r);
+      } catch (_) {}
       try {
         const result = this.approvalManager.denyRequest(req.params.id, req.adminUser);
         res.json(result);

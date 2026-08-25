@@ -645,8 +645,16 @@ async function startServer() {
             pid: process.pid,
             port: PORT,
             databaseAdapter: config.database.adapter,
+            storageAdapter: config.storage?.adapter || 'local',
             startedAt: new Date().toISOString(),
         }),
+        managers: {
+            errorManager:        managementToolServer?.errorManager        || null,
+            securityManager:     managementToolServer?.securityManager     || null,
+            notificationManager: managementToolServer?.notificationManager || null,
+            approvalManager:     managementToolServer?.approvalManager     || null,
+            adminAuditFn:        () => managementToolServer?.adminManager?.getAuditLogs?.() || [],
+        },
     });
     console.log(`[operator-control] Listening on ${operatorControl.socketPath}`);
 
