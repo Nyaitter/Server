@@ -216,6 +216,11 @@ const config = {
     jsonBodyLimit: process.env.JSON_BODY_LIMIT || get('server.jsonBodyLimit', '2mb'),
     trustProxy: process.env.TRUST_PROXY === 'true' || get('server.trustProxy', false),
     apiEndpoint,
+    publicUrl: readSetting(
+      ['NYAITTER_API_PUBLIC_URL', 'NYAITTER_API_URL', 'API_PUBLIC_URL'],
+      ['server.publicUrl', 'server.publicApiUrl'],
+      '',
+    ),
   },
 
   userFiles: {
@@ -237,12 +242,22 @@ const config = {
     repository:
       process.env.NYAITTER_CLIENT_REPOSITORY ||
       get('client.repository', 'Nyaitter/Client'),
+    publicUrl: readSetting(
+      ['NYAITTER_CLIENT_PUBLIC_URL', 'NYAITTER_CLIENT_URL', 'NYAITTER_PUBLIC_URL', 'PUBLIC_URL', 'CLIENT_PUBLIC_URL'],
+      ['client.publicUrl', 'federation.publicUrl'],
+      '',
+    ),
   },
 
   nmt: {
     enabled: envBoolean('NMT_ENABLED', envBoolean('NYAITTER_MANAGEMENT_TOOL_ENABLED', get('nmt.enabled', false))),
     port: envNonNegativeInteger('NMT_PORT', envNonNegativeInteger('NYAITTER_MANAGEMENT_TOOL_PORT', get('nmt.port', 4040))),
     host: process.env.NMT_HOST || process.env.NYAITTER_MANAGEMENT_TOOL_HOST || get('nmt.host', '0.0.0.0'),
+    publicUrl: readSetting(
+      ['NMT_PUBLIC_URL', 'NYAITTER_MANAGEMENT_TOOL_PUBLIC_URL'],
+      ['nmt.publicUrl'],
+      '',
+    ),
     autoAnalysis: envBoolean('NMT_AUTO_ANALYSIS', get('nmt.autoAnalysis', false)),
     autoIssue: envBoolean('NMT_AUTO_ISSUE', get('nmt.autoIssue', false)),
     githubToken: process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || get('nmt.githubToken', ''),

@@ -99,8 +99,27 @@ class ManagementToolServer {
     this.app.get('/auth/login', async (req, res) => {
       try {
         const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-        const host = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${this.port}`;
-        const redirectUri = `${protocol}://${host}/auth/callback`;
+        const currentHost = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${this.port}`;
+        
+        // NMT コールバックURL
+        const nmtPublicUrl = this.config.publicUrl ? this.config.publicUrl.replace(/\/+$/, '') : `${protocol}://${currentHost}`;
+        const redirectUri = `${nmtPublicUrl}/auth/callback`;
+
+        // Nyaitter 本体の公開URL
+        let nyaitterBaseUrl = getPublicUrl(null);
+        if (!this.mainConfig?.client?.publicUrl && !process.env.NYAITTER_CLIENT_PUBLIC_URL && !process.env.PUBLIC_URL) {
+          const mainPort = this.mainConfig?.server?.port || 3000;
+          let nyaitterHost = currentHost;
+          if (currentHost.includes(`-${this.port}.`)) {
+            nyaitterHost = currentHost.replace(`-${this.port}.`, `-${mainPort}.`);
+          } else if (currentHost.includes(`:${this.port}`)) {
+            nyaitterHost = currentHost.replace(`:${this.port}`, `:${mainPort}`);
+          } else if (process.env.CODESPACE_NAME) {
+            const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev';
+            nyaitterHost = `${process.env.CODESPACE_NAME}-${mainPort}.${domain}`;
+          }
+          nyaitterBaseUrl = `${protocol}://${nyaitterHost}`.replace(/\/+$/, '');
+        }
 
         const authReq = await this.authManager.createAuthorizationRequest({
           app_id: 'nmt-internal',
@@ -108,9 +127,12 @@ class ManagementToolServer {
           name: 'Nyaitter Management Tool',
           redirect_uri: redirectUri,
           scopes: ['profile:read'],
-        }, req);
+        });
 
-        return res.redirect(authReq.auth_url);
+        // 認可URLをNyaitter本体のホストに向けて生成
+        const authUrl = `${nyaitterBaseUrl}/#nyaitter-auth?request_id=${encodeURIComponent(authReq.request_id)}`;
+
+        return res.redirect(authUrl);
       } catch (err) {
         console.error('[NMT] Failed to initiate NyaitterAuth:', err);
         return res.status(500).send(`NyaitterAuth の開始に失敗しました: ${err.message}`);

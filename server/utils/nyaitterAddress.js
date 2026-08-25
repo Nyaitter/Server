@@ -45,10 +45,17 @@ function isSafeHost(host) {
  * that have no request context.
  */
 function getPublicUrl(req = null) {
-  const configured = normalizePublicUrl(process.env.PUBLIC_URL || config.federation?.publicUrl);
+  const configured = normalizePublicUrl(
+    config.client?.publicUrl ||
+    process.env.NYAITTER_CLIENT_PUBLIC_URL ||
+    process.env.NYAITTER_PUBLIC_URL ||
+    process.env.PUBLIC_URL ||
+    config.federation?.publicUrl
+  );
+
   // 本番は設定済みの正規URLを使い、利用者が送るHostヘッダーで認証コールバックや
   // 共有URLのオリジンが変化しないようにする。
-  if ((process.env.NODE_ENV || 'development') === 'production' && configured) {
+  if (configured) {
     return configured;
   }
 
@@ -64,10 +71,18 @@ function getPublicUrl(req = null) {
     }
   }
 
-  if (configured) return configured;
-
   const port = config.server?.port || 3000;
   return `http://localhost:${port}`;
+}
+
+function getApiPublicUrl(req = null) {
+  const configured = normalizePublicUrl(
+    config.server?.publicUrl ||
+    process.env.NYAITTER_API_PUBLIC_URL ||
+    process.env.NYAITTER_API_URL
+  );
+  if (configured) return configured;
+  return getPublicUrl(req);
 }
 
 function getPostShareUrl(req = null) {
@@ -99,6 +114,7 @@ function getUserNyaitterId(user) {
 module.exports = {
   formatNyaitterId,
   getPublicUrl,
+  getApiPublicUrl,
   getPostShareUrl,
   getUserNyaitterId,
   normalizePublicUrl,

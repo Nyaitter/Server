@@ -468,12 +468,6 @@ let postShareServer = null;
 
 let managementToolServer = null;
 
-// ── NMT Sub-Route Mount (for reverse proxy & codespaces) ────────────────────────
-app.use('/nmt', (req, res, next) => {
-    if (!config.nmt?.enabled || !managementToolServer?.app) return next();
-    managementToolServer.app(req, res, next);
-});
-
 // ── Request Monitoring Hook (NMT) ──────────────────────────────────────────────
 app.use((req, res, next) => {
     if (!config.nmt?.enabled) return next();
