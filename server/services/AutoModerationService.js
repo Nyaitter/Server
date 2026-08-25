@@ -16,7 +16,7 @@ const MODERATION_MESSAGES = Object.freeze({
 
 const RATE_LIMIT_BACKOFF_MS = 90 * 1000;
 const ERROR_BACKOFF_MS = 10 * 1000;
-const REQUEST_TIMEOUT_MS = 30 * 1000;
+const REQUEST_TIMEOUT_MS = 45 * 1000;
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -161,6 +161,12 @@ class AutoModerationService {
       try {
         await this._moderate(job);
       } catch (error) {
+        job.retries = (job.retries || 0) + 1;
+        if (job.retries > 3) {
+          console.warn(`[automod] post=${job.postId} failed ${job.retries} times; skipping to prevent queue blockage: ${error.message}`);
+          continue;
+        }
+
         const waitMs = Number(error?.statusCode) === 429
           ? RATE_LIMIT_BACKOFF_MS
           : ERROR_BACKOFF_MS;
@@ -172,7 +178,7 @@ class AutoModerationService {
           continue;
         }
         console.warn(
-          `[automod] post=${job.postId} failed; retrying after ${waitMs}ms:`,
+          `[automod] post=${job.postId} failed; retrying (${job.retries}/3) after ${waitMs}ms:`,
           error.message,
         );
         this.pendingJobsByPostId.set(job.postId, job);
@@ -345,7 +351,7 @@ class AutoModerationService {
 
   async _classifyGemini(post) {
     let model = String(this.config.model || '').trim().replace(/^models\//, '');
-    if (!model || model === 'auto' || model === 'gemini-2.0-flash' || model === 'gemini-1.5-flash' || model === 'gemini-2.5-flash') {
+    if (!model || model === 'auto' || model === 'gemini-2.0-flash' || model === 'gemini-1.5-flash') {
       model = 'gemini-3.6-flash';
     }
     if (!/^[A-Za-z0-9._-]+$/.test(model)) {
@@ -375,8 +381,9 @@ class AutoModerationService {
             contents: [{ parts }],
             generationConfig: {
               candidateCount: 1,
-              maxOutputTokens: 64,
+              maxOutputTokens: 256,
               temperature: 0.0,
+              thinkingConfig: { thinkingBudget: 0 },
             },
           }),
         },
