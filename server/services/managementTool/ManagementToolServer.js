@@ -114,9 +114,12 @@ class ManagementToolServer {
             nyaitterHost = currentHost.replace(`-${this.port}.`, `-${mainPort}.`);
           } else if (currentHost.includes(`:${this.port}`)) {
             nyaitterHost = currentHost.replace(`:${this.port}`, `:${mainPort}`);
-          } else if (process.env.CODESPACE_NAME) {
+          } else if (currentHost.includes('github.dev') && process.env.CODESPACE_NAME) {
             const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev';
             nyaitterHost = `${process.env.CODESPACE_NAME}-${mainPort}.${domain}`;
+          } else if (currentHost.startsWith('manage.')) {
+            // manage.admin.nyaitter.jp -> admin.nyaitter.jp
+            nyaitterHost = currentHost.replace(/^manage\./, '');
           }
           nyaitterBaseUrl = `${protocol}://${nyaitterHost}`.replace(/\/+$/, '');
         }
