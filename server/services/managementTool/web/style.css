@@ -442,3 +442,259 @@ th {
 .ai-panel h4:first-child {
   margin-top: 0;
 }
+
+/* ── Mobile Responsive ────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* Navbar */
+  .navbar {
+    height: auto;
+    min-height: 48px;
+    padding: 0.5rem 0.75rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .nav-brand {
+    font-size: 13px;
+    order: 1;
+  }
+  .nav-user {
+    order: 3;
+    width: 100%;
+    justify-content: space-between;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    font-size: 11px;
+  }
+  .nav-user .btn {
+    padding: 0.3rem 0.5rem;
+    font-size: 11px;
+  }
+  .nav-user span {
+    font-size: 12px;
+  }
+
+  /* Tabs Bar - horizontal scroll */
+  .tabs-bar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    padding: 0 0.5rem;
+    white-space: nowrap;
+  }
+  .tabs-bar::-webkit-scrollbar {
+    display: none;
+  }
+  .tab-btn {
+    flex-shrink: 0;
+    padding: 0.6rem 0.8rem;
+    font-size: 12px;
+  }
+
+  /* Container */
+  .container {
+    padding: 0.75rem;
+    max-width: 100%;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .toolbar-group {
+    flex-direction: column;
+    width: 100%;
+  }
+  .toolbar-group .form-control,
+  .toolbar-group .btn {
+    width: 100%;
+  }
+
+  /* Panels */
+  .panel {
+    padding: 0.75rem;
+  }
+  .panel-header h2,
+  .panel-header h3 {
+    font-size: 13px;
+  }
+
+  /* Forms */
+  .form-group {
+    margin-bottom: 0.6rem;
+  }
+  .form-control {
+    padding: 0.5rem 0.7rem;
+    font-size: 16px; /* prevent zoom on iOS */
+  }
+  .btn {
+    padding: 0.5rem 0.8rem;
+    font-size: 13px;
+  }
+  .btn-sm {
+    padding: 0.35rem 0.6rem;
+    font-size: 12px;
+  }
+
+  /* Cards */
+  .card {
+    padding: 0.5rem 0.6rem;
+  }
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+  }
+  .card-meta {
+    gap: 0.5rem;
+    font-size: 10px;
+  }
+
+  /* Admin Grid */
+  .admin-grid {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+  .admin-cell {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+    padding: 0.5rem 0.6rem;
+  }
+
+  /* Tables */
+  .table-container {
+    border-radius: 0;
+    margin: 0 -0.75rem;
+  }
+  table {
+    font-size: 11px;
+  }
+  th, td {
+    padding: 0.35rem 0.5rem;
+  }
+
+  /* Modals */
+  .modal-overlay {
+    padding: 0;
+    align-items: flex-end;
+  }
+  .modal-card {
+    max-height: 100vh;
+    max-width: 100%;
+    border-radius: 12px 12px 0 0;
+    height: auto;
+    min-height: 50vh;
+  }
+  .modal-header {
+    padding: 1rem;
+  }
+  .modal-body {
+    padding: 1rem;
+    max-height: 60vh;
+  }
+  .modal-footer {
+    padding: 0.75rem 1rem;
+    flex-wrap: wrap;
+  }
+  .modal-footer .btn {
+    flex: 1;
+    min-width: 120px;
+  }
+
+  /* Auth */
+  .auth-box {
+    max-width: 100%;
+    margin: 1rem;
+    border-radius: 0;
+  }
+
+  /* Logs specific */
+  #unified-logs-container {
+    height: calc(100vh - 280px) !important;
+    min-height: 300px;
+    font-size: 10px;
+    line-height: 1.4;
+  }
+  .toolbar[style*="flex-wrap:wrap"] {
+    flex-wrap: wrap;
+  }
+  .toolbar[style*="flex-wrap:wrap"] > div:first-child {
+    flex-wrap: wrap;
+  }
+  .toolbar[style*="flex-wrap:wrap"] > div:last-child {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  #unified-log-search {
+    width: 100% !important;
+    max-width: none !important;
+  }
+  #unified-log-level {
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  /* Server tab grid */
+  .panel[style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Settings forms - checkboxes */
+  .checkbox-inline {
+    font-size: 13px !important;
+  }
+
+  /* Code boxes */
+  .code-box {
+    font-size: 10px;
+    padding: 0.5rem;
+    max-height: 200px;
+  }
+  textarea.code-box {
+    font-size: 12px;
+  }
+
+  /* Badge adjustments */
+  .badge {
+    font-size: 9px;
+    padding: 1px 4px;
+  }
+
+  /* Text size */
+  body {
+    font-size: 12px;
+  }
+}
+
+/* Extra small screens */
+@media (max-width: 480px) {
+  .navbar {
+    padding: 0.4rem 0.5rem;
+  }
+  .nav-brand {
+    font-size: 12px;
+  }
+  .nav-user {
+    gap: 0.3rem;
+  }
+  .nav-user .btn {
+    padding: 0.25rem 0.4rem;
+    font-size: 10px;
+  }
+  .tab-btn {
+    padding: 0.5rem 0.6rem;
+    font-size: 11px;
+  }
+  .container {
+    padding: 0.5rem;
+  }
+  .panel {
+    padding: 0.5rem;
+  }
+  #unified-logs-container {
+    height: calc(100vh - 300px) !important;
+  }
+}
