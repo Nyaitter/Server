@@ -75,6 +75,7 @@ function loadActiveTabData() {
   if (activeTab === 'errors-tab') loadErrors();
   if (activeTab === 'admins-tab') { loadAdmins(); loadAuditLogs(); }
   if (activeTab === 'security-tab') { loadSecurityEvents(); loadRecentAccessLogs(); }
+  if (activeTab === 'server-tab') loadServerTab();
   if (activeTab === 'settings-tab') loadSettings();
 }
 
@@ -103,16 +104,17 @@ async function loadErrors() {
     }
 
     listEl.innerHTML = errors.map((err) => `
-      <div class="card" data-error-id="${err.id}">
+      <div class="card" data-error-id="${escapeHTML(err.id)}">
         <div class="card-header">
           <span class="card-title">${escapeHTML(err.message)}</span>
           <span class="tag tag-${err.status}">${err.status.toUpperCase()}</span>
         </div>
         <div class="card-meta">
-          <span>${new Date(err.timestamp).toLocaleString()}</span>
-          ${err.occurrences > 1 ? `<span>(${err.occurrences} hits)</span>` : ''}
-          ${err.context?.url ? `<span>${escapeHTML(err.context.method || 'GET')} ${escapeHTML(err.context.url)}</span>` : ''}
+          <span>${new Date(err.timestamp).toLocaleTimeString()}</span>
+          <span>Hits: ${err.occurrences || 1}</span>
+          ${err.fixed ? '<span style="color:#3fb950; font-weight:bold;">[Fixed]</span>' : ''}
           ${err.analysis ? '<span style="color:var(--primary-color)">[Analyzed]</span>' : ''}
+          ${err.prUrl ? `<a href="${escapeHTML(err.prUrl)}" target="_blank" onclick="event.stopPropagation()" style="color:#58a6ff; font-weight:bold;">PR #${err.prUrl.split('/').pop()}</a>` : ''}
           ${err.issueUrl ? `<a href="${escapeHTML(err.issueUrl)}" target="_blank" onclick="event.stopPropagation()">Issue #${err.issueUrl.split('/').pop()}</a>` : ''}
         </div>
       </div>
@@ -147,6 +149,8 @@ async function openErrorDetail(errorId) {
         Request: ${escapeHTML(err.context?.method || 'GET')} ${escapeHTML(err.context?.url || 'N/A')}<br>
         IP: ${escapeHTML(err.context?.ip || 'N/A')} | UA: ${escapeHTML(err.context?.userAgent || 'N/A')}
       </div>
+      ${err.fixed ? `<div style="margin-top:0.4rem; color:#3fb950; font-size:12px;"><strong>Status:</strong> Automatically fixed${err.modifiedFiles?.length ? ` (${err.modifiedFiles.join(', ')})` : ''}</div>` : ''}
+      ${err.prUrl ? `<div style="margin-top:0.3rem;"><a href="${escapeHTML(err.prUrl)}" target="_blank" style="color:#58a6ff;">View Pull Request: #${err.prUrl.split('/').pop()}</a></div>` : ''}
     </div>
     ${err.stack ? `<div><div class="code-box">${escapeHTML(err.stack)}</div></div>` : ''}
     <div id="modal-ai-section">
@@ -163,10 +167,44 @@ async function openErrorDetail(errorId) {
   `;
 
   modalFooter.innerHTML = `
+    <button class="btn btn-secondary btn-sm" id="modal-fix-btn">Auto Fix</button>
     <button class="btn btn-secondary btn-sm" id="modal-analyze-btn">Analyze</button>
+    ${err.fixed && !err.prUrl ? '<button class="btn btn-secondary btn-sm" id="modal-pr-btn">Create PR</button>' : ''}
     ${!err.issueUrl ? '<button class="btn btn-secondary btn-sm" id="modal-issue-btn">Create Issue</button>' : ''}
     ${err.status !== 'resolved' ? '<button class="btn btn-primary btn-sm" id="modal-resolve-btn">Resolve</button>' : '<button class="btn btn-secondary btn-sm" id="modal-reopen-btn">Reopen</button>'}
   `;
+
+  document.getElementById('modal-fix-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('modal-fix-btn');
+    btn.disabled = true;
+    btn.textContent = 'Fixing...';
+    try {
+      const res = await api(`/errors/${encodeURIComponent(errorId)}/fix`, { method: 'POST' });
+      alert(res.fixed ? `Auto-fix succeeded! Modified: ${res.modifiedFiles?.join(', ')}` : 'Fix completed.');
+      openErrorDetail(errorId);
+      loadErrors();
+    } catch (e) {
+      alert(`Auto-fix error: ${e.message}`);
+      btn.disabled = false;
+      btn.textContent = 'Auto Fix';
+    }
+  });
+
+  document.getElementById('modal-pr-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('modal-pr-btn');
+    btn.disabled = true;
+    btn.textContent = 'Creating PR...';
+    try {
+      const res = await api(`/errors/${encodeURIComponent(errorId)}/pr`, { method: 'POST' });
+      alert(`Pull Request created: ${res.prUrl}`);
+      openErrorDetail(errorId);
+      loadErrors();
+    } catch (e) {
+      alert(`PR creation error: ${e.message}`);
+      btn.disabled = false;
+      btn.textContent = 'Create PR';
+    }
+  });
 
   document.getElementById('modal-analyze-btn')?.addEventListener('click', async () => {
     const btn = document.getElementById('modal-analyze-btn');
@@ -470,7 +508,9 @@ async function loadSettings() {
     ]);
 
     document.getElementById('setting-auto-analysis').checked = Boolean(s.autoAnalysis);
+    document.getElementById('setting-auto-fix').checked = Boolean(s.autoFix);
     document.getElementById('setting-auto-issue').checked = Boolean(s.autoIssue);
+    document.getElementById('setting-auto-pr').checked = Boolean(s.autoPr);
 
     const modelSelect = document.getElementById('setting-ai-model');
     const availableModels = modelsData.models || [];
@@ -497,6 +537,7 @@ document.getElementById('settings-ai-form').addEventListener('submit', async (e)
       method: 'POST',
       body: JSON.stringify({
         autoAnalysis: document.getElementById('setting-auto-analysis').checked,
+        autoFix: document.getElementById('setting-auto-fix').checked,
         aiModel: document.getElementById('setting-ai-model').value,
         geminiApiKey: document.getElementById('setting-gemini-key').value.trim(),
         openaiApiKey: document.getElementById('setting-openai-key').value.trim(),
@@ -515,6 +556,7 @@ document.getElementById('settings-github-form').addEventListener('submit', async
       method: 'POST',
       body: JSON.stringify({
         autoIssue: document.getElementById('setting-auto-issue').checked,
+        autoPr: document.getElementById('setting-auto-pr').checked,
         githubToken: document.getElementById('setting-github-token').value.trim(),
         githubRepo: document.getElementById('setting-github-repo').value.trim(),
       }),
@@ -522,6 +564,176 @@ document.getElementById('settings-github-form').addEventListener('submit', async
     alert('GitHub settings saved.');
   } catch (err) {
     alert(`Save error: ${err.message}`);
+  }
+});
+
+// ── 5. Server Management ────────────────────────────────────────────────
+async function loadServerTab() {
+  await Promise.all([
+    loadServerStatus(),
+    loadServerLogs(),
+    loadServerEnv(),
+    loadServerConfigJson(),
+  ]);
+}
+
+async function loadServerStatus() {
+  const container = document.getElementById('server-status-grid');
+  try {
+    const s = await api('/server/status');
+    const uptimeHours = (s.uptime / 3600).toFixed(1);
+
+    container.innerHTML = `
+      <div class="card">
+        <div style="font-size:11px; color:var(--secondary-text-color);">Process Status</div>
+        <div style="font-size:16px; font-weight:600; color:#3fb950; margin-top:0.2rem;">ONLINE</div>
+        <div style="font-size:11px; margin-top:0.3rem;">PID: ${s.pid} ${s.isPm2 ? `(PM2 #${s.pm2Id})` : ''}</div>
+      </div>
+      <div class="card">
+        <div style="font-size:11px; color:var(--secondary-text-color);">Uptime & Start</div>
+        <div style="font-size:16px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">${uptimeHours} hours</div>
+        <div style="font-size:11px; margin-top:0.3rem;">Since: ${new Date(s.startedAt).toLocaleTimeString()}</div>
+      </div>
+      <div class="card">
+        <div style="font-size:11px; color:var(--secondary-text-color);">Memory Usage (RSS)</div>
+        <div style="font-size:16px; font-weight:600; color:var(--primary-color); margin-top:0.2rem;">${s.memory?.rss || 0} MB</div>
+        <div style="font-size:11px; margin-top:0.3rem;">Heap: ${s.memory?.heapUsed || 0} / ${s.memory?.heapTotal || 0} MB</div>
+      </div>
+      <div class="card">
+        <div style="font-size:11px; color:var(--secondary-text-color);">Environment & Storage</div>
+        <div style="font-size:13px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">DB: ${escapeHTML(s.databaseAdapter || 'N/A')}</div>
+        <div style="font-size:11px; margin-top:0.3rem;">Storage: ${escapeHTML(s.storageAdapter || 'local')} | Node: ${s.nodeVersion}</div>
+      </div>
+    `;
+  } catch (e) {
+    container.innerHTML = `<div class="error-msg">Failed to load server status: ${escapeHTML(e.message)}</div>`;
+  }
+}
+
+async function loadServerLogs() {
+  const container = document.getElementById('server-logs-container');
+  const level = document.getElementById('server-log-level').value;
+  const search = document.getElementById('server-log-search').value.trim();
+
+  try {
+    const data = await api(`/server/logs?limit=300&level=${encodeURIComponent(level)}&search=${encodeURIComponent(search)}`);
+    const logs = data.logs || [];
+
+    if (logs.length === 0) {
+      container.textContent = 'No logs available.';
+      return;
+    }
+
+    container.innerHTML = logs.map((l) => {
+      const color = l.level === 'error' ? 'color:#f85149;' : 'color:var(--text-color);';
+      return `<div style="${color} line-height:1.4;">[${new Date(l.timestamp).toLocaleTimeString()}] ${escapeHTML(l.message)}</div>`;
+    }).join('');
+
+    container.scrollTop = container.scrollHeight;
+  } catch (e) {
+    container.textContent = `Failed to load logs: ${e.message}`;
+  }
+}
+
+document.getElementById('refresh-server-logs-btn').addEventListener('click', loadServerLogs);
+document.getElementById('server-log-level').addEventListener('change', loadServerLogs);
+document.getElementById('server-log-search').addEventListener('input', debounce(loadServerLogs, 300));
+
+document.getElementById('server-restart-btn').addEventListener('click', async () => {
+  if (!confirm('NyaitterServer を再起動しますか？')) return;
+  const btn = document.getElementById('server-restart-btn');
+  btn.disabled = true;
+  btn.textContent = 'Restarting...';
+
+  try {
+    const res = await api('/server/restart', { method: 'POST' });
+    alert(res.message || '再起動シグナルを送信しました。');
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Restart Server';
+      loadServerStatus();
+      loadServerLogs();
+    }, 2000);
+  } catch (e) {
+    alert(`Restart error: ${e.message}`);
+    btn.disabled = false;
+    btn.textContent = 'Restart Server';
+  }
+});
+
+document.getElementById('server-stop-btn').addEventListener('click', async () => {
+  if (!confirm('NyaitterServer を停止しますか？（※プロセスが終了します）')) return;
+  const btn = document.getElementById('server-stop-btn');
+  btn.disabled = true;
+  btn.textContent = 'Stopping...';
+
+  try {
+    const res = await api('/server/stop', { method: 'POST' });
+    alert(res.message || '停止シグナルを送信しました。');
+  } catch (e) {
+    alert(`Stop error: ${e.message}`);
+    btn.disabled = false;
+    btn.textContent = 'Stop Server';
+  }
+});
+
+// .env 読み込み & 保存
+async function loadServerEnv() {
+  try {
+    const data = await api('/server/env');
+    document.getElementById('server-env-editor').value = data.content || '';
+  } catch (e) {
+    console.error('Failed to load .env:', e);
+  }
+}
+
+document.getElementById('save-env-btn').addEventListener('click', async () => {
+  const content = document.getElementById('server-env-editor').value;
+  const btn = document.getElementById('save-env-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    const res = await api('/server/env', {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    });
+    alert(res.message || '.env を保存しました。');
+  } catch (e) {
+    alert(`Save error: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save .env';
+  }
+});
+
+// config.json 読み込み & 保存
+async function loadServerConfigJson() {
+  try {
+    const data = await api('/server/config-file');
+    document.getElementById('server-config-json-editor').value = data.content || '{}';
+  } catch (e) {
+    console.error('Failed to load config.json:', e);
+  }
+}
+
+document.getElementById('save-config-json-btn').addEventListener('click', async () => {
+  const content = document.getElementById('server-config-json-editor').value;
+  const btn = document.getElementById('save-config-json-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    const res = await api('/server/config-file', {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    });
+    alert(res.message || 'config.json を保存しました。');
+  } catch (e) {
+    alert(`Save error: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save config.json';
   }
 });
 

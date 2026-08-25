@@ -77,8 +77,34 @@ class AiAnalysisService {
     return list;
   }
 
-  async analyzeError(errorRecord) {
-    const prompt = `【重要：調査・解析専用エージェント（編集・変更禁止）】
+  async analyzeError(errorRecord, { autoFix = false } = {}) {
+    const isAutoFix = autoFix === true;
+    const prompt = isAutoFix
+      ? `【重要：自動修正（Auto-Fix）エージェント】
+あなたはNyaitterサーバーの開発者向け自動修復専門エージェントです。
+スタックトレースおよびプロジェクト内のコードを確認し、エラーの根本原因を特定した上で、**Git追跡対象の関連ファイルを直接編集・修正してください**。
+
+【厳格な安全規則】
+- 修正対象はGit追跡対象の既存ファイルのみです。.envやnode_modules、未追跡の機密ファイルは変更禁止です。
+- 不要なファイルの新規作成や削除は行わず、エラー解消に必要な最小限かつクリーンなコード修正を行ってください。
+- 修正完了後、何を変更したのかのサマリーを報告してください。
+
+【エラー情報】
+- エラー種別/メッセージ: ${errorRecord.message || '不明'}
+- 発生日時: ${errorRecord.timestamp || new Date().toISOString()}
+- リクエストパス: ${errorRecord.context?.method || 'N/A'} ${errorRecord.context?.url || errorRecord.context?.path || 'N/A'}
+- ユーザーID: ${errorRecord.context?.userId ?? 'ゲスト/未認証'}
+- スタックトレース:
+\`\`\`
+${errorRecord.stack || '(スタックトレースなし)'}
+\`\`\`
+
+【出力形式】
+Markdown形式で回答してください:
+### 1. 原因の分析
+### 2. 実施した修正内容
+### 3. 修正したファイル一覧`
+      : `【重要：調査・解析専用エージェント（編集・変更禁止）】
 あなたはNyaitterサーバー（Node.js / Express / PostgreSQL / D1 / SPA）の開発者向けエラー解析専門エージェントです。
 現在のプロジェクト内のコードや設定ファイル、関連モジュールを自律的に確認・読み取り・調査してください。
 
@@ -108,7 +134,7 @@ ${errorRecord.stack || '(スタックトレースなし)'}
 ### 3. 具体的な対応・修正手順
 ### 4. 修正コード例（該当する場合）`;
 
-    return this._callAi(prompt, 'error_analysis');
+    return this._callAi(prompt, 'error_analysis', { allowEdit: isAutoFix });
   }
 
   async analyzeSecurityLog(securityEvent) {
@@ -140,11 +166,12 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     return this._callAi(prompt, 'security_analysis');
   }
 
-  async _callAi(prompt, taskType) {
-    // 1. Opencode Agent（CLI経由でマルチターン調査）を実行
-    // Gemini API Key や OpenAI API Key も Opencode に渡し、コードを読みつつ調査させる
+  async _callAi(prompt, taskType, options = {}) {
+    const { allowEdit = false } = options;
+
+    // 1. Opencode Agent（CLI経由でマルチターン調査/自動修正）を実行
     try {
-      const cliResult = await this._callOpencodeAgent(prompt);
+      const cliResult = await this._callOpencodeAgent(prompt, { allowEdit });
       if (cliResult) {
         return {
           model: `Opencode Agent (${this._resolveOpencodeModelName()})`,
@@ -200,16 +227,17 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     return 'zen/deepseek-v4-flash-free';
   }
 
-  _callOpencodeAgent(prompt) {
+  _callOpencodeAgent(prompt, { allowEdit = false } = {}) {
     return new Promise((resolve, reject) => {
       const model = this._resolveOpencodeModelName();
-      const readonlyConfigPath = path.resolve(__dirname, 'opencode-readonly-config.json');
+      const configName = allowEdit ? 'opencode-autofix-config.json' : 'opencode-readonly-config.json';
+      const configPath = path.resolve(__dirname, configName);
 
       const args = ['run', '--pure', '-m', model, prompt];
 
       const env = {
         ...process.env,
-        OPENCODE_CONFIG: readonlyConfigPath,
+        OPENCODE_CONFIG: configPath,
         GEMINI_API_KEY: this.geminiApiKey || process.env.GEMINI_API_KEY || '',
         GOOGLE_GENERATIVE_AI_API_KEY: this.geminiApiKey || process.env.GEMINI_API_KEY || '',
         OPENAI_API_KEY: this.openaiApiKey || process.env.OPENAI_API_KEY || '',

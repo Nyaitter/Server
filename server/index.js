@@ -580,6 +580,16 @@ async function startServer() {
     app.locals.dbAdapter = dbAdapter;
     app.locals.storageAdapter = storageAdapter;
     managementToolServer?.setDbAdapter(dbAdapter);
+    managementToolServer?.setServerControls({
+        shutdownFn: shutdown,
+        getStatusFn: () => ({
+            pid: process.pid,
+            port: PORT,
+            databaseAdapter: config.database.adapter,
+            storageAdapter: config.storage?.adapter || 'local',
+            startedAt: new Date().toISOString(),
+        }),
+    });
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
     pollExpirationScheduler = startPollExpirationScheduler(dbAdapter, realtimeConnections, pushNotificationService);
     operatorControl = await startOperatorControlServer({

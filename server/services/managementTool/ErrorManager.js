@@ -3,16 +3,32 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const { execFile } = require('child_process');
 
 const MAX_ERROR_RECORDS = 500;
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const ERRORS_FILE = path.join(DATA_DIR, 'nmt-errors.json');
+const PROJECT_ROOT = path.resolve(__dirname, '../../../');
+
+function execGit(args, cwd = PROJECT_ROOT) {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, timeout: 30000 }, (error, stdout, stderr) => {
+      if (error) {
+        error.stderr = stderr;
+        return reject(error);
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
 
 class ErrorManager {
   constructor({ aiService, config = {} } = {}) {
     this.aiService = aiService;
     this.autoAnalysis = config.autoAnalysis ?? false;
+    this.autoFix = config.autoFix ?? false;
     this.autoIssue = config.autoIssue ?? false;
+    this.autoPr = config.autoPr ?? false;
     this.githubToken = config.githubToken || '';
     this.githubRepo = config.githubRepo || 'Nyaitter/Server';
     this.errors = [];
@@ -21,7 +37,9 @@ class ErrorManager {
 
   updateConfig(config = {}) {
     if (config.autoAnalysis !== undefined) this.autoAnalysis = Boolean(config.autoAnalysis);
+    if (config.autoFix !== undefined) this.autoFix = Boolean(config.autoFix);
     if (config.autoIssue !== undefined) this.autoIssue = Boolean(config.autoIssue);
+    if (config.autoPr !== undefined) this.autoPr = Boolean(config.autoPr);
     if (config.githubToken !== undefined) this.githubToken = config.githubToken;
     if (config.githubRepo !== undefined) this.githubRepo = config.githubRepo;
   }
@@ -88,14 +106,19 @@ class ErrorManager {
       status: 'open', // 'open' | 'resolved' | 'ignored'
       analysis: null,
       issueUrl: null,
+      prUrl: null,
+      fixed: false,
+      modifiedFiles: [],
     };
 
     this.errors.unshift(errorRecord);
     if (this.errors.length > MAX_ERROR_RECORDS) this.errors.pop();
     this._save();
 
-    // 自動AI解析が有効な場合
-    if (this.autoAnalysis && this.aiService) {
+    // 自動修正または自動AI解析が有効な場合
+    if (this.autoFix) {
+      this.triggerAutoFix(id).catch((e) => console.warn('[NMT-Errors] Auto fix error:', e.message));
+    } else if (this.autoAnalysis && this.aiService) {
       this.triggerAnalysis(id).catch((e) => console.warn('[NMT-Errors] Auto AI analysis error:', e.message));
     }
 
@@ -108,7 +131,7 @@ class ErrorManager {
 
     try {
       record.analyzing = true;
-      const result = await this.aiService.analyzeError(record);
+      const result = await this.aiService.analyzeError(record, { autoFix: false });
       record.analysis = {
         model: result.model,
         content: result.content,
@@ -127,6 +150,181 @@ class ErrorManager {
       record.analyzing = false;
       this._save();
     }
+  }
+
+  async triggerAutoFix(errorId) {
+    const record = this.errors.find((e) => e.id === errorId);
+    if (!record || !this.aiService) return null;
+
+    try {
+      record.fixing = true;
+      this._save();
+
+      // 修正前の変更ファイルを記録
+      const beforeDiff = await execGit(['diff', '--name-only']).catch(() => '');
+
+      // Opencode エージェントに Git 追跡ファイルの直接修正を実行させる
+      const result = await this.aiService.analyzeError(record, { autoFix: true });
+
+      record.analysis = {
+        model: result.model,
+        content: result.content,
+        provider: result.provider,
+        analyzedAt: new Date().toISOString(),
+      };
+
+      // 修正後の変更ファイル一覧を取得
+      const afterDiff = await execGit(['diff', '--name-only']).catch(() => '');
+      const modifiedFiles = afterDiff.split('\n').map((s) => s.trim()).filter(Boolean);
+
+      if (modifiedFiles.length > 0) {
+        // 構文チェック（Syntax Validation）
+        let syntaxOk = true;
+        for (const file of modifiedFiles) {
+          if (file.endsWith('.js') || file.endsWith('.mjs')) {
+            try {
+              await new Promise((resolve, reject) => {
+                execFile('node', ['--check', path.resolve(PROJECT_ROOT, file)], (err) => (err ? reject(err) : resolve()));
+              });
+            } catch (err) {
+              console.error(`[NMT-AutoFix] Syntax error in ${file}, rolling back:`, err.message);
+              syntaxOk = false;
+              break;
+            }
+          }
+        }
+
+        if (!syntaxOk) {
+          // 構文エラー発生時は変更をロールバック
+          await execGit(['checkout', '--', ...modifiedFiles]).catch(() => {});
+          record.fixError = '自動修正コードに構文エラーが検出されたためロールバックしました。';
+        } else {
+          record.fixed = true;
+          record.modifiedFiles = modifiedFiles;
+          record.status = 'resolved';
+
+          // 自動 PR 作成が有効な場合
+          if (this.autoPr && this.githubToken && !record.prUrl) {
+            this.createGitHubPullRequest(errorId).catch((e) => console.warn('[NMT-Errors] Auto PR creation error:', e.message));
+          }
+        }
+      }
+
+      this._save();
+      return { analysis: record.analysis, fixed: record.fixed, modifiedFiles: record.modifiedFiles };
+    } catch (err) {
+      console.error('[NMT-AutoFix] Failed to execute auto fix:', err);
+      record.fixError = err.message;
+      this._save();
+      throw err;
+    } finally {
+      record.fixing = false;
+      this._save();
+    }
+  }
+
+  async createGitHubPullRequest(errorId) {
+    const record = this.errors.find((e) => e.id === errorId);
+    if (!record || !this.githubToken) throw new Error('GitHub token is missing or error not found');
+    if (record.prUrl) return record.prUrl;
+    if (!record.modifiedFiles || record.modifiedFiles.length === 0) {
+      throw new Error('No modified files found for pull request');
+    }
+
+    const branchName = `fix/nmt-autofix-${record.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+    const currentBranch = await execGit(['branch', '--show-current']).catch(() => 'main');
+
+    try {
+      // 1. 新しいブランチを作成してチェックアウト
+      await execGit(['checkout', '-B', branchName]);
+
+      // 2. 変更ファイルをステージング
+      await execGit(['add', ...record.modifiedFiles]);
+
+      // 3. コミット
+      const commitMsg = `Fix(autofix): ${record.message.slice(0, 70)}\n\nAuto-fixed by NyaitterManagementTool for error ID ${record.id}`;
+      await execGit(['commit', '--author=nyantorusabu <nyantorusabu@outlook.jp>', '-m', commitMsg]);
+
+      // 4. リモートへ Push
+      await execGit(['push', '-u', 'origin', branchName, '--force']);
+
+      // 5. GitHub REST API で Pull Request 作成
+      const prTitle = `[AutoFix] ${record.message.slice(0, 80)}`;
+      const prBody = `## 🤖 NyaitterManagementTool 自動修復 Pull Request
+
+### 🚨 対象エラー情報
+- **エラーID**: \`${record.id}\`
+- **発生日時**: ${record.timestamp}
+- **リクエスト**: \`${record.context?.method || 'N/A'} ${record.context?.url || 'N/A'}\`
+
+### 🛠️ 変更ファイル
+${record.modifiedFiles.map((f) => `- \`${f}\``).join('\n')}
+
+### 📝 AI解析・修正サマリー
+${record.analysis?.content || '(詳細なし)'}
+
+---
+*Generated automatically by NyaitterManagementTool*`;
+
+      const prUrl = await this._sendGitHubPullRequest(branchName, currentBranch || 'main', prTitle, prBody);
+      if (prUrl) {
+        record.prUrl = prUrl;
+        this._save();
+      }
+
+      return prUrl;
+    } finally {
+      // 元のブランチに戻る
+      await execGit(['checkout', currentBranch]).catch(() => {});
+    }
+  }
+
+  _sendGitHubPullRequest(head, base, title, body) {
+    return new Promise((resolve, reject) => {
+      const repo = this.githubRepo || 'Nyaitter/Server';
+      const [owner, repoName] = repo.split('/');
+      if (!owner || !repoName) return reject(new Error('Invalid github repo format (owner/repo)'));
+
+      const postData = JSON.stringify({
+        title,
+        body,
+        head,
+        base,
+      });
+
+      const options = {
+        hostname: 'api.github.com',
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/pulls`,
+        method: 'POST',
+        headers: {
+          'User-Agent': 'NyaitterManagementTool/1.0',
+          'Authorization': `Bearer ${this.githubToken}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+        },
+        timeout: 20000,
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            try {
+              const parsed = JSON.parse(data);
+              return resolve(parsed.html_url);
+            } catch (_) {}
+          }
+          reject(new Error(`GitHub API HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+        });
+      });
+
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('GitHub API timeout')); });
+      req.write(postData);
+      req.end();
+    });
   }
 
   async createGitHubIssue(errorId) {

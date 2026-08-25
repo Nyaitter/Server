@@ -9,11 +9,12 @@ const AiAnalysisService = require('./AiAnalysisService');
 const ErrorManager = require('./ErrorManager');
 const SecurityLogManager = require('./SecurityLogManager');
 const AdminManager = require('./AdminManager');
+const ServerControlManager = require('./ServerControlManager');
 const NyaitterAuthManager = require('../auth/NyaitterAuthManager');
 const { getPublicUrl } = require('../../utils/nyaitterAddress');
 
 class ManagementToolServer {
-  constructor({ config, dbAdapter }) {
+  constructor({ config, dbAdapter, shutdownFn, getStatusFn } = {}) {
     this.config = config.nmt || {};
     this.mainConfig = config;
     this.dbAdapter = dbAdapter;
@@ -25,6 +26,7 @@ class ManagementToolServer {
     this.errorManager = new ErrorManager({ aiService: this.aiService, config: this.config });
     this.securityManager = new SecurityLogManager({ aiService: this.aiService, config: this.config });
     this.adminManager = new AdminManager({ dbAdapter });
+    this.serverControl = new ServerControlManager({ shutdownFn, getStatusFn });
     this.authManager = new NyaitterAuthManager({ dbAdapter });
 
     this.sessions = new Map(); // token -> { userId, admin, expiresAt }
@@ -36,6 +38,11 @@ class ManagementToolServer {
     this.dbAdapter = dbAdapter;
     this.adminManager.setDbAdapter(dbAdapter);
     this.authManager = new NyaitterAuthManager({ dbAdapter });
+  }
+
+  setServerControls({ shutdownFn, getStatusFn } = {}) {
+    if (shutdownFn) this.serverControl.setShutdownHandler(shutdownFn);
+    if (getStatusFn) this.serverControl.setStatusProvider(getStatusFn);
   }
 
   // ── メインサーバーからのフック ─────────────────────────────────────────
@@ -229,6 +236,24 @@ class ManagementToolServer {
       }
     });
 
+    this.app.post('/api/errors/:id/fix', authMiddleware, async (req, res) => {
+      try {
+        const result = await this.errorManager.triggerAutoFix(req.params.id);
+        res.json({ success: true, ...result });
+      } catch (e) {
+        res.status(500).json({ error: e.message });
+      }
+    });
+
+    this.app.post('/api/errors/:id/pr', authMiddleware, async (req, res) => {
+      try {
+        const prUrl = await this.errorManager.createGitHubPullRequest(req.params.id);
+        res.json({ success: true, prUrl });
+      } catch (e) {
+        res.status(500).json({ error: e.message });
+      }
+    });
+
     this.app.post('/api/errors/:id/issue', authMiddleware, async (req, res) => {
       try {
         const issueUrl = await this.errorManager.createGitHubIssue(req.params.id);
@@ -302,7 +327,9 @@ class ManagementToolServer {
     this.app.get('/api/settings', authMiddleware, (req, res) => {
       res.json({
         autoAnalysis: this.errorManager.autoAnalysis,
+        autoFix: this.errorManager.autoFix,
         autoIssue: this.errorManager.autoIssue,
+        autoPr: this.errorManager.autoPr,
         aiModel: this.aiService.preferredModel || 'auto',
         githubToken: this.errorManager.githubToken ? '********' : '',
         githubRepo: this.errorManager.githubRepo,
@@ -312,11 +339,13 @@ class ManagementToolServer {
     });
 
     this.app.post('/api/settings', authMiddleware, (req, res) => {
-      const { autoAnalysis, autoIssue, aiModel, githubToken, githubRepo, geminiApiKey, openaiApiKey } = req.body;
+      const { autoAnalysis, autoFix, autoIssue, autoPr, aiModel, githubToken, githubRepo, geminiApiKey, openaiApiKey } = req.body;
       
       const newSettings = {};
       if (autoAnalysis !== undefined) newSettings.autoAnalysis = autoAnalysis;
+      if (autoFix !== undefined) newSettings.autoFix = autoFix;
       if (autoIssue !== undefined) newSettings.autoIssue = autoIssue;
+      if (autoPr !== undefined) newSettings.autoPr = autoPr;
       if (aiModel !== undefined) newSettings.aiModel = aiModel;
       if (githubToken && githubToken !== '********') newSettings.githubToken = githubToken;
       if (githubRepo !== undefined) newSettings.githubRepo = githubRepo;
@@ -330,6 +359,61 @@ class ManagementToolServer {
       res.json({ success: true, message: '設定を更新しました。' });
     });
 
+    // ── 5. サーバー制御・管理 API ─────────────────────────────────────────
+    this.app.get('/api/server/status', authMiddleware, (req, res) => {
+      res.json(this.serverControl.getStatus());
+    });
+
+    this.app.get('/api/server/logs', authMiddleware, (req, res) => {
+      const { limit, level, search } = req.query;
+      const logs = this.serverControl.getLogs({ limit, level, search });
+      res.json({ logs });
+    });
+
+    this.app.post('/api/server/restart', authMiddleware, async (req, res) => {
+      try {
+        const result = await this.serverControl.restartServer();
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.post('/api/server/stop', authMiddleware, async (req, res) => {
+      try {
+        const result = await this.serverControl.stopServer();
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.get('/api/server/env', authMiddleware, (req, res) => {
+      res.json(this.serverControl.getEnv());
+    });
+
+    this.app.put('/api/server/env', authMiddleware, (req, res) => {
+      try {
+        const result = this.serverControl.updateEnv(req.body.content || '');
+        res.json(result);
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
+    });
+
+    this.app.get('/api/server/config-file', authMiddleware, (req, res) => {
+      res.json(this.serverControl.getConfigFile());
+    });
+
+    this.app.put('/api/server/config-file', authMiddleware, (req, res) => {
+      try {
+        const result = this.serverControl.updateConfigFile(req.body.content || '');
+        res.json(result);
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
+    });
+
     // SPA フォールバック
     this.app.get('*', (req, res) => {
       res.sendFile(path.join(webDir, 'index.html'));
@@ -339,6 +423,11 @@ class ManagementToolServer {
     this.httpServer = http.createServer(this.app);
     this.httpServer.keepAliveTimeout = 65000;
     this.httpServer.headersTimeout = 66000;
+
+    this.httpServer.on('clientError', (err, socket) => {
+      if (err.code === 'ECONNRESET' || !socket.writable) return;
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+    });
 
     this.httpServer.listen(this.port, () => {
       console.log(`\n🐾 [NyaitterManagementTool] Started on port ${this.port} (IPv4/IPv6 dual-stack)`);

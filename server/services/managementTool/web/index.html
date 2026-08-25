@@ -25,6 +25,7 @@
       <button class="tab-btn" data-tab="security-tab">
         Security <span id="security-alert-badge" class="badge badge-danger hidden">0</span>
       </button>
+      <button class="tab-btn" data-tab="server-tab">Server</button>
       <button class="tab-btn" data-tab="settings-tab">Settings</button>
     </div>
 
@@ -120,6 +121,12 @@
               </label>
             </div>
             <div class="form-group">
+              <label class="checkbox-inline">
+                <input type="checkbox" id="setting-auto-fix">
+                Enable Auto Fix (Git Tracked Files)
+              </label>
+            </div>
+            <div class="form-group">
               <label for="setting-ai-model">Model</label>
               <select id="setting-ai-model" class="form-control"></select>
             </div>
@@ -137,13 +144,19 @@
 
         <div class="panel" style="margin-top: 1rem;">
           <div class="panel-header">
-            <h3>GitHub Auto Issue</h3>
+            <h3>GitHub Integration</h3>
           </div>
           <form id="settings-github-form">
             <div class="form-group">
               <label class="checkbox-inline">
                 <input type="checkbox" id="setting-auto-issue">
                 Enable Auto Issue
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-inline">
+                <input type="checkbox" id="setting-auto-pr">
+                Enable Auto Pull Request (on Auto Fix)
               </label>
             </div>
             <div class="form-group">
@@ -156,6 +169,59 @@
             </div>
             <button type="submit" class="btn btn-primary btn-sm">Save</button>
           </form>
+        </div>
+      </section>
+
+      <!-- 5. Server Management -->
+      <section id="server-tab" class="tab-pane">
+        <!-- サーバー状態 & 操作 -->
+        <div class="panel">
+          <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <h3>Server Operations & Metrics</h3>
+            <div>
+              <button id="server-restart-btn" class="btn btn-secondary btn-sm" style="color:#e3b341; border-color:#e3b341;">Restart Server</button>
+              <button id="server-stop-btn" class="btn btn-secondary btn-sm" style="color:#f85149; border-color:#f85149; margin-left:0.4rem;">Stop Server</button>
+            </div>
+          </div>
+          <div id="server-status-grid" class="admin-grid" style="margin-top:0.6rem;">
+            <div class="empty-state">Loading status...</div>
+          </div>
+        </div>
+
+        <!-- ログビューア -->
+        <div class="panel" style="margin-top: 1rem;">
+          <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <h3>Server Logs</h3>
+            <div style="display:flex; gap:0.4rem;">
+              <select id="server-log-level" class="form-control" style="width:auto;">
+                <option value="all">All Levels</option>
+                <option value="error">Errors Only</option>
+                <option value="info">Info Only</option>
+              </select>
+              <input type="text" id="server-log-search" class="form-control" placeholder="Filter logs..." style="width:160px;">
+              <button id="refresh-server-logs-btn" class="btn btn-secondary btn-sm">Refresh</button>
+            </div>
+          </div>
+          <div id="server-logs-container" class="code-box" style="height:260px; overflow-y:auto; margin-top:0.6rem; font-size:11px; white-space:pre-wrap;">Loading logs...</div>
+        </div>
+
+        <!-- .env & config.json エディタ -->
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+          <div class="panel">
+            <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+              <h3>.env Configuration</h3>
+              <button id="save-env-btn" class="btn btn-primary btn-sm">Save .env</button>
+            </div>
+            <textarea id="server-env-editor" class="form-control code-box" style="height:280px; width:100%; margin-top:0.6rem; font-family:monospace; resize:vertical; font-size:12px;"></textarea>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+              <h3>config.json Configuration</h3>
+              <button id="save-config-json-btn" class="btn btn-primary btn-sm">Save config.json</button>
+            </div>
+            <textarea id="server-config-json-editor" class="form-control code-box" style="height:280px; width:100%; margin-top:0.6rem; font-family:monospace; resize:vertical; font-size:12px;"></textarea>
+          </div>
         </div>
       </section>
     </main>
