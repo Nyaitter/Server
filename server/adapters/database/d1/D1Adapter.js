@@ -1226,9 +1226,12 @@ class D1Adapter extends DatabaseAdapter {
 		}), { cacheSeconds: 0 });
 	}
 
-	async sendDmMessage(channelId, senderId, content) {
+	async sendDmMessage(channelId, senderId, content, meta = {}) {
 		return this._write('/dm/messages', {
-			channelId: String(channelId), senderId: requireId(senderId, 'senderId'), content,
+			channelId: String(channelId),
+			senderId: requireId(senderId, 'senderId'),
+			content,
+			...(meta || {}),
 		});
 	}
 

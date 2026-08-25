@@ -2279,6 +2279,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			? String(postData.viewContent)
 			: (postData.view_content != null ? String(postData.view_content) : extractViewContent(postData.content || ''));
 		const replyControl = String(postData.replyControl ?? postData.reply_control ?? 'everyone');
+		const hasExplicitId = postData.id != null && Number.isSafeInteger(Number(postData.id)) && Number(postData.id) > 0;
+
 		const values = [
 			Number(postData.userId),
 			String(postData.content || ''),
@@ -2296,13 +2298,21 @@ class PostgresAdapter extends DatabaseAdapter {
 			replyControl,
 			now,
 		];
+
+		const insertQuery = hasExplicitId
+			? `INSERT INTO posts (id, user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, reply_control, created_at)
+			   VALUES ($16, $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
+			   RETURNING *`
+			: `INSERT INTO posts (user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, reply_control, created_at)
+			   VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
+			   RETURNING *`;
+
+		if (hasExplicitId) {
+			values.push(Number(postData.id));
+		}
+
 		return this._withTransaction(async (client) => {
-			const { rows } = await client.query(
-				`INSERT INTO posts (user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, reply_control, created_at)
-				 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
-				 RETURNING *`,
-				values,
-			);
+			const { rows } = await client.query(insertQuery, values);
 			const post = normalizePostRow(rows[0] || null);
 			if (post) {
 				// reply/repost カウント更新は並列実行
@@ -3862,29 +3872,48 @@ class PostgresAdapter extends DatabaseAdapter {
 		);
 		return rows.map((r) => ({
 			id: Number(r.id),
+			channelId: r.channel_id,
 			channel_id: r.channel_id,
+			senderId: Number(r.sender_id),
 			sender_id: Number(r.sender_id),
 			content: r.content,
+			sentAt: toIsoString(r.sent_at),
 			sent_at: toIsoString(r.sent_at),
+			readAt: toIsoString(r.read_at),
 			read_at: toIsoString(r.read_at),
 		}));
 	}
 
-	async sendDmMessage(channelId, senderId, content) {
-		const now = new Date().toISOString();
-		const { rows } = await this.pool.query(
-			`INSERT INTO dm_messages (channel_id, sender_id, content, sent_at)
-			 VALUES ($1, $2, $3, $4)
-			 RETURNING *`,
-			[String(channelId), Number(senderId), String(content || ''), now],
-		);
-		return rows[0] ? {
-			id: Number(rows[0].id),
-			channel_id: rows[0].channel_id,
-			sender_id: Number(rows[0].sender_id),
-			content: rows[0].content,
-			sent_at: toIsoString(rows[0].sent_at),
-			read_at: toIsoString(rows[0].read_at),
+	async sendDmMessage(channelId, senderId, content, meta = {}) {
+		const now = meta?.sentAt ? toIsoString(meta.sentAt) : new Date().toISOString();
+		const hasExplicitId = meta?.id != null && Number.isSafeInteger(Number(meta.id)) && Number(meta.id) > 0;
+
+		const values = [String(channelId), Number(senderId), String(content || ''), now];
+		const insertQuery = hasExplicitId
+			? `INSERT INTO dm_messages (id, channel_id, sender_id, content, sent_at)
+			   VALUES ($5, $1, $2, $3, $4)
+			   RETURNING *`
+			: `INSERT INTO dm_messages (channel_id, sender_id, content, sent_at)
+			   VALUES ($1, $2, $3, $4)
+			   RETURNING *`;
+
+		if (hasExplicitId) {
+			values.push(Number(meta.id));
+		}
+
+		const { rows } = await this.pool.query(insertQuery, values);
+		const row = rows[0];
+		return row ? {
+			id: Number(row.id),
+			channelId: row.channel_id,
+			channel_id: row.channel_id,
+			senderId: Number(row.sender_id),
+			sender_id: Number(row.sender_id),
+			content: row.content,
+			sentAt: toIsoString(row.sent_at),
+			sent_at: toIsoString(row.sent_at),
+			readAt: toIsoString(row.read_at),
+			read_at: toIsoString(row.read_at),
 		} : null;
 	}
 
@@ -4261,6 +4290,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			open: notificationData.open,
 		});
 		const now = notificationData.createdAt ? toIsoString(notificationData.createdAt) : new Date().toISOString();
+		const hasExplicitId = notificationData.id != null && Number.isSafeInteger(Number(notificationData.id)) && Number(notificationData.id) > 0;
+
 		const values = [
 			Number(notificationData.userId),
 			String(notificationData.type),
@@ -4270,13 +4301,22 @@ class PostgresAdapter extends DatabaseAdapter {
 			typeof notificationData.message === 'string' ? notificationData.message : null,
 			now,
 		];
-		const { rows } = await this.pool.query(
-			`INSERT INTO notifications
+
+		const insertQuery = hasExplicitId
+			? `INSERT INTO notifications
+				 (id, user_id, type, from_user_id, post_id, target, message, read, clicked, created_at)
+				 VALUES ($8, $1, $2, $3, $4, $5::jsonb, $6, false, false, $7)
+			   RETURNING *`
+			: `INSERT INTO notifications
 				 (user_id, type, from_user_id, post_id, target, message, read, clicked, created_at)
 				 VALUES ($1, $2, $3, $4, $5::jsonb, $6, false, false, $7)
-			 RETURNING *`,
-			values,
-		);
+			   RETURNING *`;
+
+		if (hasExplicitId) {
+			values.push(Number(notificationData.id));
+		}
+
+		const { rows } = await this.pool.query(insertQuery, values);
 		const row = rows[0];
 		if (!row) return null;
 		return {
@@ -4405,21 +4445,33 @@ class PostgresAdapter extends DatabaseAdapter {
 		const assignmentType = ['freeze_appeal', 'verification_application'].includes(reportData.assignmentType)
 			? reportData.assignmentType
 			: 'report';
-		const { rows } = await this.pool.query(
-			`INSERT INTO moderation_reports
+		const hasExplicitId = reportData.id != null && Number.isSafeInteger(Number(reportData.id)) && Number(reportData.id) > 0;
+
+		const values = [
+			Number(reportData.reporterUserId),
+			String(reportData.targetKind),
+			String(reportData.targetId),
+			String(reportData.description || ''),
+			JSON.stringify(reportData.targetSnapshot || {}),
+			assignmentType,
+			now,
+		];
+
+		const insertQuery = hasExplicitId
+			? `INSERT INTO moderation_reports
+				(id, reporter_user_id, target_kind, target_id, description, target_snapshot, assignment_type, status, excluded_admin_ids, created_at)
+			   VALUES ($8, $1, $2, $3, $4, $5::jsonb, $6, 'pending', '[]'::jsonb, $7)
+			   RETURNING *`
+			: `INSERT INTO moderation_reports
 				(reporter_user_id, target_kind, target_id, description, target_snapshot, assignment_type, status, excluded_admin_ids, created_at)
-			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'pending', '[]'::jsonb, $7)
-			 RETURNING *`,
-			[
-				Number(reportData.reporterUserId),
-				String(reportData.targetKind),
-				String(reportData.targetId),
-				String(reportData.description || ''),
-				JSON.stringify(reportData.targetSnapshot || {}),
-				assignmentType,
-				now,
-			],
-		);
+			   VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'pending', '[]'::jsonb, $7)
+			   RETURNING *`;
+
+		if (hasExplicitId) {
+			values.push(Number(reportData.id));
+		}
+
+		const { rows } = await this.pool.query(insertQuery, values);
 		return normalizeModerationReportRow(rows[0]);
 	}
 
@@ -5226,12 +5278,13 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 
 			// 新規投票を挿入（アダプター共通でアプリ側でユニークIDを明示的に生成し、poll.id を確実に渡す）
+			const now = new Date().toISOString();
 			for (const optId of targetOptionIds) {
 				const voteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
 				await client.query(
 					`INSERT INTO poll_votes (id, poll_id, user_id, option_id, other_text, created_at)
-					 VALUES ($1, $2, $3, $4, $5, NOW())`,
-					[voteId, poll.id, Number(uId) || uId, optId, optId === -1 ? sanitizedOtherText : null],
+					 VALUES ($1, $2, $3, $4, $5, $6)`,
+					[voteId, poll.id, Number(uId) || uId, optId, optId === -1 ? sanitizedOtherText : null, now],
 				);
 			}
 

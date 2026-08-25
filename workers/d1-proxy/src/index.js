@@ -1197,34 +1197,55 @@ export default {
 					const body = await request.json();
 					const reporterUserId = Number(body.reporterUserId);
 					const targetKind = String(body.targetKind || '');
-						const targetId = ['dm', 'dm_message'].includes(targetKind)
-							? String(body.targetId || '').trim()
-							: Number(body.targetId);
+					const targetId = ['dm', 'dm_message'].includes(targetKind)
+						? String(body.targetId || '').trim()
+						: Number(body.targetId);
 					const description = String(body.description || '');
 					const assignmentType = ['freeze_appeal', 'verification_application'].includes(body.assignmentType)
 						? body.assignmentType
 						: 'report';
-						const validTargetId = ['dm', 'dm_message'].includes(targetKind)
-							? targetId.length > 0 && targetId.length <= 256
-							: Number.isInteger(targetId);
-						if (!Number.isInteger(reporterUserId) || !validTargetId || !['user', 'post', 'dm', 'dm_message'].includes(targetKind)) {
+					const validTargetId = ['dm', 'dm_message'].includes(targetKind)
+						? targetId.length > 0 && targetId.length <= 256
+						: Number.isInteger(targetId);
+					if (!Number.isInteger(reporterUserId) || !validTargetId || !['user', 'post', 'dm', 'dm_message'].includes(targetKind)) {
 						return badRequest('Invalid moderation report');
 					}
 					const now = body.createdAt || new Date().toISOString();
-					const result = await db.prepare(
-						`INSERT INTO moderation_reports
-							(reporter_user_id, target_kind, target_id, description, target_snapshot, assignment_type, status, excluded_admin_ids, created_at)
-						 VALUES (?, ?, ?, ?, ?, ?, 'pending', '[]', ?)`
-					).bind(
-						reporterUserId,
-						targetKind,
-						targetId,
-						description,
-						JSON.stringify(body.targetSnapshot || {}),
-						assignmentType,
-						now,
-					).run();
-					const row = await db.prepare('SELECT * FROM moderation_reports WHERE id = ?').bind(result.meta.last_row_id).first();
+					const hasExplicitId = body.id != null && Number.isSafeInteger(Number(body.id)) && Number(body.id) > 0;
+					let createdId;
+					if (hasExplicitId) {
+						createdId = Number(body.id);
+						await db.prepare(
+							`INSERT INTO moderation_reports
+								(id, reporter_user_id, target_kind, target_id, description, target_snapshot, assignment_type, status, excluded_admin_ids, created_at)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '[]', ?)`
+						).bind(
+							createdId,
+							reporterUserId,
+							targetKind,
+							targetId,
+							description,
+							JSON.stringify(body.targetSnapshot || {}),
+							assignmentType,
+							now,
+						).run();
+					} else {
+						const result = await db.prepare(
+							`INSERT INTO moderation_reports
+								(reporter_user_id, target_kind, target_id, description, target_snapshot, assignment_type, status, excluded_admin_ids, created_at)
+							 VALUES (?, ?, ?, ?, ?, ?, 'pending', '[]', ?)`
+						).bind(
+							reporterUserId,
+							targetKind,
+							targetId,
+							description,
+							JSON.stringify(body.targetSnapshot || {}),
+							assignmentType,
+							now,
+						).run();
+						createdId = result.meta.last_row_id;
+					}
+					const row = await db.prepare('SELECT * FROM moderation_reports WHERE id = ?').bind(createdId).first();
 					return json(normalizeModerationReportRow(row), 201);
 				}
 
@@ -1693,23 +1714,34 @@ export default {
 				const content = postData.content || '';
 				const attachments = postData.attachments ? JSON.stringify(postData.attachments) : null;
 				const mask = postData.mask ? 1 : 0;
-					const lock = postData.lock ? 1 : 0;
-					const announcement = postData.announcement ? 1 : 0;
-					const replyTo = postData.replyTo ? Number(postData.replyTo) : null;
-					const repostTo = postData.repostTo ? Number(postData.repostTo) : null;
-					const normalizedTags = normalizePostTags(postData.tags);
-					const tags = JSON.stringify(normalizedTags);
-						const tagsGeneratedAt = postData.tagsGeneratedAt || null;
-						const groupId = postData.groupId ?? postData.group_id ?? null;
-						const groupAnnouncement = postData.groupAnnouncement ?? postData.group_announcement ? 1 : 0;
-						const now = new Date().toISOString();
+				const lock = postData.lock ? 1 : 0;
+				const announcement = postData.announcement ? 1 : 0;
+				const replyTo = postData.replyTo ? Number(postData.replyTo) : null;
+				const repostTo = postData.repostTo ? Number(postData.repostTo) : null;
+				const normalizedTags = normalizePostTags(postData.tags);
+				const tags = JSON.stringify(normalizedTags);
+				const tagsGeneratedAt = postData.tagsGeneratedAt || null;
+				const groupId = postData.groupId ?? postData.group_id ?? null;
+				const groupAnnouncement = postData.groupAnnouncement ?? postData.group_announcement ? 1 : 0;
+				const now = postData.createdAt ? new Date(postData.createdAt).toISOString() : new Date().toISOString();
+				const hasExplicitId = postData.id != null && Number.isSafeInteger(Number(postData.id)) && Number(postData.id) > 0;
 
+				let createdId;
+				if (hasExplicitId) {
+					createdId = Number(postData.id);
+					await db.prepare(
+						`INSERT INTO posts (id, user_id, content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					).bind(createdId, userId, content, attachments, mask, lock, announcement, replyTo, repostTo, tags, tagsGeneratedAt, groupId, groupAnnouncement, now).run();
+				} else {
 					const res = await db.prepare(
-	`INSERT INTO posts (user_id, content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at)
-									 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-						).bind(userId, content, attachments, mask, lock, announcement, replyTo, repostTo, tags, tagsGeneratedAt, groupId, groupAnnouncement, now).run();
+						`INSERT INTO posts (user_id, content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					).bind(userId, content, attachments, mask, lock, announcement, replyTo, repostTo, tags, tagsGeneratedAt, groupId, groupAnnouncement, now).run();
+					createdId = res.meta.last_row_id;
+				}
 
-				const created = await db.prepare('SELECT * FROM posts WHERE id = ?').bind(res.meta.last_row_id).first();
+				const created = await db.prepare('SELECT * FROM posts WHERE id = ?').bind(createdId).first();
 				await adjustUserKeywordAffinitiesForTags(db, userId, normalizedTags, 1);
 				return json(normalizePostRow(created));
 			}
@@ -2650,11 +2682,31 @@ export default {
 				const channelId = String(body.channelId);
 				const senderId = Number(body.senderId);
 				const content = String(body.content || '');
-				const now = new Date().toISOString();
+				const now = body.sentAt ? new Date(body.sentAt).toISOString() : new Date().toISOString();
+				const hasExplicitId = body.id != null && Number.isSafeInteger(Number(body.id)) && Number(body.id) > 0;
 
-				const res = await db.prepare('INSERT INTO dm_messages (channel_id, sender_id, content, sent_at) VALUES (?, ?, ?, ?)').bind(channelId, senderId, content, now).run();
-				const row = await db.prepare('SELECT * FROM dm_messages WHERE id = ?').bind(res.meta.last_row_id).first();
-				return json(row);
+				let createdId;
+				if (hasExplicitId) {
+					createdId = Number(body.id);
+					await db.prepare('INSERT INTO dm_messages (id, channel_id, sender_id, content, sent_at) VALUES (?, ?, ?, ?, ?)').bind(createdId, channelId, senderId, content, now).run();
+				} else {
+					const res = await db.prepare('INSERT INTO dm_messages (channel_id, sender_id, content, sent_at) VALUES (?, ?, ?, ?)').bind(channelId, senderId, content, now).run();
+					createdId = res.meta.last_row_id;
+				}
+
+				const row = await db.prepare('SELECT * FROM dm_messages WHERE id = ?').bind(createdId).first();
+				return json(row ? {
+					id: Number(row.id),
+					channelId: row.channel_id,
+					channel_id: row.channel_id,
+					senderId: Number(row.sender_id),
+					sender_id: Number(row.sender_id),
+					content: row.content,
+					sentAt: row.sent_at,
+					sent_at: row.sent_at,
+					readAt: row.read_at,
+					read_at: row.read_at,
+				} : null);
 			}
 
 			if (method === 'POST' && pathname === '/dm/read') {
@@ -2873,19 +2925,45 @@ export default {
 				const body = await request.json();
 				const userId = Number(body.userId);
 				const type = String(body.type);
-				const fromUserId = body.fromUserId != null ? Number(body.fromUserId) : null;
+				const fromUserId = body.fromUserId != null ? Number(body.fromUserId) : (body.from_user_id != null ? Number(body.from_user_id) : null);
 				const postId = body.postId != null ? Number(body.postId) : (body.target?.kind === 'post' ? Number(body.target.id) : null);
-					const target = body.target ? JSON.stringify(body.target) : null;
-					const message = typeof body.message === 'string' ? body.message : null;
-					const now = new Date().toISOString();
+				const target = body.target ? JSON.stringify(body.target) : null;
+				const message = typeof body.message === 'string' ? body.message : null;
+				const now = body.createdAt ? new Date(body.createdAt).toISOString() : new Date().toISOString();
+				const hasExplicitId = body.id != null && Number.isSafeInteger(Number(body.id)) && Number(body.id) > 0;
 
+				let createdId;
+				if (hasExplicitId) {
+					createdId = Number(body.id);
+					await db.prepare(
+						`INSERT INTO notifications (id, user_id, type, from_user_id, post_id, target, message, read, clicked, created_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`
+					).bind(createdId, userId, type, fromUserId, postId, target, message, now).run();
+				} else {
 					const res = await db.prepare(
 						`INSERT INTO notifications (user_id, type, from_user_id, post_id, target, message, read, clicked, created_at)
 						 VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)`
 					).bind(userId, type, fromUserId, postId, target, message, now).run();
+					createdId = res.meta.last_row_id;
+				}
 
-				const row = await db.prepare('SELECT * FROM notifications WHERE id = ?').bind(res.meta.last_row_id).first();
-				return json(row ? { ...row, target: parseJsonSafe(row.target, null), read: Boolean(row.read), clicked: Boolean(row.clicked) } : null);
+				const row = await db.prepare('SELECT * FROM notifications WHERE id = ?').bind(createdId).first();
+				return json(row ? {
+					id: Number(row.id),
+					userId: Number(row.user_id),
+					user_id: Number(row.user_id),
+					type: row.type,
+					fromUserId: row.from_user_id != null ? Number(row.from_user_id) : null,
+					from_user_id: row.from_user_id != null ? Number(row.from_user_id) : null,
+					postId: row.post_id != null ? Number(row.post_id) : null,
+					post_id: row.post_id != null ? Number(row.post_id) : null,
+					target: parseJsonSafe(row.target, null),
+					message: row.message || null,
+					read: Boolean(row.read),
+					clicked: Boolean(row.clicked),
+					createdAt: row.created_at,
+					created_at: row.created_at,
+				} : null);
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/notifications$/)) {

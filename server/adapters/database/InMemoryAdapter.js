@@ -1520,7 +1520,10 @@ class InMemoryAdapter extends DatabaseAdapter {
 	}
 
 	async createPost(postData) {
-		const id = this.nextPostId++;
+		const id = postData.id != null && Number.isSafeInteger(Number(postData.id)) && Number(postData.id) > 0
+			? Number(postData.id)
+			: this.nextPostId++;
+		const now = postData.createdAt ? new Date(postData.createdAt) : new Date();
 		const viewContent = postData.viewContent != null
 			? String(postData.viewContent)
 			: (postData.view_content != null ? String(postData.view_content) : extractViewContent(postData.content || ''));
@@ -1544,7 +1547,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			reply_control: String(postData.replyControl ?? postData.reply_control ?? 'everyone'),
 			replyTo: postData.replyTo || null,
 			repostTo: postData.repostTo || null,
-			createdAt: new Date(),
+			createdAt: now,
 		};
 		this.posts.set(id, post);
 		this._addPostIndexes(post);
@@ -1898,17 +1901,25 @@ class InMemoryAdapter extends DatabaseAdapter {
 	}
 
 	
-	async sendDmMessage(channelId, senderId, content) {
+	async sendDmMessage(channelId, senderId, content, meta = {}) {
 		const channel = this.dmChannels.get(channelId);
 		if (!channel) throw new Error('Channel not found');
 
+		const id = meta?.id != null && Number.isSafeInteger(Number(meta.id)) && Number(meta.id) > 0
+			? Number(meta.id)
+			: Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+
 		const message = {
-			id: Date.now() + Math.random(),
+			id,
 			channelId,
-			senderId,
-			content,
-			sentAt: new Date(),
+			channel_id: channelId,
+			senderId: Number(senderId),
+			sender_id: Number(senderId),
+			content: String(content || ''),
+			sentAt: meta?.sentAt ? new Date(meta.sentAt) : new Date(),
+			sent_at: meta?.sentAt ? new Date(meta.sentAt).toISOString() : new Date().toISOString(),
 			readAt: null,
+			read_at: null,
 		};
 
 		channel.messages.push(message);
@@ -2422,13 +2433,18 @@ class InMemoryAdapter extends DatabaseAdapter {
 	}
 
 		async createNotification(notificationData) {
-			const id = this.nextNotificationId++;
+			const id = notificationData.id != null && Number.isSafeInteger(Number(notificationData.id)) && Number(notificationData.id) > 0
+				? Number(notificationData.id)
+				: this.nextNotificationId++;
 			const userId = Number(notificationData.userId);
+			const now = notificationData.createdAt ? new Date(notificationData.createdAt) : new Date();
 			const notification = {
 				id,
 				userId,
+				user_id: userId,
 				type: notificationData.type,
-				fromUserId: notificationData.fromUserId ?? null,
+				fromUserId: notificationData.fromUserId ?? notificationData.from_user_id ?? null,
+				from_user_id: notificationData.fromUserId ?? notificationData.from_user_id ?? null,
 				target: normalizeTarget(notificationData.target, {
 					postId: notificationData.postId,
 					open: notificationData.open,
@@ -2436,7 +2452,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 				read: false,
 				clicked: false,
 				message: typeof notificationData.message === 'string' ? notificationData.message : null,
-				createdAt: new Date(),
+				createdAt: now,
+				created_at: now.toISOString(),
 			};
 
 			if (!this.notifications.has(userId)) this.notifications.set(userId, []);
