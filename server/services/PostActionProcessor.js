@@ -443,7 +443,7 @@ async function processCreatePostAction(context, payload) {
   if (repostTarget && canNotifyPostRecipient(repostTarget.userId)) {
     notificationTasks.push(notifyPostAction(context, {
       userId: repostTarget.userId,
-      type: isSimpleRepost ? 'repost' : 'quote',
+      type: 'repost',
       fromUserId: userId,
       postId: post.id,
     }));
