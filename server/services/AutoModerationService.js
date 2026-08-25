@@ -383,7 +383,6 @@ class AutoModerationService {
               candidateCount: 1,
               maxOutputTokens: 256,
               temperature: 0.0,
-              thinkingConfig: { thinkingBudget: 0 },
             },
           }),
         },
