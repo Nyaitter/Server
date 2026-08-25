@@ -267,7 +267,7 @@ class LogHubManager {
     this.wss.on('connection', async (ws) => {
       // 接続時に直近のフィルタリングログ（通常ログ除外）を送信
       const initialLogs = this.getLogs({
-        types: ['error', 'security', 'ai'],
+        types: ['error', 'security', 'ai', 'admin', 'moderation'],
         limit: 100,
       });
 
@@ -297,7 +297,7 @@ class LogHubManager {
           const data = JSON.parse(message);
           if (data.action === 'filter') {
             const filtered = this.getLogs({
-              types: data.types || ['error', 'security', 'ai'],
+              types: data.types || ['error', 'security', 'ai', 'admin', 'moderation'],
               search: data.search || '',
               level: data.level || 'all',
               limit: data.limit || 150,
@@ -327,7 +327,7 @@ class LogHubManager {
     const logItem = {
       id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       timestamp: entry.timestamp || new Date().toISOString(),
-      type: entry.type || 'system', // 'system' | 'error' | 'security' | 'ai'
+      type: entry.type || 'system', // 'system' | 'error' | 'security' | 'ai' | 'admin' | 'moderation'
       level: entry.level || 'info', // 'info' | 'warn' | 'error'
       message: entry.message || '',
       source: entry.source || 'server',
@@ -363,7 +363,7 @@ class LogHubManager {
     }
   }
 
-  getLogs({ types = ['error', 'security', 'ai'], search = '', level = 'all', limit = 200 } = {}) {
+  getLogs({ types = ['error', 'security', 'ai', 'admin', 'moderation'], search = '', level = 'all', limit = 200 } = {}) {
     let result = this.logs;
 
     if (Array.isArray(types) && types.length > 0) {

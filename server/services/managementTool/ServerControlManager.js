@@ -426,6 +426,54 @@ class ServerControlManager {
     return { success: true, message: '.env ファイルを更新しました。反映には再起動が必要です。', path: targetPath };
   }
 
+  updateEnvVariables(keyValueMap) {
+    if (!keyValueMap || typeof keyValueMap !== 'object') return { success: false, error: 'Invalid map' };
+    const targetPath = this._resolveEnvPath();
+
+    let content = '';
+    if (fs.existsSync(targetPath)) {
+      content = fs.readFileSync(targetPath, 'utf8');
+      const backupPath = `${targetPath}.backup.${Date.now()}`;
+      try {
+        fs.copyFileSync(targetPath, backupPath);
+      } catch (_) {}
+    }
+
+    const lines = content.split('\n');
+    const updatedKeys = new Set();
+    const newLines = lines.map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return line;
+      const eqIdx = line.indexOf('=');
+      if (eqIdx === -1) return line;
+      const key = line.slice(0, eqIdx).trim();
+      if (Object.prototype.hasOwnProperty.call(keyValueMap, key)) {
+        updatedKeys.add(key);
+        const rawVal = keyValueMap[key];
+        const valStr = String(rawVal ?? '');
+        process.env[key] = valStr;
+        const needsQuote = /[\s#"'\\]/.test(valStr);
+        const formattedVal = needsQuote ? JSON.stringify(valStr) : valStr;
+        return `${key}=${formattedVal}`;
+      }
+      return line;
+    });
+
+    for (const [key, val] of Object.entries(keyValueMap)) {
+      if (!updatedKeys.has(key) && val !== undefined) {
+        const valStr = String(val ?? '');
+        process.env[key] = valStr;
+        const needsQuote = /[\s#"'\\]/.test(valStr);
+        const formattedVal = needsQuote ? JSON.stringify(valStr) : valStr;
+        newLines.push(`${key}=${formattedVal}`);
+      }
+    }
+
+    const newContent = newLines.join('\n');
+    fs.writeFileSync(targetPath, newContent, 'utf8');
+    return { success: true, path: targetPath };
+  }
+
   // ── config.json ファイル操作 ──────────────────────────────────────────
   _resolveConfigPath() {
     if (fs.existsSync(CONFIG_FILE)) return CONFIG_FILE;

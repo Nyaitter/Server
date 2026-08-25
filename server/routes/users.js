@@ -694,6 +694,18 @@ router.put({
 		if (!status) {
 			return res.status(404).json({ error: 'User not found' });
 		}
+
+		try {
+			const LogHubManager = require('../services/managementTool/LogHubManager');
+			LogHubManager.appendExternalLog({
+				type: 'admin',
+				level: 'warn',
+				source: 'admin-action',
+				message: `[Admin] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) がユーザー #${userId} のステータスを更新 (shadow: ${Boolean(shadow)})`,
+				details: { adminUserId: req.user.id, targetUserId: userId, changes: { shadow } },
+			});
+		} catch (_) {}
+
 		res.json({ success: true, status });
 	} catch (err) {
 		console.error('[users] set status error:', err);
@@ -1079,6 +1091,18 @@ router.put({
 		if (!updated) {
 			return res.status(404).json({ error: 'User not found' });
 		}
+
+		try {
+			const LogHubManager = require('../services/managementTool/LogHubManager');
+			LogHubManager.appendExternalLog({
+				type: 'admin',
+				level: 'warn',
+				source: 'admin-action',
+				message: `[Admin] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) がユーザー #${userId} を更新 (freeze: ${Boolean(freeze)}, verify: ${Boolean(verify)}, admin: ${Boolean(admin)})`,
+				details: { adminUserId: req.user.id, targetUserId: userId, changes: { verify, freeze, admin } },
+			});
+		} catch (_) {}
+
 		res.json({
 			user: await serializeUser(db, updated, req.user.id, getPublicUrl(req)),
 		});

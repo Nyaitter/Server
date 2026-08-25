@@ -840,6 +840,8 @@ function getSelectedLogTypes() {
   if (document.getElementById('filter-log-error')?.checked) types.push('error');
   if (document.getElementById('filter-log-security')?.checked) types.push('security');
   if (document.getElementById('filter-log-ai')?.checked) types.push('ai');
+  if (document.getElementById('filter-log-admin')?.checked) types.push('admin');
+  if (document.getElementById('filter-log-moderation')?.checked) types.push('moderation');
   return types;
 }
 
@@ -983,6 +985,12 @@ function formatLogLineHTML(l) {
   } else if (l.type === 'ai') {
     typeTag = '<span style="color:#58a6ff; font-weight:bold;">[AI]</span>';
     color = 'color:#58a6ff;';
+  } else if (l.type === 'admin') {
+    typeTag = '<span style="color:#a371f7; font-weight:bold;">[ADMIN]</span>';
+    color = 'color:#a371f7;';
+  } else if (l.type === 'moderation') {
+    typeTag = '<span style="color:#3fb950; font-weight:bold;">[MOD]</span>';
+    color = 'color:#3fb950;';
   } else {
     typeTag = '<span style="color:#8b949e;">[SYSTEM]</span>';
     color = 'color:#8b949e;';
@@ -1021,7 +1029,7 @@ async function loadUnifiedLogs() {
 }
 
 // フィルターイベントリスナー
-['filter-log-system', 'filter-log-error', 'filter-log-security', 'filter-log-ai'].forEach((id) => {
+['filter-log-system', 'filter-log-error', 'filter-log-security', 'filter-log-ai', 'filter-log-admin', 'filter-log-moderation'].forEach((id) => {
   document.getElementById(id)?.addEventListener('change', () => {
     renderUnifiedLogs();
     sendWSFilter();

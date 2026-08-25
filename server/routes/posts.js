@@ -1155,6 +1155,18 @@ router.delete({
 			context,
 			{ postId, userId, admin: true },
 		));
+
+		try {
+			const LogHubManager = require('../services/managementTool/LogHubManager');
+			LogHubManager.appendExternalLog({
+				type: 'admin',
+				level: 'warn',
+				source: 'admin-action',
+				message: `[Admin] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) がポスト #${postId} を管理者権限で削除`,
+				details: { adminUserId: req.user.id, postId, action: 'admin_delete_post' },
+			});
+		} catch (_) {}
+
 		return res.status(202).json({ success: true, queued: true, action_id: actionId });
 	} catch (error) {
 		return res.status(error.statusCode || 503).json({ error: error.message });

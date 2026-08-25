@@ -117,6 +117,18 @@ router.patch({
     const reportId = parseInt(req.params.id, 10);
     const { status, note, action } = req.body || {};
     const updated = await service.updateReportStatus(reportId, { status, note, action, moderatorId: req.user.id });
+
+    try {
+      const LogHubManager = require('../services/managementTool/LogHubManager');
+      LogHubManager.appendExternalLog({
+        type: 'moderation',
+        level: 'info',
+        source: 'moderation',
+        message: `[Moderation] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) が通報 #${reportId} を更新 (status: ${status}, action: ${action || 'none'})`,
+        details: { moderatorId: req.user.id, reportId, status, note, action },
+      });
+    } catch (_) {}
+
     res.json({ success: true, report: updated });
   } catch (error) {
     console.error('[reports] update error:', error);

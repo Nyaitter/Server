@@ -401,25 +401,31 @@ class ManagementToolServer {
     });
 
     this.app.get('/api/settings', authMiddleware, (req, res) => {
+      const getEnvBool = (key, defaultVal) => {
+        const val = process.env[key];
+        if (val === undefined) return defaultVal;
+        return val === 'true' || val === '1';
+      };
+
       res.json({
-        autoAnalysis: this.errorManager.autoAnalysis,
-        autoFix: this.errorManager.autoFix,
-        autoIssue: this.errorManager.autoIssue,
-        autoPr: this.errorManager.autoPr,
-        allowBash: this.aiService.allowBash,
-        requireApprovalForEdit: this.aiService.requireApprovalForEdit,
-        requireApprovalForBash: this.aiService.requireApprovalForBash,
+        autoAnalysis: getEnvBool('NMT_AUTO_ANALYSIS', this.errorManager.autoAnalysis),
+        autoFix: getEnvBool('NMT_AUTO_FIX', this.errorManager.autoFix),
+        autoIssue: getEnvBool('NMT_AUTO_ISSUE', this.errorManager.autoIssue),
+        autoPr: getEnvBool('NMT_AUTO_PR', this.errorManager.autoPr),
+        allowBash: getEnvBool('NMT_ALLOW_BASH', this.aiService.allowBash),
+        requireApprovalForEdit: getEnvBool('NMT_REQUIRE_APPROVAL_EDIT', this.aiService.requireApprovalForEdit),
+        requireApprovalForBash: getEnvBool('NMT_REQUIRE_APPROVAL_BASH', this.aiService.requireApprovalForBash),
         guardrails: this.mainConfig?.nmt?.guardrails || {
           restrictToGitTracked: true,
           syntaxValidation: true,
           blockEnvModification: true,
           blockSuspiciousCommands: true,
         },
-        aiModel: this.aiService.preferredModel || 'auto',
-        githubToken: this.errorManager.githubToken ? '********' : '',
-        githubRepo: this.errorManager.githubRepo,
-        geminiApiKey: this.aiService.geminiApiKey ? '********' : '',
-        openaiApiKey: this.aiService.openaiApiKey ? '********' : '',
+        aiModel: process.env.GEMINI_MODEL || process.env.NMT_AI_MODEL || this.aiService.preferredModel || 'auto',
+        githubToken: (process.env.GITHUB_TOKEN || this.errorManager.githubToken) ? '********' : '',
+        githubRepo: process.env.GITHUB_REPO || this.errorManager.githubRepo,
+        geminiApiKey: (process.env.GEMINI_API_KEY || this.aiService.geminiApiKey) ? '********' : '',
+        openaiApiKey: (process.env.OPENAI_API_KEY || this.aiService.openaiApiKey) ? '********' : '',
       });
     });
 
@@ -440,6 +446,26 @@ class ManagementToolServer {
         openaiApiKey,
       } = req.body;
       
+      const envMap = {};
+      if (autoAnalysis !== undefined) envMap.NMT_AUTO_ANALYSIS = String(autoAnalysis);
+      if (autoFix !== undefined) envMap.NMT_AUTO_FIX = String(autoFix);
+      if (autoIssue !== undefined) envMap.NMT_AUTO_ISSUE = String(autoIssue);
+      if (autoPr !== undefined) envMap.NMT_AUTO_PR = String(autoPr);
+      if (allowBash !== undefined) envMap.NMT_ALLOW_BASH = String(allowBash);
+      if (requireApprovalForEdit !== undefined) envMap.NMT_REQUIRE_APPROVAL_EDIT = String(requireApprovalForEdit);
+      if (requireApprovalForBash !== undefined) envMap.NMT_REQUIRE_APPROVAL_BASH = String(requireApprovalForBash);
+      if (aiModel !== undefined) {
+        envMap.GEMINI_MODEL = aiModel;
+        envMap.NMT_AI_MODEL = aiModel;
+      }
+      if (githubToken && githubToken !== '********') envMap.GITHUB_TOKEN = githubToken;
+      if (githubRepo !== undefined) envMap.GITHUB_REPO = githubRepo;
+      if (geminiApiKey && geminiApiKey !== '********') envMap.GEMINI_API_KEY = geminiApiKey;
+      if (openaiApiKey && openaiApiKey !== '********') envMap.OPENAI_API_KEY = openaiApiKey;
+
+      // .env ファイルへ直接書き込み・永続化
+      this.serverControl.updateEnvVariables(envMap);
+
       const newSettings = {};
       if (autoAnalysis !== undefined) newSettings.autoAnalysis = autoAnalysis;
       if (autoFix !== undefined) newSettings.autoFix = autoFix;
@@ -463,7 +489,7 @@ class ManagementToolServer {
       this.errorManager.updateConfig(newSettings);
       this.securityManager.updateConfig(newSettings);
 
-      res.json({ success: true, message: '設定を更新しました。' });
+      res.json({ success: true, message: '設定を .env に直接保存・更新しました。' });
     });
 
     // ── 4.2. 統合ログ API ────────────────────────────────────────────────
