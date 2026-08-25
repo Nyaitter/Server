@@ -75,7 +75,13 @@ class LogHubManager {
           if (!line.trim()) continue;
           let type = isError ? 'error' : 'system';
           let level = isError ? 'error' : 'info';
-          if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
+
+          const isNodeWarning = line.includes('Warning:') || line.includes('NodeVersionSupportWarning') || line.includes('DeprecationWarning') || line.includes('ExperimentalWarning') || line.includes('--trace-warnings');
+
+          if (isNodeWarning) {
+            type = 'system';
+            level = 'warn';
+          } else if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
             type = 'error';
             level = 'error';
           } else if (line.includes('[SECURITY]') || line.includes('[RateLimit]')) {
@@ -92,7 +98,7 @@ class LogHubManager {
             source,
           });
 
-          if (type === 'error' && !/^\s+at\s+/.test(line)) {
+          if (type === 'error' && !/^\s+at\s+/.test(line) && !isNodeWarning) {
             pendingErrorMessage = line;
           }
         }
@@ -242,7 +248,13 @@ class LogHubManager {
           if (!line.trim()) continue;
           let type = isError ? 'error' : 'system';
           let level = isError ? 'error' : 'info';
-          if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
+
+          const isNodeWarning = line.includes('Warning:') || line.includes('NodeVersionSupportWarning') || line.includes('DeprecationWarning') || line.includes('ExperimentalWarning') || line.includes('--trace-warnings');
+
+          if (isNodeWarning) {
+            type = 'system';
+            level = 'warn';
+          } else if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
             type = 'error';
             level = 'error';
           }
@@ -254,7 +266,7 @@ class LogHubManager {
             source: 'console',
           }, false);
 
-          if (type === 'error' && !/^\s+at\s+/.test(line)) {
+          if (type === 'error' && !/^\s+at\s+/.test(line) && !isNodeWarning) {
             pendingErrorMessage = line;
           }
         }

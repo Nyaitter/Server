@@ -17,6 +17,11 @@ class AiAnalysisService {
     this.approvalManager = null;
     this.zenModelsCache = null;
     this.zenModelsLastFetched = 0;
+    this.opencodeAvailable = null;
+  }
+
+  _isOpencodeAvailable() {
+    return this.opencodeAvailable !== false;
   }
 
   setApprovalManager(approvalManager) {
@@ -180,18 +185,24 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
   async _callAi(prompt, taskType, options = {}) {
     const { allowEdit = false } = options;
 
-    // 1. Opencode Agent（CLI経由でマルチターン調査/自動修正）を実行
-    try {
-      const cliResult = await this._callOpencodeAgent(prompt, { allowEdit });
-      if (cliResult) {
-        return {
-          model: `Opencode Agent (${this._resolveOpencodeModelName()})`,
-          content: cliResult,
-          provider: 'opencode-agent',
-        };
+    // 1. Opencode Agent（CLI経由でマルチターン調査/自動修正）を実行（利用可能な場合のみ）
+    if (this._isOpencodeAvailable()) {
+      try {
+        const cliResult = await this._callOpencodeAgent(prompt, { allowEdit });
+        if (cliResult) {
+          return {
+            model: `Opencode Agent (${this._resolveOpencodeModelName()})`,
+            content: cliResult,
+            provider: 'opencode-agent',
+          };
+        }
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          this.opencodeAvailable = false;
+        } else {
+          console.warn('[NMT-AI] Opencode agent execution failed, falling back to API:', err.message);
+        }
       }
-    } catch (err) {
-      console.warn('[NMT-AI] Opencode agent execution failed, falling back to API:', err.message);
     }
 
     // 2. フォールバック: OpenCode Zen / 各種 API 直接コール
@@ -199,7 +210,7 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     if (this.geminiApiKey && isAutoOrGemini) {
       try {
         const res = await this._callGeminiApi(prompt);
-        if (res) return { model: `Gemini Direct (${this.preferredModel === 'auto' ? 'gemini-2.0-flash' : this.preferredModel})`, content: res, provider: 'gemini' };
+        if (res) return { model: `Gemini Direct (${this.preferredModel === 'auto' ? 'gemini-3.6-flash' : this.preferredModel})`, content: res, provider: 'gemini' };
       } catch (e) {
         console.warn('[NMT-AI] Gemini direct call failed:', e.message);
       }
@@ -259,7 +270,7 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
       }
       const configPath = path.resolve(__dirname, configName);
 
-      const args = ['run', '--pure', '-m', model, prompt];
+      const opencodeArgs = ['run', '--pure', '-m', model, prompt];
 
       const env = {
         ...process.env,
@@ -269,17 +280,27 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
         OPENAI_API_KEY: this.openaiApiKey || process.env.OPENAI_API_KEY || '',
       };
 
-      execFile('opencode', args, {
-        cwd: PROJECT_ROOT,
-        env,
-        timeout: 60000,
-        maxBuffer: 20 * 1024 * 1024,
-      }, (error, stdout, stderr) => {
-        if (error) return reject(error);
-        const output = (stdout || '').trim();
-        if (output) return resolve(output);
-        reject(new Error('Opencode agent produced empty response'));
-      });
+      const runWithCommand = (bin, args) => {
+        execFile(bin, args, {
+          cwd: PROJECT_ROOT,
+          env,
+          timeout: 90000,
+          maxBuffer: 20 * 1024 * 1024,
+        }, (error, stdout, stderr) => {
+          if (error) {
+            // opencode が直接見つからなかった場合は npx で自動実行
+            if (error.code === 'ENOENT' && bin === 'opencode') {
+              return runWithCommand('npx', ['--yes', 'opencode-ai', ...opencodeArgs]);
+            }
+            return reject(error);
+          }
+          const output = (stdout || '').trim();
+          if (output) return resolve(output);
+          reject(new Error('Opencode agent produced empty response'));
+        });
+      };
+
+      runWithCommand('opencode', opencodeArgs);
     });
   }
 

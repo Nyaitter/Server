@@ -1,5 +1,12 @@
 'use strict';
 
+process.env.AWS_SDK_JS_SUPPRESS_MAINTENANCE_MODE_MESSAGE = '1';
+process.on('warning', (warning) => {
+    if (warning && (warning.name === 'NodeVersionSupportWarning' || warning.message?.includes('AWS SDK for JavaScript'))) {
+        return;
+    }
+});
+
 require('dotenv').config({ path: __dirname + '/.env' });
 
 const path = require('path');
