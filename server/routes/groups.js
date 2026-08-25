@@ -298,35 +298,6 @@ router.get({
   summary: 'グループ詳細情報の取得',
   auth: 'optional',
 }, optionalAuth, async (req, res) => {
-  const db = getDb(req);
-  const groupId = normalizeGroupId(req.params.groupId);
-  if (!groupId) return res.status(400).json({ error: 'グループIDが無効です。' });
-
-  try {
-    const group = await db.getGroupById(groupId);
-    if (!group) return res.status(404).json({ error: 'グループが見つかりません。' });
-    if (decision === 'decline') {
-      const updated = await db.updateGroupInvite(invite.id, { status: 'declined' });
-      return res.json({ invite: updated });
-    }
-    await assertMembershipCapacity(req, group, req.user.id);
-    const memberRole = await getDefaultMemberRoleOrThrow(db, group.id);
-    const existing = await db.getGroupMembership(group.id, req.user.id);
-    if (existing?.status === 'banned') return res.status(403).json({ error: 'このグループへの参加は禁止されています。' });
-    await db.createGroupMembership({ groupId: group.id, userId: req.user.id, roleId: memberRole.id, status: 'active', joinedAt: new Date().toISOString() });
-    await cancelPendingGroupJoinRequests(db, group.id, req.user.id);
-    const updated = await db.updateGroupInvite(invite.id, { status: 'accepted' });
-    res.json({ invite: updated, membership: membershipPayload(await db.getGroupMembership(group.id, req.user.id)) });
-  } catch (error) {
-    errorResponse(res, error, 'invite response error');
-  }
-});
-
-router.get({
-  path: '/:groupId',
-  summary: 'グループ詳細情報の取得',
-  auth: 'optional',
-}, optionalAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
