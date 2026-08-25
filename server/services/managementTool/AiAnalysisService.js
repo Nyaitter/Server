@@ -8,8 +8,8 @@ const PROJECT_ROOT = path.resolve(__dirname, '../../../'); // /workspaces/codesp
 
 class AiAnalysisService {
   constructor(config = {}) {
-    this.geminiApiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || '';
-    this.openaiApiKey = config.openaiApiKey || process.env.OPENAI_API_KEY || '';
+    this.geminiApiKey = config.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '';
+    this.openaiApiKey = config.openaiApiKey || process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '';
     this.preferredModel = config.aiModel || process.env.NMT_AI_MODEL || 'auto';
     this.allowBash = config.allowBash ?? false;
     this.requireApprovalForEdit = config.requireApprovalForEdit ?? false;
@@ -275,10 +275,13 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
       const env = {
         ...process.env,
         OPENCODE_CONFIG: configPath,
-        GEMINI_API_KEY: this.geminiApiKey || process.env.GEMINI_API_KEY || '',
-        GOOGLE_GENERATIVE_AI_API_KEY: this.geminiApiKey || process.env.GEMINI_API_KEY || '',
-        OPENAI_API_KEY: this.openaiApiKey || process.env.OPENAI_API_KEY || '',
+        GEMINI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+        GOOGLE_GENERATIVE_AI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+        OPENAI_API_KEY: this.openaiApiKey || process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '',
       };
+
+      const localBin = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'opencode');
+      const initialBin = fs.existsSync(localBin) ? localBin : 'opencode';
 
       const runWithCommand = (bin, args) => {
         execFile(bin, args, {
@@ -288,8 +291,8 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
           maxBuffer: 20 * 1024 * 1024,
         }, (error, stdout, stderr) => {
           if (error) {
-            // opencode が直接見つからなかった場合は npx で自動実行
-            if (error.code === 'ENOENT' && bin === 'opencode') {
+            // opencode / localBin が直接見つからなかった場合は npx で自動実行
+            if (error.code === 'ENOENT' && bin !== 'npx') {
               return runWithCommand('npx', ['--yes', 'opencode-ai', ...opencodeArgs]);
             }
             return reject(error);
@@ -300,7 +303,7 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
         });
       };
 
-      runWithCommand('opencode', opencodeArgs);
+      runWithCommand(initialBin, opencodeArgs);
     });
   }
 
@@ -325,7 +328,8 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
               const parsed = JSON.parse(data);
-              const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+              const parts = parsed.candidates?.[0]?.content?.parts || [];
+              const text = parts.map((p) => p.text || '').filter(Boolean).join('\n').trim();
               if (text) return resolve(text);
             } catch (_) {}
           }

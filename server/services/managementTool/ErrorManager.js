@@ -54,17 +54,38 @@ class ErrorManager {
 
   static isNmtInternal(msg, context = {}) {
     const text = String(msg || '');
+    const stack = String(context.stack || '');
+    const source = String(context.source || '');
+
     if (
+      source.includes('nmt') ||
+      source === 'nmt-console' ||
+      text.includes('managementTool') ||
+      text.includes('services/managementTool') ||
+      stack.includes('managementTool') ||
+      stack.includes('services/managementTool') ||
+      stack.includes('AiAnalysisService') ||
+      stack.includes('ErrorManager') ||
+      stack.includes('LogHubManager') ||
+      stack.includes('standalone.js') ||
       text.includes('[NMT') ||
       text.includes('[NyaitterManagementTool') ||
       text.includes('opencode') ||
       text.includes('Opencode') ||
       text.includes('nmt-') ||
-      text.includes('nmt.')
+      text.includes('nmt.') ||
+      text.includes('あなたはNyaitter') ||
+      text.includes('自動修復専門エージェント') ||
+      text.includes('エラー解析専門エージェント') ||
+      text.includes('【厳格な') ||
+      text.includes('【出力形式】') ||
+      text.includes('【エラー情報】') ||
+      text.includes('【重要：') ||
+      text.includes('thoughtSignature') ||
+      text.includes('"candidates"') ||
+      text.includes('"parts"') ||
+      text.includes('candidates')
     ) {
-      return true;
-    }
-    if (context.source === 'nmt' || (context.source === 'console' && text.includes('NMT-'))) {
       return true;
     }
     return false;

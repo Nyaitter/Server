@@ -273,8 +273,8 @@ const config = {
     },
     githubToken: process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || get('nmt.githubToken', ''),
     githubRepo: process.env.NMT_GITHUB_REPO || get('nmt.githubRepo', 'Nyaitter/Server'),
-    geminiApiKey: process.env.GEMINI_API_KEY || get('nmt.geminiApiKey', ''),
-    openaiApiKey: process.env.OPENAI_API_KEY || get('nmt.openaiApiKey', ''),
+    geminiApiKey: process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || get('nmt.geminiApiKey', ''),
+    openaiApiKey: process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || get('nmt.openaiApiKey', ''),
     aiModel: process.env.NMT_AI_MODEL || get('nmt.aiModel', 'auto'),
   },
 

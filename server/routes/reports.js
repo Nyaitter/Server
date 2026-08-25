@@ -89,6 +89,25 @@ router.get({
 });
 
 router.get({
+  path: '/assigned',
+  summary: '自分に割り当てられた通報一覧の取得（管理者専用）',
+  auth: 'admin',
+}, requireAuth, requireAdmin, async (req, res) => {
+  const service = getModerationService(req);
+  if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
+  try {
+    const status = req.query.status || 'assigned';
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const reports = await service.listReports({ status, limit, offset, adminId: req.user.id });
+    res.json({ reports });
+  } catch (error) {
+    console.error('[reports] list assigned error:', error);
+    res.status(500).json({ error: '割り当てられた通報一覧の取得に失敗しました' });
+  }
+});
+
+router.get({
   path: '/:id',
   summary: '通報詳細の取得（管理者専用）',
   auth: 'admin',

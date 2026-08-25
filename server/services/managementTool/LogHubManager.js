@@ -77,13 +77,29 @@ class LogHubManager {
           let level = isError ? 'error' : 'info';
 
           const isNodeWarning = line.includes('Warning:') || line.includes('NodeVersionSupportWarning') || line.includes('DeprecationWarning') || line.includes('ExperimentalWarning') || line.includes('--trace-warnings');
-          const isNmtInternal = line.includes('[NMT') || line.includes('[NyaitterManagementTool') || line.includes('opencode') || line.includes('Opencode') || line.includes('nmt-') || line.includes('nmt.');
+          const isNmtInternal =
+            line.includes('[NMT') ||
+            line.includes('[NyaitterManagementTool') ||
+            line.includes('opencode') ||
+            line.includes('Opencode') ||
+            line.includes('nmt-') ||
+            line.includes('nmt.') ||
+            line.includes('あなたはNyaitter') ||
+            line.includes('エージェント') ||
+            line.includes('【厳格な') ||
+            line.includes('【出力形式】') ||
+            line.includes('【エラー情報】') ||
+            line.includes('【重要：') ||
+            line.includes('thoughtSignature') ||
+            line.includes('"candidates"') ||
+            line.includes('"parts"') ||
+            line.includes('candidates');
 
           if (isNodeWarning) {
             type = 'system';
             level = 'warn';
           } else if (isNmtInternal) {
-            type = 'system';
+            type = 'ai';
             level = 'info';
           } else if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
             type = 'error';
@@ -246,46 +262,23 @@ class LogHubManager {
         const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
         const lines = text.split('\n');
 
-        let pendingErrorMessage = null;
-
         for (const line of lines) {
           if (!line.trim()) continue;
           let type = isError ? 'error' : 'system';
           let level = isError ? 'error' : 'info';
 
-          const isNodeWarning = line.includes('Warning:') || line.includes('NodeVersionSupportWarning') || line.includes('DeprecationWarning') || line.includes('ExperimentalWarning') || line.includes('--trace-warnings');
-          const isNmtInternal = line.includes('[NMT') || line.includes('[NyaitterManagementTool') || line.includes('opencode') || line.includes('Opencode') || line.includes('nmt-') || line.includes('nmt.');
-
-          if (isNodeWarning) {
-            type = 'system';
-            level = 'warn';
-          } else if (isNmtInternal) {
-            type = 'system';
-            level = 'info';
-          } else if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
+          if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:') || line.includes('ReferenceError') || line.includes('TypeError') || line.includes('Unhandled Rejection') || line.includes('Uncaught Exception')) {
             type = 'error';
             level = 'error';
           }
 
+          // NMT 自身のログは Logs 表示用にのみ追加し、Errors タブへの登録は一切行わない
           this.addLog({
             type,
             level,
             message: line,
-            source: 'console',
+            source: 'nmt-console',
           }, false);
-
-          if (type === 'error' && !/^\s+at\s+/.test(line) && !isNodeWarning && !isNmtInternal) {
-            pendingErrorMessage = line;
-          }
-        }
-
-        if (pendingErrorMessage && this.errorManager && typeof this.errorManager.recordError === 'function') {
-          const cleanMessage = pendingErrorMessage
-            .replace(/^\[\d+:\d+:\d+\]\s*/, '')
-            .replace(/^\[ERROR\]\s*/, '')
-            .replace(/^\[server\]\s*/, '')
-            .trim();
-          this.errorManager.recordError({ message: cleanMessage, stack: text }, { source: 'console' });
         }
       } catch (_) {}
     };

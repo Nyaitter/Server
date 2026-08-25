@@ -502,11 +502,11 @@ class ManagementToolServer {
           blockEnvModification: true,
           blockSuspiciousCommands: true,
         },
-        aiModel: process.env.GEMINI_MODEL || process.env.NMT_AI_MODEL || this.aiService.preferredModel || 'auto',
-        githubToken: (process.env.GITHUB_TOKEN || this.errorManager.githubToken) ? '********' : '',
-        githubRepo: process.env.GITHUB_REPO || this.errorManager.githubRepo,
-        geminiApiKey: (process.env.GEMINI_API_KEY || this.aiService.geminiApiKey) ? '********' : '',
-        openaiApiKey: (process.env.OPENAI_API_KEY || this.aiService.openaiApiKey) ? '********' : '',
+        aiModel: process.env.NMT_AI_MODEL || process.env.GEMINI_MODEL || this.aiService.preferredModel || 'auto',
+        githubToken: (process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || this.errorManager.githubToken) ? '********' : '',
+        githubRepo: process.env.NMT_GITHUB_REPO || process.env.GITHUB_REPO || this.errorManager.githubRepo,
+        geminiApiKey: (process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || this.aiService.geminiApiKey) ? '********' : '',
+        openaiApiKey: (process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || this.aiService.openaiApiKey) ? '********' : '',
       });
     });
 
@@ -536,13 +536,18 @@ class ManagementToolServer {
       if (requireApprovalForEdit !== undefined) envMap.NMT_REQUIRE_APPROVAL_EDIT = String(requireApprovalForEdit);
       if (requireApprovalForBash !== undefined) envMap.NMT_REQUIRE_APPROVAL_BASH = String(requireApprovalForBash);
       if (aiModel !== undefined) {
-        envMap.GEMINI_MODEL = aiModel;
         envMap.NMT_AI_MODEL = aiModel;
       }
-      if (githubToken && githubToken !== '********') envMap.GITHUB_TOKEN = githubToken;
-      if (githubRepo !== undefined) envMap.GITHUB_REPO = githubRepo;
-      if (geminiApiKey && geminiApiKey !== '********') envMap.GEMINI_API_KEY = geminiApiKey;
-      if (openaiApiKey && openaiApiKey !== '********') envMap.OPENAI_API_KEY = openaiApiKey;
+      if (githubToken && githubToken !== '********') {
+        envMap.NMT_GITHUB_TOKEN = githubToken;
+      }
+      if (githubRepo !== undefined) envMap.NMT_GITHUB_REPO = githubRepo;
+      if (geminiApiKey && geminiApiKey !== '********') {
+        envMap.NMT_GEMINI_API_KEY = geminiApiKey;
+      }
+      if (openaiApiKey && openaiApiKey !== '********') {
+        envMap.NMT_OPENAI_API_KEY = openaiApiKey;
+      }
 
       // .env ファイルへ直接書き込み・永続化
       this.serverControl.updateEnvVariables(envMap);
