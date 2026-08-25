@@ -26,6 +26,10 @@ Nyaitter ローカル管理CLI
   npm run cli -- server stop
   npm run cli -- server restart
   npm run cli -- server status
+  npm run cli -- nmt start
+  npm run cli -- nmt stop
+  npm run cli -- nmt restart
+  npm run cli -- nmt status
 
 環境変数:
   NYAITTER_OPERATOR_SOCKET  ローカル制御ソケットのパス
@@ -126,6 +130,76 @@ async function setAdministrator(userIdArgument, admin) {
     );
 }
 
+// ── NMT (Nyaitter Management Tool) CLI Controls ─────────────────────────────
+const NMT_PID_FILE = path.join(PROJECT_ROOT, 'data', 'nmt.pid');
+
+function getNmtPid() {
+    try {
+        if (!fs.existsSync(NMT_PID_FILE)) return null;
+        const pid = parseInt(fs.readFileSync(NMT_PID_FILE, 'utf8').trim(), 10);
+        if (isNaN(pid)) return null;
+        process.kill(pid, 0); // 生存確認
+        return pid;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function startNmt() {
+    const existingPid = getNmtPid();
+    if (existingPid) {
+        console.log(`NMT は既に稼働中です (PID: ${existingPid})`);
+        return;
+    }
+
+    const standaloneScript = path.resolve(__dirname, 'services/managementTool/standalone.js');
+    const child = spawn(process.execPath, [standaloneScript], {
+        cwd: PROJECT_ROOT,
+        detached: true,
+        stdio: 'inherit',
+        env: { ...process.env },
+    });
+    child.unref();
+
+    console.log(`NMT を起動しました (PID: ${child.pid})`);
+}
+
+async function stopNmt() {
+    const pid = getNmtPid();
+    if (!pid) {
+        console.log('NMT は停止しています。');
+        return;
+    }
+
+    try {
+        process.kill(pid, 'SIGTERM');
+        console.log(`NMT (PID: ${pid}) へ停止シグナルを送信しました。`);
+    } catch (err) {
+        throw new Error(`NMT 停止エラー: ${err.message}`);
+    }
+}
+
+async function restartNmt() {
+    const pid = getNmtPid();
+    if (pid) {
+        try {
+            process.kill(pid, 'SIGTERM');
+            console.log(`旧 NMT プロセス (PID: ${pid}) を停止中...`);
+            await sleep(1000);
+        } catch (_) {}
+    }
+    await startNmt();
+}
+
+function printNmtStatus() {
+    const pid = getNmtPid();
+    if (pid) {
+        console.log(`NMT: 稼働中 (PID: ${pid}, Port: 4040)`);
+    } else {
+        console.log('NMT: 停止中');
+    }
+}
+
 async function main(argv) {
     const [group, command, argument] = argv;
     if (!group || group === '--help' || group === '-h' || group === 'help') {
@@ -167,6 +241,25 @@ async function main(argv) {
                 return;
             }
             console.log(formatStatus(status));
+            return;
+        }
+    }
+
+    if (group === 'nmt') {
+        if (command === 'start') {
+            await startNmt();
+            return;
+        }
+        if (command === 'stop') {
+            await stopNmt();
+            return;
+        }
+        if (command === 'restart') {
+            await restartNmt();
+            return;
+        }
+        if (command === 'status') {
+            printNmtStatus();
             return;
         }
     }
