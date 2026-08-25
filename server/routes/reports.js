@@ -161,4 +161,50 @@ router.patch({
   }
 });
 
+router.post({
+  path: '/:id/resolve',
+  summary: '通報・申請の対応完了（管理者専用）',
+  auth: 'admin',
+}, requireAuth, requireAdmin, async (req, res) => {
+  const service = getModerationService(req);
+  if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
+  try {
+    const reportId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(reportId) || reportId < 1) {
+      return res.status(400).json({ error: '通報IDが不正です' });
+    }
+
+    const report = await service.getReportById(reportId);
+    if (!report) return res.status(404).json({ error: '通報が見つかりません' });
+
+    let resolved = null;
+    if (report.assignmentType === 'freeze_appeal') {
+      const decision = req.body?.decision || (req.body?.action === 'approve' || req.body?.approved ? 'approved' : 'rejected');
+      resolved = await service.resolveFreezeAppeal({ reportId, adminId: req.user.id, decision });
+    } else if (report.assignmentType === 'verification_application') {
+      const decision = req.body?.decision || (req.body?.action === 'approve' || req.body?.approved ? 'approved' : 'rejected');
+      resolved = await service.resolveVerificationApplication({ reportId, adminId: req.user.id, decision });
+    } else {
+      const actions = req.body?.actions || req.body || {};
+      resolved = await service.resolveReport({ reportId, adminId: req.user.id, actions });
+    }
+
+    try {
+      const LogHubManager = require('../services/managementTool/LogHubManager');
+      LogHubManager.appendExternalLog({
+        type: 'moderation',
+        level: 'info',
+        source: 'moderation',
+        message: `[Moderation] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) が通報 #${reportId} を対応完了`,
+        details: { moderatorId: req.user.id, reportId, body: req.body },
+      });
+    } catch (_) {}
+
+    res.json({ success: true, report: resolved });
+  } catch (error) {
+    console.error('[reports] resolve error:', error);
+    res.status(500).json({ error: error.message || '通報の処理に失敗しました' });
+  }
+});
+
 module.exports = router;
