@@ -60,7 +60,10 @@ async function checkAuth() {
   window.location.href = '/auth/login';
 }
 
-document.getElementById('logout-btn')?.addEventListener('click', () => {
+document.getElementById('logout-btn')?.addEventListener('click', async () => {
+  try {
+    await api('/auth/logout', { method: 'POST' });
+  } catch (_) {}
   localStorage.removeItem('nmt_token');
   window.location.href = '/auth/login';
 });

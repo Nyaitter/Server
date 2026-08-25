@@ -1,9 +1,11 @@
-'use strict';
-
+const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const express = require('express');
 const crypto = require('crypto');
+
+const DATA_DIR = path.join(__dirname, '..', '..', 'data');
+const SESSION_FILE = path.join(DATA_DIR, 'nmt-sessions.json');
 
 const AiAnalysisService = require('./AiAnalysisService');
 const ErrorManager = require('./ErrorManager');
@@ -24,7 +26,8 @@ class ManagementToolServer {
     this.port = this.config.port || 4040;
     this.host = this.config.host || '0.0.0.0';
 
-    this.sessions = new Map(); // token -> { userId, admin, expiresAt }
+    this.sessions = new Map(); // token -> { userId, user: {...}, admin, expiresAt }
+    this._loadSessions();
 
     // サービス群初期化
     this.logHub = new LogHubManager({ sessions: this.sessions });
@@ -87,6 +90,65 @@ class ManagementToolServer {
     return this.securityManager.recordRequest(req, res, durationMs);
   }
 
+  _loadSessions() {
+    try {
+      if (fs.existsSync(SESSION_FILE)) {
+        const raw = fs.readFileSync(SESSION_FILE, 'utf8');
+        const data = JSON.parse(raw);
+        const now = Date.now();
+        let expiredFound = false;
+        this.sessions.clear();
+        for (const [token, session] of Object.entries(data)) {
+          if (session && (!session.expiresAt || session.expiresAt > now)) {
+            this.sessions.set(token, session);
+          } else {
+            expiredFound = true;
+          }
+        }
+        if (expiredFound) this._saveSessions();
+      }
+    } catch (e) {
+      console.warn('[NMT] Failed to load sessions from file:', e.message);
+    }
+  }
+
+  _saveSessions() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      const obj = {};
+      const now = Date.now();
+      for (const [token, session] of this.sessions.entries()) {
+        if (session && (!session.expiresAt || session.expiresAt > now)) {
+          obj[token] = session;
+        }
+      }
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    } catch (e) {
+      console.warn('[NMT] Failed to save sessions to file:', e.message);
+    }
+  }
+
+  setSession(token, sessionData) {
+    this.sessions.set(token, sessionData);
+    this._saveSessions();
+  }
+
+  deleteSession(token) {
+    this.sessions.delete(token);
+    this._saveSessions();
+  }
+
+  getSession(token) {
+    if (!token) return null;
+    const session = this.sessions.get(token);
+    if (!session) return null;
+    if (session.expiresAt && Date.now() > session.expiresAt) {
+      this.deleteSession(token);
+      return null;
+    }
+    return session;
+  }
+
   // ── NMT サーバー起動 ───────────────────────────────────────────────────
   start() {
     if (this.httpServer) return;
@@ -101,46 +163,55 @@ class ManagementToolServer {
     const webDir = path.join(__dirname, 'web');
     this.app.use(express.static(webDir));
 
-    // 認証ミドルウェア
+    // 認証ミドルウェア (NyaitterServer 停止時でも NMT 内部セッションで継続動作)
     const authMiddleware = async (req, res, next) => {
       const authHeader = req.headers.authorization || '';
       const token = authHeader.replace(/^Bearer\s+/i, '').trim();
       if (!token) return res.status(401).json({ error: '認証が必要です。' });
 
-      // NMT 内部セッション確認 (TTL有効期限チェック)
-      const session = this.sessions.get(token);
-      let userId = null;
-
+      // 1. NMT 内部永続化セッション確認 (TTL有効期限チェック)
+      const session = this.getSession(token);
       if (session) {
-        if (session.expiresAt && Date.now() > session.expiresAt) {
-          this.sessions.delete(token);
-          return res.status(401).json({ error: 'セッションの有効期限が切れています。再度ログインしてください。' });
+        if (session.user && session.user.admin === true) {
+          req.adminUser = session.user;
+          return next();
         }
-        userId = session.userId;
       }
 
-      // Nyaitter メインセッション直接検証
-      if (!userId && typeof this.dbAdapter.getSession === 'function') {
+      // 2. セッション未登録時のみ Nyaitter メインセッション / DB 検証（NyaitterServer 稼働時）
+      let userId = null;
+      if (typeof this.dbAdapter?.getSession === 'function') {
         try {
           const dbSession = await this.dbAdapter.getSession(token);
           if (dbSession?.userId) userId = dbSession.userId;
         } catch (_) {}
       }
 
-      let user = session?.user || null;
-      if (!user && this.dbAdapter && typeof this.dbAdapter.getUserById === 'function') {
+      let user = null;
+      if (userId && this.dbAdapter && typeof this.dbAdapter.getUserById === 'function') {
         try {
           user = await this.dbAdapter.getUserById(userId);
         } catch (_) {}
       }
 
-      if (!user || user.admin !== true) {
-        if (session) this.sessions.delete(token);
-        return res.status(403).json({ error: '管理者（Admin）権限が必要です。' });
+      if (user && user.admin === true) {
+        this.setSession(token, {
+          userId: user.id,
+          user: {
+            id: user.id,
+            username: user.username,
+            name: user.name,
+            admin: user.admin,
+            icon_url: user.icon_url,
+          },
+          admin: true,
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        });
+        req.adminUser = user;
+        return next();
       }
 
-      req.adminUser = user;
-      next();
+      return res.status(401).json({ error: '管理者（Admin）認証が必要です。再度ログインしてください。' });
     };
 
     // ── NyaitterAuth 連携・リダイレクト ──────────────────────────────────
@@ -234,9 +305,9 @@ class ManagementToolServer {
           return res.redirect('/#error=not_an_admin');
         }
 
-        // NMT セッショントークン発行
+        // NMT セッショントークン発行（永続化）
         const token = `nmt_${crypto.randomBytes(32).toString('hex')}`;
-        this.sessions.set(token, {
+        this.setSession(token, {
           userId: user.id,
           user: {
             id: user.id,
@@ -255,6 +326,16 @@ class ManagementToolServer {
         return res.redirect(`/#error=${encodeURIComponent(err.message)}`);
       }
     });
+
+    // ログアウト: POST /auth/logout & POST /api/logout
+    const handleLogout = (req, res) => {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      if (token) this.deleteSession(token);
+      res.json({ success: true, message: 'ログアウトしました。' });
+    };
+    this.app.post('/auth/logout', handleLogout);
+    this.app.post('/api/logout', handleLogout);
 
     // 認証確認: GET /api/me
     this.app.get('/api/me', authMiddleware, (req, res) => {
