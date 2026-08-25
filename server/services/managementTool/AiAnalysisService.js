@@ -38,7 +38,31 @@ class AiAnalysisService {
     if (config.requireApprovalForBash !== undefined) this.requireApprovalForBash = Boolean(config.requireApprovalForBash);
   }
 
-  // ── OpenCode Zen 提供のモデル一覧を動的取得 ───────────────────────────
+  // ── Gemini 公式 API 提供の実在モデル一覧を動的取得 ───────────────────
+  async fetchGeminiModels(force = false) {
+    const key = this.geminiApiKey;
+    if (!key) return [];
+    const now = Date.now();
+    if (!force && this.geminiModelsCache && (now - this.geminiModelsLastFetched) < 10 * 60 * 1000) {
+      return this.geminiModelsCache;
+    }
+
+    try {
+      const data = await this._httpGetJson(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
+      const models = Array.isArray(data?.models) ? data.models : [];
+      const validModels = models
+        .filter((m) => Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods.includes('generateContent') : true)
+        .map((m) => (m.name || '').replace(/^models\//, ''))
+        .filter(Boolean);
+      this.geminiModelsCache = validModels;
+      this.geminiModelsLastFetched = now;
+      return this.geminiModelsCache;
+    } catch (_) {
+      return this.geminiModelsCache || [];
+    }
+  }
+
+  // ── OpenCode Zen 提供の実在モデル一覧を動的取得 ───────────────────────────
   async fetchZenModels(force = false) {
     const now = Date.now();
     if (!force && this.zenModelsCache && (now - this.zenModelsLastFetched) < 10 * 60 * 1000) {
@@ -47,47 +71,58 @@ class AiAnalysisService {
 
     try {
       const data = await this._httpGetJson('https://opencode.ai/zen/v1/models');
-      const models = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : (Array.isArray(data) ? data : []));
+      const models = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : []);
       
-      const freeModels = models.filter((m) => {
-        const id = (typeof m === 'string' ? m : m.id || '').toLowerCase();
-        return m.free === true || id.includes('free') || id.includes('flash') || id.includes('mini');
-      }).map((m) => typeof m === 'string' ? { id: m, name: m, free: true } : { id: m.id, name: m.name || m.id, free: true });
+      const realModels = models
+        .map((m) => {
+          const id = typeof m === 'string' ? m : m.id;
+          if (!id) return null;
+          return { id, name: id, free: id.includes('free') };
+        })
+        .filter(Boolean);
 
-      this.zenModelsCache = freeModels.length > 0 ? freeModels : [
-        { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', free: true },
-        { id: 'deepseek-v4-flash-free', name: 'DeepSeek V4 Flash (Free)', free: true },
-        { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (Free)', free: true },
-      ];
+      this.zenModelsCache = realModels;
       this.zenModelsLastFetched = now;
       return this.zenModelsCache;
-    } catch (e) {
-      console.warn('[NMT-AI] Failed to fetch dynamic Zen models, using fallback list:', e.message);
-      return this.zenModelsCache || [
-        { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', free: true },
-        { id: 'deepseek-v4-flash-free', name: 'DeepSeek V4 Flash (Free)', free: true },
-        { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (Free)', free: true },
-      ];
+    } catch (_) {
+      return this.zenModelsCache || [];
     }
   }
 
   async getAvailableModels() {
-    const zenFree = await this.fetchZenModels();
+    const [zenModels, geminiModels] = await Promise.all([
+      this.fetchZenModels(),
+      this.fetchGeminiModels(),
+    ]);
+
     const list = [
-      { id: 'auto', name: 'Auto（Opencode最良モデル自動選択）', provider: 'opencode' },
-      ...zenFree.map((m) => ({ id: m.id, name: `[OpenCode Zen Free] ${m.name}`, provider: 'zen' })),
+      { id: 'auto', name: 'Auto（最新利用可能モデルを自動選択）', provider: 'auto' },
     ];
 
-    if (this.geminiApiKey) {
-      list.push(
-        { id: 'google/gemini-2.0-flash', name: '[Gemini via Opencode] Gemini 2.0 Flash', provider: 'gemini' },
-        { id: 'google/gemini-2.0-flash-thinking-exp', name: '[Gemini via Opencode] Gemini 2.0 Flash Thinking', provider: 'gemini' },
-      );
+    if (geminiModels.length > 0) {
+      for (const modelName of geminiModels) {
+        list.push({
+          id: `google/${modelName}`,
+          name: `[Gemini API] ${modelName}`,
+          provider: 'gemini',
+        });
+      }
     }
+
+    if (zenModels.length > 0) {
+      for (const m of zenModels) {
+        list.push({
+          id: m.id,
+          name: `[OpenCode Zen] ${m.name}`,
+          provider: 'zen',
+        });
+      }
+    }
+
     if (this.openaiApiKey) {
       list.push(
-        { id: 'openai/gpt-4o', name: '[OpenAI via Opencode] GPT-4o', provider: 'openai' },
-        { id: 'openai/gpt-4o-mini', name: '[OpenAI via Opencode] GPT-4o-mini', provider: 'openai' },
+        { id: 'openai/gpt-4o', name: '[OpenAI] GPT-4o', provider: 'openai' },
+        { id: 'openai/gpt-4o-mini', name: '[OpenAI] GPT-4o-mini', provider: 'openai' },
       );
     }
 
@@ -191,8 +226,9 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
       try {
         const cliResult = await this._callOpencodeAgent(prompt, { allowEdit });
         if (cliResult) {
+          const resolvedName = await this._resolveOpencodeModelName();
           return {
-            model: `Opencode Agent (${this._resolveOpencodeModelName()})`,
+            model: `Opencode Agent (${resolvedName})`,
             content: cliResult,
             provider: 'opencode-agent',
           };
@@ -247,42 +283,49 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     };
   }
 
-  _resolveOpencodeModelName() {
+  async _resolveOpencodeModelName() {
     if (this.preferredModel && this.preferredModel !== 'auto') {
       return this.preferredModel;
     }
-    if (this.geminiApiKey) return 'google/gemini-3.6-flash';
+    if (this.geminiApiKey) return 'google/gemini-3.5-flash-lite';
     if (this.openaiApiKey) return 'openai/gpt-4o';
-    return 'zen/deepseek-v4-flash-free';
+
+    const zenModels = await this.fetchZenModels();
+    if (Array.isArray(zenModels) && zenModels.length > 0) {
+      const target = zenModels[0]?.id || '';
+      return target.includes('/') ? target : `opencode/${target}`;
+    }
+    return 'opencode/nemotron-3.5-lightning-free';
   }
 
-  _callOpencodeAgent(prompt, { allowEdit = false, allowBash = this.allowBash } = {}) {
+  async _callOpencodeAgent(prompt, { allowEdit = false, allowBash = this.allowBash } = {}) {
+    const model = await this._resolveOpencodeModelName();
+    
+    // パーミッション構成の決定
+    let configName = 'opencode-readonly-config.json';
+    if (allowEdit && allowBash) {
+      configName = 'opencode-full-config.json';
+    } else if (allowEdit) {
+      configName = 'opencode-autofix-config.json';
+    } else if (allowBash) {
+      configName = 'opencode-bashonly-config.json';
+    }
+    const configPath = path.resolve(__dirname, configName);
+
+    const opencodeArgs = ['run', '--pure', '-m', model, prompt];
+
+    const env = {
+      ...process.env,
+      OPENCODE_CONFIG: configPath,
+      GEMINI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.AUTOMOD_API_KEY || '',
+      GOOGLE_GENERATIVE_AI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.AUTOMOD_API_KEY || '',
+      OPENAI_API_KEY: this.openaiApiKey || process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '',
+    };
+
+    const localBin = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'opencode');
+    const initialBin = fs.existsSync(localBin) ? localBin : 'opencode';
+
     return new Promise((resolve, reject) => {
-      const model = this._resolveOpencodeModelName();
-      
-      // パーミッション構成の決定
-      let configName = 'opencode-readonly-config.json';
-      if (allowEdit && allowBash) {
-        configName = 'opencode-full-config.json';
-      } else if (allowEdit) {
-        configName = 'opencode-autofix-config.json';
-      } else if (allowBash) {
-        configName = 'opencode-bashonly-config.json';
-      }
-      const configPath = path.resolve(__dirname, configName);
-
-      const opencodeArgs = ['run', '--pure', '-m', model, prompt];
-
-      const env = {
-        ...process.env,
-        OPENCODE_CONFIG: configPath,
-        GEMINI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
-        GOOGLE_GENERATIVE_AI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
-        OPENAI_API_KEY: this.openaiApiKey || process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '',
-      };
-
-      const localBin = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'opencode');
-      const initialBin = fs.existsSync(localBin) ? localBin : 'opencode';
 
       const runWithCommand = (bin, args) => {
         execFile(bin, args, {
