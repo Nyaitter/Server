@@ -27,13 +27,13 @@ class ErrorManager {
     this.aiService = aiService;
     this.notificationManager = notificationManager;
     this.approvalManager = approvalManager;
-    this.autoAnalysis = config.autoAnalysis ?? false;
-    this.autoFix = config.autoFix ?? false;
-    this.autoIssue = config.autoIssue ?? false;
-    this.autoPr = config.autoPr ?? false;
-    this.requireApprovalForEdit = config.requireApprovalForEdit ?? false;
-    this.githubToken = config.githubToken || '';
-    this.githubRepo = config.githubRepo || 'Nyaitter/Server';
+    this.autoAnalysis = process.env.NMT_AUTO_ANALYSIS !== undefined ? process.env.NMT_AUTO_ANALYSIS === 'true' : (config.autoAnalysis ?? false);
+    this.autoFix = process.env.NMT_AUTO_FIX !== undefined ? process.env.NMT_AUTO_FIX === 'true' : (config.autoFix ?? false);
+    this.autoIssue = process.env.NMT_AUTO_ISSUE !== undefined ? process.env.NMT_AUTO_ISSUE === 'true' : (config.autoIssue ?? false);
+    this.autoPr = process.env.NMT_AUTO_PR !== undefined ? process.env.NMT_AUTO_PR === 'true' : (config.autoPr ?? false);
+    this.requireApprovalForEdit = process.env.NMT_REQUIRE_APPROVAL_EDIT !== undefined ? process.env.NMT_REQUIRE_APPROVAL_EDIT === 'true' : (config.requireApprovalForEdit ?? false);
+    this.githubToken = process.env.GITHUB_TOKEN || config.githubToken || '';
+    this.githubRepo = process.env.GITHUB_REPO || config.githubRepo || 'Nyaitter/Server';
     this.errors = [];
     this._lastFileMtime = 0;
     this._load();
@@ -50,6 +50,58 @@ class ErrorManager {
 
   setLogHub(logHub) {
     this.logHub = logHub;
+  }
+
+  static recordExternalError(err, context = {}) {
+    if (!err) return null;
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      let list = [];
+      if (fs.existsSync(ERRORS_FILE)) {
+        try {
+          const raw = fs.readFileSync(ERRORS_FILE, 'utf8');
+          list = JSON.parse(raw) || [];
+        } catch (_) {}
+      }
+      const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
+      const stack = err.stack || (typeof err === 'object' ? JSON.stringify(err) : '');
+      const existing = list.find((e) => e.message === message && e.status === 'open');
+      if (existing) {
+        existing.occurrences = (existing.occurrences || 1) + 1;
+        existing.lastSeen = new Date().toISOString();
+        existing.context = { ...existing.context, ...context };
+        fs.writeFileSync(ERRORS_FILE, JSON.stringify(list.slice(-MAX_ERROR_RECORDS), null, 2), 'utf8');
+        return existing;
+      }
+      const id = `err_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const errorRecord = {
+        id,
+        timestamp: new Date().toISOString(),
+        message,
+        stack,
+        occurrences: 1,
+        context: {
+          method: context.method || null,
+          url: context.url || context.path || null,
+          userId: context.userId || null,
+          ip: context.ip || null,
+          userAgent: context.userAgent || null,
+          requestId: context.requestId || null,
+        },
+        status: 'open',
+        analysis: null,
+        issueUrl: null,
+        prUrl: null,
+        fixed: false,
+        modifiedFiles: [],
+      };
+      list.unshift(errorRecord);
+      fs.writeFileSync(ERRORS_FILE, JSON.stringify(list.slice(-MAX_ERROR_RECORDS), null, 2), 'utf8');
+      return errorRecord;
+    } catch (e) {
+      console.warn('[NMT-Errors] Failed to record external error:', e.message);
+      return null;
+    }
   }
 
   _broadcast(record, eventType = 'error_updated') {
@@ -71,10 +123,18 @@ class ErrorManager {
           const newFirst = this.errors[0];
           if (newFirst && newFirst.id !== oldFirstId) {
             this._broadcast(newFirst, 'error_created');
+
+            const shouldAutoFix = process.env.NMT_AUTO_FIX === 'true' || this.autoFix;
+            const shouldAutoAnalysis = process.env.NMT_AUTO_ANALYSIS === 'true' || this.autoAnalysis;
+            if (shouldAutoFix) {
+              this.triggerAutoFix(newFirst.id).catch((e) => console.warn('[NMT-Errors] Auto fix error:', e.message));
+            } else if (shouldAutoAnalysis && this.aiService) {
+              this.triggerAnalysis(newFirst.id).catch((e) => console.warn('[NMT-Errors] Auto AI analysis error:', e.message));
+            }
           }
         }
       } catch (_) {}
-    }, 1000);
+    }, 500);
   }
 
   updateConfig(config = {}) {

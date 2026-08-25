@@ -286,7 +286,10 @@ class AutoModerationService {
   }
 
   async _classifyOpenAi(post) {
-    const model = String(this.config.model || '').trim();
+    let model = String(this.config.model || '').trim();
+    if (!model || model === 'auto') {
+      model = 'gpt-4o-mini';
+    }
     let url = String(this.config.endpoint || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
     if (!url.endsWith('/chat/completions')) {
       url = `${url}/chat/completions`;
@@ -341,7 +344,10 @@ class AutoModerationService {
   }
 
   async _classifyGemini(post) {
-    const model = String(this.config.model || '').trim().replace(/^models\//, '');
+    let model = String(this.config.model || '').trim().replace(/^models\//, '');
+    if (!model || model === 'auto') {
+      model = 'gemini-2.0-flash';
+    }
     if (!/^[A-Za-z0-9._-]+$/.test(model)) {
       throw new Error('AUTOMOD_MODEL has an invalid format');
     }

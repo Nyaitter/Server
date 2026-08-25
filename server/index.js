@@ -39,6 +39,7 @@ const { startOperatorControlServer } = require('./utils/operatorControl');
 const { getEmbeddedMailServer } = require('./services/mail/EmbeddedMailServer');
 const { isCrawler, generatePostOgpTags, generatePostHtml } = require('./services/OgpService');
 const LogHubManager = require('./services/managementTool/LogHubManager');
+const ErrorManager = require('./services/managementTool/ErrorManager');
 
 // NyaitterServer 本体の全標準出力を NMT Unified Logs にフック
 LogHubManager.hookServerProcess('server');
@@ -498,6 +499,15 @@ app.use((err, req, res, next) => {
             requestId: req.id || undefined,
         });
     } else {
+        const errorContext = {
+            method: req.method,
+            url: req.originalUrl || req.url,
+            userId: req.user?.id || null,
+            ip: req.headers['cf-connecting-ip'] || req.ip,
+            userAgent: req.headers['user-agent'],
+            requestId: req.id || undefined,
+        };
+        ErrorManager.recordExternalError(err, errorContext);
         LogHubManager.appendExternalLog({
             type: 'error',
             level: 'error',
@@ -824,10 +834,14 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
 process.on('uncaughtException', (err) => {
+    if (err && (err.code === 'EPIPE' || err.code === 'EIO' || err.code === 'EBADF')) {
+        return;
+    }
     console.error('[server] Uncaught Exception:', err);
     if (managementToolServer) {
         managementToolServer.recordError(err, { source: 'uncaughtException' });
     } else {
+        ErrorManager.recordExternalError(err, { source: 'uncaughtException' });
         LogHubManager.appendExternalLog({
             type: 'error',
             level: 'error',
@@ -845,6 +859,7 @@ process.on('unhandledRejection', (reason) => {
     if (managementToolServer) {
         managementToolServer.recordError(err, { source: 'unhandledRejection' });
     } else {
+        ErrorManager.recordExternalError(err, { source: 'unhandledRejection' });
         LogHubManager.appendExternalLog({
             type: 'error',
             level: 'error',

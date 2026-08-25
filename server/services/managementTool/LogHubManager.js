@@ -55,41 +55,62 @@ class LogHubManager {
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
     const originalStderrWrite = process.stderr.write.bind(process.stderr);
 
+    try {
+      process.stdout.on?.('error', (err) => {
+        if (err.code === 'EPIPE' || err.code === 'EIO' || err.code === 'EBADF') return;
+      });
+      process.stderr.on?.('error', (err) => {
+        if (err.code === 'EPIPE' || err.code === 'EIO' || err.code === 'EBADF') return;
+      });
+    } catch (_) {}
+
     const handleWrite = (chunk, isError = false) => {
-      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      const lines = text.split('\n');
+      try {
+        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+        const lines = text.split('\n');
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let type = isError ? 'error' : 'system';
-        let level = isError ? 'error' : 'info';
-        if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:')) {
-          type = 'error';
-          level = 'error';
-        } else if (line.includes('[SECURITY]') || line.includes('[RateLimit]')) {
-          type = 'security';
-          level = 'warn';
-        } else if (line.includes('[AI]')) {
-          type = 'ai';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let type = isError ? 'error' : 'system';
+          let level = isError ? 'error' : 'info';
+          if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:')) {
+            type = 'error';
+            level = 'error';
+          } else if (line.includes('[SECURITY]') || line.includes('[RateLimit]')) {
+            type = 'security';
+            level = 'warn';
+          } else if (line.includes('[AI]')) {
+            type = 'ai';
+          }
+
+          LogHubManager.appendExternalLog({
+            type,
+            level,
+            message: line,
+            source,
+          });
         }
-
-        LogHubManager.appendExternalLog({
-          type,
-          level,
-          message: line,
-          source,
-        });
-      }
+      } catch (_) {}
     };
 
     process.stdout.write = (chunk, encoding, cb) => {
       handleWrite(chunk, false);
-      return originalStdoutWrite(chunk, encoding, cb);
+      try {
+        return originalStdoutWrite(chunk, encoding, cb);
+      } catch (err) {
+        if (err.code === 'EIO' || err.code === 'EPIPE' || err.code === 'EBADF') return true;
+        throw err;
+      }
     };
 
     process.stderr.write = (chunk, encoding, cb) => {
       handleWrite(chunk, true);
-      return originalStderrWrite(chunk, encoding, cb);
+      try {
+        return originalStderrWrite(chunk, encoding, cb);
+      } catch (err) {
+        if (err.code === 'EIO' || err.code === 'EPIPE' || err.code === 'EBADF') return true;
+        throw err;
+      }
     };
   }
 
@@ -145,7 +166,8 @@ class LogHubManager {
       if (fs.existsSync(UNIFIED_LOG_FILE)) {
         const raw = fs.readFileSync(UNIFIED_LOG_FILE, 'utf8');
         const lines = raw.split('\n').filter(Boolean);
-        for (const line of lines.slice(-MAX_LOG_LINES)) {
+        const recent = lines.slice(-MAX_LOG_LINES);
+        for (const line of recent) {
           try {
             const parsed = JSON.parse(line);
             this.logs.push(parsed);
@@ -178,29 +200,50 @@ class LogHubManager {
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
     const originalStderrWrite = process.stderr.write.bind(process.stderr);
 
-    const handleWrite = (chunk, isError = false) => {
-      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      const lines = text.split('\n');
+    try {
+      process.stdout.on?.('error', (err) => {
+        if (err.code === 'EPIPE' || err.code === 'EIO' || err.code === 'EBADF') return;
+      });
+      process.stderr.on?.('error', (err) => {
+        if (err.code === 'EPIPE' || err.code === 'EIO' || err.code === 'EBADF') return;
+      });
+    } catch (_) {}
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        this.addLog({
-          type: isError ? 'error' : 'system',
-          level: isError ? 'error' : 'info',
-          message: line,
-          source: 'console',
-        }, false);
-      }
+    const handleWrite = (chunk, isError = false) => {
+      try {
+        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+        const lines = text.split('\n');
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          this.addLog({
+            type: isError ? 'error' : 'system',
+            level: isError ? 'error' : 'info',
+            message: line,
+            source: 'console',
+          }, false);
+        }
+      } catch (_) {}
     };
 
     process.stdout.write = (chunk, encoding, cb) => {
       handleWrite(chunk, false);
-      return originalStdoutWrite(chunk, encoding, cb);
+      try {
+        return originalStdoutWrite(chunk, encoding, cb);
+      } catch (err) {
+        if (err.code === 'EIO' || err.code === 'EPIPE' || err.code === 'EBADF') return true;
+        throw err;
+      }
     };
 
     process.stderr.write = (chunk, encoding, cb) => {
       handleWrite(chunk, true);
-      return originalStderrWrite(chunk, encoding, cb);
+      try {
+        return originalStderrWrite(chunk, encoding, cb);
+      } catch (err) {
+        if (err.code === 'EIO' || err.code === 'EPIPE' || err.code === 'EBADF') return true;
+        throw err;
+      }
     };
   }
 

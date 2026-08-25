@@ -195,18 +195,24 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     }
 
     // 2. フォールバック: OpenCode Zen / 各種 API 直接コール
-    if (this.geminiApiKey && (this.preferredModel.includes('gemini') || this.preferredModel.includes('google'))) {
+    const isAutoOrGemini = !this.preferredModel || this.preferredModel === 'auto' || this.preferredModel.includes('gemini') || this.preferredModel.includes('google');
+    if (this.geminiApiKey && isAutoOrGemini) {
       try {
         const res = await this._callGeminiApi(prompt);
-        if (res) return { model: `Gemini Direct (${this.preferredModel})`, content: res, provider: 'gemini' };
-      } catch (_) {}
+        if (res) return { model: `Gemini Direct (${this.preferredModel === 'auto' ? 'gemini-2.0-flash' : this.preferredModel})`, content: res, provider: 'gemini' };
+      } catch (e) {
+        console.warn('[NMT-AI] Gemini direct call failed:', e.message);
+      }
     }
 
-    if (this.openaiApiKey && (this.preferredModel.includes('gpt') || this.preferredModel.includes('openai'))) {
+    const isAutoOrOpenAi = !this.preferredModel || this.preferredModel === 'auto' || this.preferredModel.includes('gpt') || this.preferredModel.includes('openai');
+    if (this.openaiApiKey && isAutoOrOpenAi) {
       try {
         const res = await this._callOpenAiApi(prompt);
-        if (res) return { model: `OpenAI Direct (${this.preferredModel})`, content: res, provider: 'openai' };
-      } catch (_) {}
+        if (res) return { model: `OpenAI Direct (${this.preferredModel === 'auto' ? 'gpt-4o' : this.preferredModel})`, content: res, provider: 'openai' };
+      } catch (e) {
+        console.warn('[NMT-AI] OpenAI direct call failed:', e.message);
+      }
     }
 
     // 3. OpenCode Zen 動的無料モデル API

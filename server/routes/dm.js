@@ -2,6 +2,7 @@ const api = require('../utils/ApiRegistry');
 const crypto = require('crypto');
 const { requireAuth } = require('../middleware/auth');
 const { hasBlockRelationship } = require('../utils/blockRelationship');
+const { getVisibleDmUnreadCount } = require('../services/DmVisibilityService');
 const config = require('../config');
 const { isWithinRange, describeIntegerRange } = require('../utils/settingFormats');
 
@@ -334,7 +335,8 @@ router.get({
 	const offset = parseInt(req.query.offset, 10) || 0;
 
 	try {
-		const payload = await getVisibleDmListPayload(db, userId, { limit, offset });
+		const dms = await db.getGroupDmsForUser(userId, { limit, offset });
+		const payload = await buildDmPayload(db, dms, userId, { includePosts: false });
 		res.json(payload);
 	} catch (err) {
 		console.error('[dm] list error:', err);
@@ -368,10 +370,15 @@ router.get({
 	const userId = req.user.id;
 
 	try {
-		const summary = await getVisibleDmUnreadSummary(db, userId);
+		const dms = await db.getGroupDmsForUser(userId);
+		const payload = await buildDmPayload(db, dms, userId, { includePosts: false });
+		const unreadByDm = {};
+		for (const d of payload.dm) {
+			unreadByDm[d.id] = d.unread_count || 0;
+		}
 		res.json({
-			unread_total: summary.unread_total,
-			unread_by_dm: summary.unread_by_dm,
+			unread_total: payload.unread_total,
+			unread_by_dm: unreadByDm,
 		});
 	} catch (err) {
 		console.error('[dm] unread-counts error:', err);
