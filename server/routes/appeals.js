@@ -1,7 +1,11 @@
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const { requireAuthAllowFrozen } = require('../middleware/auth');
 
-const router = express.Router();
+const router = api.createRouter({
+  tag: 'appeals',
+  basePath: '/appeals',
+  description: '凍結アカウント異議申し立て API',
+});
 
 function getModerationService(req) {
   return req.app.locals.moderationReportService || null;
@@ -28,7 +32,11 @@ function serializeAppeal(appeal) {
   };
 }
 
-router.get('/me', requireAuthAllowFrozen, requireFrozenSession, async (req, res) => {
+router.get({
+  path: '/me',
+  summary: '自分の凍結異議申し立て状態の取得',
+  auth: 'frozen_session',
+}, requireAuthAllowFrozen, requireFrozenSession, async (req, res) => {
   const service = getModerationService(req);
   if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {
@@ -40,7 +48,11 @@ router.get('/me', requireAuthAllowFrozen, requireFrozenSession, async (req, res)
   }
 });
 
-router.post('/', requireAuthAllowFrozen, requireFrozenSession, async (req, res) => {
+router.post({
+  path: '/',
+  summary: '凍結異議申し立ての提出',
+  auth: 'frozen_session',
+}, requireAuthAllowFrozen, requireFrozenSession, async (req, res) => {
   const service = getModerationService(req);
   if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {

@@ -25,7 +25,12 @@ const {
 	createNotificationIfAllowed,
 } = require('../services/NotificationDeliveryService');
 
-const router = express.Router();
+const api = require("../utils/ApiRegistry");
+const router = api.createRouter({
+	tag: "users",
+	basePath: "/users",
+	description: "ユーザー・プロフィール・フォロー API",
+});
 const { createRateLimiter } = require('../middleware/rateLimit');
 const profileUpdateLimiter = createRateLimiter(config.rateLimit.profileUpdate);
 const accountOperationLimiter = createRateLimiter(config.rateLimit.profileUpdate);
@@ -364,9 +369,17 @@ async function handleUserIcon(req, res) {
 	return res.redirect(302, '/emoji/neko.svg');
 }
 
-router.get('/:userId/icon', handleUserIcon);
+router.get({
+	path: '/:userId/icon',
+	summary: 'ユーザーアバターアイコン画像の取得',
+	auth: 'none',
+}, handleUserIcon);
 
-router.get('/search', optionalAuth, searchLimiter, async (req, res) => {
+router.get({
+	path: '/search',
+	summary: 'ユーザー検索',
+	auth: 'optional',
+}, optionalAuth, searchLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const query = req.query.q || '';
 	const requestedLimit = parseInt(req.query.limit, 10);
@@ -399,7 +412,11 @@ router.get('/search', optionalAuth, searchLimiter, async (req, res) => {
 	}
 });
 
-router.get('/recommended', optionalAuth, searchLimiter, async (req, res) => {
+router.get({
+	path: '/recommended',
+	summary: 'おすすめユーザー一覧の取得',
+	auth: 'optional',
+}, optionalAuth, searchLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const viewerId = req.user ? req.user.id : null;
 
@@ -429,7 +446,11 @@ router.get('/recommended', optionalAuth, searchLimiter, async (req, res) => {
 	}
 });
 
-router.get('/logs', requireAuth, async (req, res) => {
+router.get({
+	path: '/logs',
+	summary: 'ログイン履歴・アクセスログの取得',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 
 	if (!req.user.admin) {
@@ -449,7 +470,11 @@ router.get('/logs', requireAuth, async (req, res) => {
 });
 
 
-router.get('/:userId', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId',
+	summary: 'ユーザープロフィール詳細の取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 
@@ -497,7 +522,11 @@ router.get('/:userId', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/', optionalAuth, async (req, res) => {
+router.get({
+	path: '/',
+	summary: '複数ユーザーIDの一括プロフィール取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const ids = (req.query.ids || '')
 		.split(',')
@@ -520,7 +549,11 @@ router.get('/', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/counts', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId/counts',
+	summary: 'ユーザーのカウント情報（投稿/メディア/フォロー等）取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 
@@ -557,7 +590,11 @@ router.get('/:userId/counts', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/media', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId/media',
+	summary: 'ユーザーの投稿メディア一覧取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 15, 50);
@@ -583,7 +620,11 @@ router.get('/:userId/media', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/is-lock', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId/is-lock',
+	summary: 'ユーザーの鍵垢状態確認',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 
@@ -603,7 +644,11 @@ router.get('/:userId/is-lock', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/status', requireAuth, async (req, res) => {
+router.get({
+	path: '/:userId/status',
+	summary: 'ユーザー関係状態（フォロー/フォロワー/ブロック関係）の取得',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 
@@ -627,7 +672,11 @@ router.get('/:userId/status', requireAuth, async (req, res) => {
 	}
 });
 
-router.put('/:userId/status', requireAuth, async (req, res) => {
+router.put({
+	path: '/:userId/status',
+	summary: 'ユーザー関係状態の更新（ブロック等）',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 
@@ -652,7 +701,11 @@ router.put('/:userId/status', requireAuth, async (req, res) => {
 	}
 });
 
-router.post('/:userId/follow', requireAuth, async (req, res) => {
+router.post({
+	path: '/:userId/follow',
+	summary: 'ユーザーのフォロー/フォロー解除（トグル）',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const followerId = req.user.id;
 	const followingId = parseInt(req.params.userId, 10);
@@ -692,7 +745,11 @@ router.post('/:userId/follow', requireAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/:section(likes|stars)', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId/:section(likes|stars)',
+	summary: 'ユーザーがいいね/スターした投稿一覧取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	const section = req.params.section;
@@ -726,7 +783,11 @@ router.get('/:userId/:section(likes|stars)', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/followers', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId/followers',
+	summary: 'ユーザーのフォロワー一覧取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
@@ -752,7 +813,11 @@ router.get('/:userId/followers', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/following', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId/following',
+	summary: 'ユーザーのフォロー中一覧取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
@@ -778,7 +843,11 @@ router.get('/:userId/following', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/posts', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId/posts',
+	summary: 'ユーザーの投稿一覧取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
@@ -829,7 +898,11 @@ router.get('/:userId/posts', optionalAuth, async (req, res) => {
 	}
 });
 
-router.get('/:userId/pin', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:userId/pin',
+	summary: 'ユーザーの固定投稿一覧取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 
@@ -849,7 +922,11 @@ router.get('/:userId/pin', optionalAuth, async (req, res) => {
 	}
 });
 
-router.post('/me/nyaitter-id/reassign', requireAuthAllowFrozen, requireInteractiveSession, accountOperationLimiter, async (req, res) => {
+router.post({
+	path: '/me/nyaitter-id/reassign',
+	summary: 'NyaitterID の再割り当て',
+	auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, accountOperationLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = req.user.id;
 	if (req.user.accountOperation) return res.status(409).json({ error: '別のアカウント処理が進行中です。' });
@@ -886,7 +963,11 @@ router.post('/me/nyaitter-id/reassign', requireAuthAllowFrozen, requireInteracti
 	}
 });
 
-router.post('/me/account/delete/prepare', requireAuthAllowFrozen, requireInteractiveSession, accountOperationLimiter, (req, res) => {
+router.post({
+	path: '/me/account/delete/prepare',
+	summary: 'アカウント削除の確認トークン発行',
+	auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, accountOperationLimiter, (req, res) => {
 	if (req.user.accountOperation) return res.status(409).json({ error: '別のアカウント処理が進行中です。' });
 	discardExpiredAccountConfirmations();
 	const confirmationToken = crypto.randomBytes(32).toString('base64url');
@@ -898,7 +979,11 @@ router.post('/me/account/delete/prepare', requireAuthAllowFrozen, requireInterac
 	return res.json({ confirmation_token: confirmationToken, expires_in_seconds: ACCOUNT_CONFIRMATION_TTL_MS / 1000 });
 });
 
-router.delete('/me/account', requireAuthAllowFrozen, requireInteractiveSession, accountOperationLimiter, async (req, res) => {
+router.delete({
+	path: '/me/account',
+	summary: 'アカウントの完全削除',
+	auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, accountOperationLimiter, async (req, res) => {
 	const confirmationToken = String(req.body?.confirmation_token || '');
 	const key = getAccountConfirmationKey(confirmationToken);
 	const confirmation = accountDeletionConfirmations.get(key);
@@ -930,7 +1015,11 @@ router.delete('/me/account', requireAuthAllowFrozen, requireInteractiveSession, 
 	}
 });
 
-router.put('/me', requireAuth, profileUpdateLimiter, async (req, res) => {
+router.put({
+	path: '/me',
+	summary: '自分のプロフィールの更新',
+	auth: 'required',
+}, requireAuth, profileUpdateLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = req.user.id;
 	const { name, me, bio, header_image, icon_data, settings, block } =
@@ -963,7 +1052,11 @@ router.put('/me', requireAuth, profileUpdateLimiter, async (req, res) => {
 	}
 });
 
-router.put('/:userId', requireAuth, async (req, res) => {
+router.put({
+	path: '/:userId',
+	summary: 'ユーザープロフィールの更新（本人またはインポスター）',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 

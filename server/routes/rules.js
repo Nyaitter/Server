@@ -1,16 +1,19 @@
 'use strict';
 
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 
-const router = express.Router();
+const router = api.createRouter({
+  tag: 'rules',
+  basePath: '/rules',
+  description: '利用規約・コミュニティルール API',
+});
 
 function getRulesFilePath() {
   const configured = config.rules?.filePath || 'rule.nd';
   if (path.isAbsolute(configured)) return configured;
-  // Check relative to process.cwd(), then relative to project root, then server directory
   const cwdPath = path.resolve(process.cwd(), configured);
   if (fs.existsSync(cwdPath)) return cwdPath;
   const rootPath = path.resolve(__dirname, '..', '..', configured);
@@ -20,7 +23,11 @@ function getRulesFilePath() {
   return cwdPath;
 }
 
-router.get('/', (req, res) => {
+router.get({
+  path: '/',
+  summary: 'コミュニティルール・利用規約テキストの取得',
+  auth: 'none',
+}, (req, res) => {
   try {
     const filePath = getRulesFilePath();
     if (fs.existsSync(filePath)) {

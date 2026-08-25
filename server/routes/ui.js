@@ -1,18 +1,22 @@
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const { requireAuth } = require('../middleware/auth');
 const { getVisibleDmUnreadCount } = require('../services/DmVisibilityService');
 
-const router = express.Router();
+const router = api.createRouter({
+  tag: 'ui',
+  basePath: '/ui',
+  description: 'UI / ナビゲーション集計 API',
+});
 
 function getDbAdapter(req) {
   return req.app.locals.dbAdapter;
 }
 
-/**
- * GET /server/api/ui/summary
- * ナビゲーション表示に必要な、利用者本人の軽量なカウンターをまとめて返す。
- */
-router.get('/summary', requireAuth, async (req, res) => {
+router.get({
+  path: '/summary',
+  summary: 'ナビゲーション用の未読カウントサマリー（通知未読数・DM未読数）の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const db = getDbAdapter(req);
   const userId = req.user.id;
 

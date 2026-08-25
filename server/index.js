@@ -310,6 +310,8 @@ const restRoutes = [
     ['auth/nyaitter-auth', require('./routes/nyaitterAuth')],
     ['nyaitter-auth', require('./routes/nyaitterAuth')],
     ['oembed', require('./routes/oembed')],
+    ['spec', require('./routes/spec')],
+    ['docs', require('./routes/docs')],
 ];
 
 for (const [resourcePath, router] of restRoutes) {

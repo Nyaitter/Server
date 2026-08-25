@@ -1,4 +1,4 @@
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const sharp = require('sharp');
 const { requireAuth } = require('../middleware/auth');
 const config = require('../config');
@@ -12,7 +12,12 @@ const {
 	assertPostingUserWritable,
 } = require('../services/auth/PostAsUserService');
 
-const router = express.Router();
+const router = api.createRouter({
+	tag: 'uploads',
+	basePath: '/uploads',
+	description: 'ファイルアップロード・メディア管理 API',
+});
+
 const { createRateLimiter } = require('../middleware/rateLimit');
 const uploadLimiter = createRateLimiter(config.rateLimit.upload);
 
@@ -30,7 +35,11 @@ function decodeBase64File(value) {
 	return Buffer.from(value, 'base64');
 }
 
-router.get('/preview', async (req, res) => {
+router.get({
+	path: '/preview',
+	summary: '添付画像ファイルのサムネイル（プレビュー）取得',
+	auth: 'none',
+}, async (req, res) => {
 	const storage = getStorageAdapter(req);
 	if (!storage || typeof storage.read !== 'function') {
 		return res.status(501).json({ error: 'Storage adapter not available' });
@@ -76,7 +85,11 @@ router.get('/preview', async (req, res) => {
 	}
 });
 
-router.post('/', requireAuth, uploadLimiter, async (req, res) => {
+router.post({
+	path: '/',
+	summary: '画像などのファイルをアップロード',
+	auth: 'required',
+}, requireAuth, uploadLimiter, async (req, res) => {
 	const storage = getStorageAdapter(req);
 	if (!storage || typeof storage.upload !== 'function') {
 		return res.status(501).json({ error: 'Storage adapter not available' });
@@ -137,7 +150,11 @@ router.post('/', requireAuth, uploadLimiter, async (req, res) => {
 	}
 });
 
-router.get('/storage', requireAuth, async (req, res) => {
+router.get({
+	path: '/storage',
+	summary: '自分のストレージ使用状況とファイル一覧の取得',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const storage = getStorageAdapter(req);
 	if (!storage || typeof storage.getUsage !== 'function' || typeof storage.listFiles !== 'function') {
 		return res.status(501).json({ error: 'Storage inventory is not available' });
@@ -163,7 +180,11 @@ router.get('/storage', requireAuth, async (req, res) => {
 	}
 });
 
-router.delete('/', requireAuth, uploadLimiter, async (req, res) => {
+router.delete({
+	path: '/',
+	summary: 'アップロード済みファイルの削除',
+	auth: 'required',
+}, requireAuth, uploadLimiter, async (req, res) => {
 	const storage = getStorageAdapter(req);
 	const { fileIds, as_user_id } = req.body || {};
 	let uploadUser;

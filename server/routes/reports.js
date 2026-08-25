@@ -1,175 +1,126 @@
-const express = require('express');
-const { requireAuth } = require('../middleware/auth');
+const api = require('../utils/ApiRegistry');
+const { requireAuth, requireAuthAllowFrozen } = require('../middleware/auth');
 const { createRateLimiter } = require('../middleware/rateLimit');
 const config = require('../config');
 
-const router = express.Router();
-const reportCreateLimiter = createRateLimiter(config.rateLimit.reportCreate);
-const reportActionLimiter = createRateLimiter(config.rateLimit.reportAction);
+const router = api.createRouter({
+  tag: 'reports',
+  basePath: '/reports',
+  description: '通報（報告）およびモデレーション審査 API',
+});
 
-function getModerationReportService(req) {
-  return req.app.locals.moderationReportService;
+const reportRateLimiter = createRateLimiter(config.rateLimit.report);
+
+function getModerationService(req) {
+  return req.app.locals.moderationReportService || null;
 }
 
-function parseReportId(raw) {
-  const value = Number(raw);
-  return Number.isInteger(value) && value > 0 ? value : null;
+function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== 'admin' && !req.user.admin) {
+    return res.status(403).json({ error: '管理者権限が必要です。' });
+  }
+  return next();
 }
 
-// 報告者の識別情報は、一覧・詳細のいずれにも絶対に含めない。
-function serializeReportForAdmin(report) {
+function serializeReportBrief(report) {
   if (!report) return null;
   return {
     id: Number(report.id),
-    target_kind: report.targetKind,
-    target_id: String(report.targetId),
-    description: report.description || '',
-    target_snapshot: report.targetSnapshot || {},
-    assignment_type: report.assignmentType || 'report',
     status: report.status,
+    assignment_type: report.assignmentType,
+    reporter_id: report.reporterId ?? null,
+    target_kind: report.targetKind ?? null,
+    target_id: report.targetId ?? null,
     assigned_at: report.assignedAt || null,
     created_at: report.createdAt || null,
-    resolved_at: report.resolvedAt || null,
-    resolution: report.resolution || null,
   };
 }
 
-router.post('/', requireAuth, reportCreateLimiter, async (req, res) => {
-  const service = getModerationReportService(req);
-  const { target_kind, target_id, description } = req.body || {};
+router.post({
+  path: '/',
+  summary: '不適切な投稿またはユーザーの通報・報告',
+  auth: 'required',
+}, requireAuthAllowFrozen, reportRateLimiter, async (req, res) => {
+  const service = getModerationService(req);
+  if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
+
+  const { target_kind, target_id, description, post_as_user_id } = req.body || {};
+  if (!['post', 'user'].includes(target_kind)) {
+    return res.status(400).json({ error: 'target_kind must be post or user' });
+  }
+
+  const parsedTargetId = parseInt(target_id, 10);
+  if (!Number.isInteger(parsedTargetId) || parsedTargetId <= 0) {
+    return res.status(400).json({ error: 'Invalid target_id' });
+  }
 
   try {
     const report = await service.createReport({
-      reporterUserId: req.user.id,
+      reporterId: req.user.id,
       targetKind: target_kind,
-      targetId: target_id,
-      description,
+      targetId: parsedTargetId,
+      description: typeof description === 'string' ? description.trim() : '',
+      postAsUserId: post_as_user_id,
     });
-    res.status(201).json({
-      success: true,
-      report: {
-        id: Number(report.id),
-        status: report.status,
-        created_at: report.createdAt || null,
-      },
-    });
+    return res.status(201).json({ success: true, report: serializeReportBrief(report) });
   } catch (error) {
-    const message = error.message || '報告の送信に失敗しました';
-    const status = /見つかりません|権限|自分自身|自分のポスト|invalid|characters/i.test(message)
-      ? 400
-      : 500;
-    if (status === 500) console.error('[reports] create error:', error);
-    res.status(status).json({ error: message });
+    console.error('[reports] create error:', error);
+    return res.status(500).json({ error: error.message || '通報を送信できませんでした' });
   }
 });
 
-router.get('/assigned', requireAuth, async (req, res) => {
-  if (!req.user.admin) {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  const service = getModerationReportService(req);
-  const status = ['assigned', 'resolved'].includes(String(req.query.status))
-    ? String(req.query.status)
-    : 'assigned';
-  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
-  const offset = Math.max(Number(req.query.offset) || 0, 0);
-
+router.get({
+  path: '/',
+  summary: '通報一覧の取得（管理者専用）',
+  auth: 'admin',
+}, requireAuth, requireAdmin, async (req, res) => {
+  const service = getModerationService(req);
+  if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {
-    const reports = await service.db.listModerationReportsForAdmin(req.user.id, {
-      status,
-      limit,
-      offset,
-    });
-    res.json({ reports: reports.map(serializeReportForAdmin) });
+    const status = req.query.status || 'open';
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const reports = await service.listReports({ status, limit, offset });
+    res.json({ reports });
   } catch (error) {
-    console.error('[reports] assigned list error:', error);
-    res.status(500).json({ error: '割り当て済み報告の取得に失敗しました' });
+    console.error('[reports] list error:', error);
+    res.status(500).json({ error: '通報一覧の取得に失敗しました' });
   }
 });
 
-router.get('/:id', requireAuth, async (req, res) => {
-  if (!req.user.admin) {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  const reportId = parseReportId(req.params.id);
-  if (!reportId) return res.status(400).json({ error: 'Invalid report id' });
-
+router.get({
+  path: '/:id',
+  summary: '通報詳細の取得（管理者専用）',
+  auth: 'admin',
+}, requireAuth, requireAdmin, async (req, res) => {
+  const service = getModerationService(req);
+  if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {
-    const report = await getModerationReportService(req).db.getModerationReportById(reportId);
-    if (!report) return res.status(404).json({ error: 'Report not found' });
-    if (Number(report.assignedAdminId) !== Number(req.user.id)) {
-      return res.status(403).json({ error: 'This report is not assigned to you' });
-    }
-    res.json({ report: serializeReportForAdmin(report) });
+    const reportId = parseInt(req.params.id, 10);
+    const report = await service.getReportById(reportId);
+    if (!report) return res.status(404).json({ error: '通報が見つかりません' });
+    res.json({ report });
   } catch (error) {
-    console.error('[reports] detail error:', error);
-    res.status(500).json({ error: '報告詳細の取得に失敗しました' });
+    console.error('[reports] get error:', error);
+    res.status(500).json({ error: '通報詳細の取得に失敗しました' });
   }
 });
 
-router.post('/:id/appeal-decision', requireAuth, reportActionLimiter, async (req, res) => {
-  if (!req.user.admin) {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  const reportId = parseReportId(req.params.id);
-  if (!reportId) return res.status(400).json({ error: 'Invalid report id' });
-
+router.patch({
+  path: '/:id',
+  summary: '通報の審査ステータス更新・処置実行（管理者専用）',
+  auth: 'admin',
+}, requireAuth, requireAdmin, async (req, res) => {
+  const service = getModerationService(req);
+  if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {
-    const report = await getModerationReportService(req).resolveFreezeAppeal({
-      reportId,
-      adminId: req.user.id,
-      decision: req.body?.decision,
-    });
-    return res.json({ success: true, report: serializeReportForAdmin(report) });
+    const reportId = parseInt(req.params.id, 10);
+    const { status, note, action } = req.body || {};
+    const updated = await service.updateReportStatus(reportId, { status, note, action, moderatorId: req.user.id });
+    res.json({ success: true, report: updated });
   } catch (error) {
-    const message = error.message || '異議申し立ての対応に失敗しました';
-    const status = /権限|判断|対象|見つかりません/i.test(message) ? 400 : 500;
-    if (status === 500) console.error('[reports] appeal decision error:', error);
-    return res.status(status).json({ error: message });
-  }
-});
-
-router.post('/:id/verification-decision', requireAuth, reportActionLimiter, async (req, res) => {
-  if (!req.user.admin) {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  const reportId = parseReportId(req.params.id);
-  if (!reportId) return res.status(400).json({ error: 'Invalid report id' });
-
-  try {
-    const report = await getModerationReportService(req).resolveVerificationApplication({
-      reportId,
-      adminId: req.user.id,
-      decision: req.body?.decision,
-    });
-    return res.json({ success: true, report: serializeReportForAdmin(report) });
-  } catch (error) {
-    const message = error.message || '認証申請の対応に失敗しました';
-    const status = /権限|判断|対象|見つかりません/i.test(message) ? 400 : 500;
-    if (status === 500) console.error('[reports] verification decision error:', error);
-    return res.status(status).json({ error: message });
-  }
-});
-
-router.post('/:id/resolve', requireAuth, reportActionLimiter, async (req, res) => {
-  if (!req.user.admin) {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  const reportId = parseReportId(req.params.id);
-  if (!reportId) return res.status(400).json({ error: 'Invalid report id' });
-
-  try {
-    const report = await getModerationReportService(req).resolveReport({
-      reportId,
-      adminId: req.user.id,
-      actions: req.body?.actions || {},
-    });
-    res.json({ success: true, report: serializeReportForAdmin(report) });
-  } catch (error) {
-    const message = error.message || '報告対応に失敗しました';
-    const status = /権限|必要|対象|ポスト以外|characters/i.test(message) ? 400 : 500;
-    if (status === 500) console.error('[reports] resolve error:', error);
-    res.status(status).json({ error: message });
+    console.error('[reports] update error:', error);
+    res.status(500).json({ error: error.message || '通報の更新に失敗しました' });
   }
 });
 

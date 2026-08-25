@@ -1,8 +1,13 @@
 'use strict';
 
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
-const router = express.Router();
+
+const router = api.createRouter({
+	tag: 'polls',
+	basePath: '/polls',
+	description: '投票 API',
+});
 
 function getDbAdapter(req) {
 	return req.app.locals.dbAdapter;
@@ -15,7 +20,11 @@ function safeParsePollId(id) {
 }
 
 // 投票の取得
-router.get('/:pollId', optionalAuth, async (req, res) => {
+router.get({
+	path: '/:pollId',
+	summary: '投票データの取得',
+	auth: 'optional',
+}, optionalAuth, async (req, res) => {
 	const pollId = safeParsePollId(req.params.pollId);
 	if (!pollId) {
 		return res.status(400).json({ error: '無効な投票IDです' });
@@ -35,7 +44,11 @@ router.get('/:pollId', optionalAuth, async (req, res) => {
 });
 
 // 投票の実行
-router.post('/:pollId/vote', requireAuth, async (req, res) => {
+router.post({
+	path: '/:pollId/vote',
+	summary: '投票の実行',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const pollId = safeParsePollId(req.params.pollId);
 	if (!pollId) {
 		return res.status(400).json({ error: '無効な投票IDです' });

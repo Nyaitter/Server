@@ -1,10 +1,14 @@
 'use strict';
 
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const NyaitterAuthManager = require('../services/auth/NyaitterAuthManager');
 const { requireAuth } = require('../middleware/auth');
 
-const router = express.Router();
+const router = api.createRouter({
+  tag: 'nyaitter-auth',
+  basePath: '/nyaitter-auth',
+  description: 'NyaitterAuth 外部連携・認可 API',
+});
 
 function getAuthManager(req) {
   return new NyaitterAuthManager({
@@ -13,7 +17,11 @@ function getAuthManager(req) {
 }
 
 // 1. Initiate authorization request (called by external app with its API credentials)
-router.post('/initiate', async (req, res) => {
+router.post({
+  path: '/initiate',
+  summary: '外部アプリによる認証リクエストの開始',
+  auth: 'none',
+}, async (req, res) => {
   try {
     const manager = getAuthManager(req);
     const result = await manager.createAuthorizationRequest(req.body, req);
@@ -27,7 +35,11 @@ router.post('/initiate', async (req, res) => {
 });
 
 // 2. Get authorization request details (called by Nyaitter client on #nyaitter-auth)
-router.get('/requests/:requestId', async (req, res) => {
+router.get({
+  path: '/requests/:requestId',
+  summary: '認証リクエストの詳細取得',
+  auth: 'optional',
+}, async (req, res) => {
   try {
     const manager = getAuthManager(req);
     const currentUserId = req.user?.id || null;
@@ -46,7 +58,11 @@ router.get('/requests/:requestId', async (req, res) => {
 });
 
 // 3. User approves authorization (requires user login)
-router.post('/approve', requireAuth, async (req, res) => {
+router.post({
+  path: '/approve',
+  summary: 'ユーザーによるアプリ連携リクエストの承認',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const { request_id, granted_scopes } = req.body;
     if (!request_id) {
@@ -73,7 +89,11 @@ router.post('/approve', requireAuth, async (req, res) => {
 });
 
 // 4. User denies authorization
-router.post('/deny', async (req, res) => {
+router.post({
+  path: '/deny',
+  summary: 'ユーザーによるアプリ連携リクエストの拒否',
+  auth: 'none',
+}, async (req, res) => {
   try {
     const { request_id } = req.body;
     if (!request_id) {
@@ -95,7 +115,11 @@ router.post('/deny', async (req, res) => {
 });
 
 // 5. Exchange temporary token/code for user info & persistent access token (called by external app)
-router.post('/token', async (req, res) => {
+router.post({
+  path: '/token',
+  summary: '認可コードとアクセストークンの交換',
+  auth: 'none',
+}, async (req, res) => {
   try {
     const manager = getAuthManager(req);
     const result = await manager.exchangeCodeForToken(req.body, req.app.locals.dbAdapter);
@@ -110,7 +134,11 @@ router.post('/token', async (req, res) => {
 });
 
 // 6. Userinfo endpoint (called with Authorization: Bearer nyauth_...)
-router.get('/userinfo', requireAuth, async (req, res) => {
+router.get({
+  path: '/userinfo',
+  summary: 'アクセストークンに紐づくユーザー情報とスコープの取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const db = req.app.locals.dbAdapter;
     const user = await db.getUserById(req.user.id);
@@ -140,7 +168,11 @@ router.get('/userinfo', requireAuth, async (req, res) => {
 });
 
 // 7. Get user's authorized applications (Settings screen)
-router.get('/authorized-apps', requireAuth, async (req, res) => {
+router.get({
+  path: '/authorized-apps',
+  summary: '連携中アプリケーション一覧の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const manager = getAuthManager(req);
     const apps = await manager.getUserAuthorizedApps(req.user.id, req.app.locals.dbAdapter);
@@ -157,7 +189,11 @@ router.get('/authorized-apps', requireAuth, async (req, res) => {
 });
 
 // 8. Update authorized application scopes (Settings screen)
-router.patch('/authorized-apps/:id', requireAuth, async (req, res) => {
+router.patch({
+  path: '/authorized-apps/:id',
+  summary: '連携アプリケーションのスコープ更新',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const manager = getAuthManager(req);
     const { scopes } = req.body;
@@ -186,7 +222,11 @@ router.patch('/authorized-apps/:id', requireAuth, async (req, res) => {
 });
 
 // 9. Revoke authorized application (Settings screen)
-router.delete('/authorized-apps/:id', requireAuth, async (req, res) => {
+router.delete({
+  path: '/authorized-apps/:id',
+  summary: '連携アプリケーションの連携解除',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const manager = getAuthManager(req);
     const result = await manager.revokeAuthorizedApp(

@@ -1,11 +1,20 @@
 'use strict';
 
-const express = require('express');
-const router = express.Router();
+const api = require('../utils/ApiRegistry');
 const { generateOembedJson } = require('../services/OgpService');
 const { getPublicUrl } = require('../utils/nyaitterAddress');
 
-router.get('/', async (req, res) => {
+const router = api.createRouter({
+	tag: 'oembed',
+	basePath: '/oembed',
+	description: 'oEmbed 埋め込み API',
+});
+
+router.get({
+	path: '/',
+	summary: '投稿 URL からの oEmbed 埋め込みメタデータ取得',
+	auth: 'none',
+}, async (req, res) => {
 	const rawUrl = req.query.url;
 	if (!rawUrl || typeof rawUrl !== 'string') {
 		return res.status(400).json({ error: 'url query parameter is required' });
@@ -13,7 +22,6 @@ router.get('/', async (req, res) => {
 
 	try {
 		const parsed = new URL(rawUrl);
-		// Extract post ID from path /posts/123, /post/123, /#post/123, /?post=123
 		let postId = null;
 		const pathMatch = parsed.pathname.match(/\/(?:posts?|api\/posts)\/(\d+)/i);
 		if (pathMatch) {

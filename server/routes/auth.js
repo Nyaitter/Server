@@ -42,7 +42,12 @@ const {
 const AuthService = require('../services/auth/AuthService');
 const { defaultRegistry: authProviderRegistry } = require('../services/auth/AuthProviderRegistry');
 
-const router = express.Router();
+const api = require("../utils/ApiRegistry");
+const router = api.createRouter({
+	tag: "auth",
+	basePath: "/auth",
+	description: "認証・セッション・ログインセキュリティ API",
+});
 const authService = new AuthService({ registry: authProviderRegistry, config });
 
 function getDbAdapter(req) {
@@ -242,7 +247,11 @@ function sendLoginResult(req, res, user, result, { external = false } = {}) {
  * GET /server/auth/providers
  * 利用可能な認証プロバイダーの一覧と設定を返す
  */
-router.get('/providers', (req, res) => {
+router.get({
+	path: '/providers',
+	summary: '有効な認証プロバイダー一覧の取得',
+	auth: 'none',
+}, (req, res) => {
   res.json({
     providers: authService.getPublicProviders(req),
   });
@@ -252,7 +261,11 @@ router.get('/providers', (req, res) => {
  * POST /server/auth/:provider/initiate
  * 任意の認証プロバイダーの認証開始（コード発行、チャレンジ作成等）
  */
-router.post('/:provider/initiate', async (req, res) => {
+router.post({
+	path: '/:provider/initiate',
+	summary: '外部認証プロバイダーによるログイン開始',
+	auth: 'none',
+}, async (req, res) => {
   const provider = String(req.params.provider || '').toLowerCase();
   try {
     const data = await authService.initiate(provider, req, req.body, {
@@ -273,7 +286,11 @@ router.post('/:provider/initiate', async (req, res) => {
  * POST /server/auth/:provider/verify
  * 任意の認証プロバイダーの検証とログイン処理
  */
-router.post('/:provider/verify', async (req, res) => {
+router.post({
+	path: '/:provider/verify',
+	summary: '外部認証プロバイダーによるログイン完了検証',
+	auth: 'none',
+}, async (req, res) => {
   const provider = String(req.params.provider || '').toLowerCase();
   const db = getDbAdapter(req);
   try {
@@ -303,7 +320,11 @@ router.post('/:provider/verify', async (req, res) => {
  * GET /server/auth/linked-providers
  * ログイン中ユーザーに紐づけられている認証プロバイダー一覧を取得
  */
-router.get('/linked-providers', requireAuth, async (req, res) => {
+router.get({
+	path: '/linked-providers',
+	summary: '連携済み外部アカウント一覧の取得',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
   if (isImposter(req.user)) {
     return res.json({ linked_providers: [] });
   }
@@ -326,7 +347,11 @@ router.get('/linked-providers', requireAuth, async (req, res) => {
  * POST /server/auth/link/:provider/initiate
  * 既存アカウントへの新しい認証プロバイダー紐づけ認証を開始
  */
-router.post('/link/:provider/initiate', requireAuth, async (req, res) => {
+router.post({
+	path: '/link/:provider/initiate',
+	summary: '外部認証プロバイダー連携の開始',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
   if (isImposter(req.user)) {
     return res.status(403).json({ error: 'インポスターアカウントでは認証プロバイダーの連携を行えません。' });
   }
@@ -350,7 +375,11 @@ router.post('/link/:provider/initiate', requireAuth, async (req, res) => {
  * POST /server/auth/link/:provider/verify
  * 既存アカウントへ新しい認証プロバイダーを紐づけ
  */
-router.post('/link/:provider/verify', requireAuth, async (req, res) => {
+router.post({
+	path: '/link/:provider/verify',
+	summary: '外部認証プロバイダー連携の完了',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
   if (isImposter(req.user)) {
     return res.status(403).json({ error: 'インポスターアカウントでは認証プロバイダーの連携を行えません。' });
   }
@@ -380,7 +409,11 @@ router.post('/link/:provider/verify', requireAuth, async (req, res) => {
  * DELETE /server/auth/link/:provider
  * 既存アカウントから認証プロバイダーの紐づけを解除
  */
-router.delete('/link/:provider', requireAuth, async (req, res) => {
+router.delete({
+	path: '/link/:provider',
+	summary: '外部認証プロバイダー連携の解除',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
   if (isImposter(req.user)) {
     return res.status(403).json({ error: 'インポスターアカウントでは認証プロバイダーの連携を行えません。' });
   }
@@ -402,7 +435,11 @@ router.delete('/link/:provider', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/scratch/generate', async (req, res) => {
+router.post({
+	path: '/scratch/generate',
+	summary: 'Scratch 認証用確認コードの生成',
+	auth: 'none',
+}, async (req, res) => {
   try {
     const data = await authService.initiate('scratch', req, {
       username: req.body?.username,
@@ -421,7 +458,11 @@ router.post('/scratch/generate', async (req, res) => {
   }
 });
 
-router.post('/scratch/verify', async (req, res) => {
+router.post({
+	path: '/scratch/verify',
+	summary: 'Scratch プロフィール認証コードの検証とログイン',
+	auth: 'none',
+}, async (req, res) => {
   const db = getDbAdapter(req);
   try {
     const { user } = await authService.verifyAndResolveUser('scratch', req, {
@@ -454,7 +495,11 @@ router.post('/scratch/verify', async (req, res) => {
  * POST /server/auth/login-approvals/:approvalId/poll
  * 未承認端末が短命の承認トークンで状態を照合する。許可済みかつ同一IPの時だけセッションを発行する。
  */
-router.post('/login-approvals/:approvalId/poll', async (req, res) => {
+router.post({
+	path: '/login-approvals/:approvalId/poll',
+	summary: 'ログイン承認リクエストのポーリング待機',
+	auth: 'none',
+}, async (req, res) => {
   const approvalId = String(req.params.approvalId || '');
   const pollToken = String(req.body?.approval_token || '');
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(approvalId) || !/^[A-Za-z0-9_-]{20,128}$/.test(pollToken)) {
@@ -494,7 +539,11 @@ router.post('/login-approvals/:approvalId/poll', async (req, res) => {
 	});
 });
 
-router.get('/me', requireAuthAllowFrozen, async (req, res) => {
+router.get({
+	path: '/me',
+	summary: 'ログイン中ユーザー情報・セッション情報の取得',
+	auth: 'required',
+}, requireAuthAllowFrozen, async (req, res) => {
   const db = getDbAdapter(req);
   // 認証ミドルウェアが取得済みの完全なユーザー行を使う。principalは認可用の
   // 最小情報だけなので、そのままシリアライズするとプロフィールと設定が欠落する。
@@ -528,7 +577,11 @@ function serializeLoginApprovalForOwner(approval) {
  * GET /server/auth/login-approvals/:approvalId
  * ログイン済み端末が未知IPログイン承認依頼を表示する。
  */
-router.get('/login-approvals/:approvalId', requireAuth, requireInteractiveSession, async (req, res) => {
+router.get({
+	path: '/login-approvals/:approvalId',
+	summary: 'ログイン承認リクエストの詳細取得',
+	auth: 'session',
+}, requireAuth, requireInteractiveSession, async (req, res) => {
   const db = getDbAdapter(req);
   const approval = await db.getLoginApproval(req.params.approvalId);
   if (!approval || Number(approval.userId) !== Number(req.user.id)) {
@@ -541,7 +594,11 @@ router.get('/login-approvals/:approvalId', requireAuth, requireInteractiveSessio
  * POST /server/auth/login-approvals/:approvalId/decision
  * 未知IPログインを許可または拒否する。許可時だけIPを信頼済みにする。
  */
-router.post('/login-approvals/:approvalId/decision', requireAuth, requireInteractiveSession, async (req, res) => {
+router.post({
+	path: '/login-approvals/:approvalId/decision',
+	summary: 'ログイン承認リクエストへの承認・拒否',
+	auth: 'session',
+}, requireAuth, requireInteractiveSession, async (req, res) => {
   const decision = req.body?.decision;
   if (!['approve', 'deny'].includes(decision)) {
     return res.status(400).json({ error: 'decision must be approve or deny' });
@@ -572,7 +629,11 @@ function serializeSessionForOwner(session, currentToken) {
 	 * POST /server/auth/login-security/trust-current-ip
  * 未知IP拒否を有効化する現在のログイン端末を信頼済みIPとして登録する。
  */
-router.post('/login-security/trust-current-ip', requireAuth, requireInteractiveSession, async (req, res) => {
+router.post({
+	path: '/login-security/trust-current-ip',
+	summary: '現在のIPアドレスを信頼済みIPとして登録',
+	auth: 'session',
+}, requireAuth, requireInteractiveSession, async (req, res) => {
   if (isImposter(req.user)) {
     return res.status(403).json({ error: 'インポスターアカウントではこの操作を行えません。' });
   }
@@ -586,7 +647,11 @@ router.post('/login-security/trust-current-ip', requireAuth, requireInteractiveS
  * GET /server/auth/sessions
  * 現在有効なセッションを、トークンや生IPを露出せずに返す。
  */
-router.get('/sessions', requireAuth, requireInteractiveSession, async (req, res) => {
+router.get({
+	path: '/sessions',
+	summary: 'アクティブなログインセッション一覧の取得',
+	auth: 'session',
+}, requireAuth, requireInteractiveSession, async (req, res) => {
   if (isImposter(req.user)) {
     return res.json({ sessions: [] });
   }
@@ -601,7 +666,11 @@ router.get('/sessions', requireAuth, requireInteractiveSession, async (req, res)
  * DELETE /server/auth/sessions/:sessionId
  * 自分の指定セッションだけを無効化する。現在のセッションの場合はCookieも解除する。
  */
-router.delete('/sessions/:sessionId', requireAuth, requireInteractiveSession, async (req, res) => {
+router.delete({
+	path: '/sessions/:sessionId',
+	summary: '指定したログインセッションの切断',
+	auth: 'session',
+}, requireAuth, requireInteractiveSession, async (req, res) => {
   if (isImposter(req.user)) {
     return res.status(403).json({ error: 'インポスターアカウントではセッションの管理を行えません。' });
   }
@@ -632,7 +701,11 @@ router.delete('/sessions/:sessionId', requireAuth, requireInteractiveSession, as
  * POST /server/auth/sessions/:sessionId/revoke-ip
  * 対象セッションと同一IPの全セッションを無効化し、そのIPを未知IPへ戻す。
  */
-router.post('/sessions/:sessionId/revoke-ip', requireAuth, requireInteractiveSession, async (req, res) => {
+router.post({
+	path: '/sessions/:sessionId/revoke-ip',
+	summary: 'セッションに紐づくIPアドレスの信頼解除',
+	auth: 'session',
+}, requireAuth, requireInteractiveSession, async (req, res) => {
   if (isImposter(req.user)) {
     return res.status(403).json({ error: 'インポスターアカウントではセッションの管理を行えません。' });
   }
@@ -673,7 +746,11 @@ router.post('/sessions/:sessionId/revoke-ip', requireAuth, requireInteractiveSes
  * 同一ブラウザで記憶したログイン済みアカウントを返す。
  * セッション文字列そのものは決してクライアントへ返さない。
  */
-router.get('/accounts', async (req, res) => {
+router.get({
+	path: '/accounts',
+	summary: '端末に記憶されているアカウント一覧の取得',
+	auth: 'none',
+}, async (req, res) => {
   const db = getDbAdapter(req);
   try {
     const accounts = await getValidRememberedAccounts(req, db);
@@ -723,7 +800,11 @@ router.get('/accounts', async (req, res) => {
  * POST /server/auth/accounts/switch
  * 署名済み・HTTPOnlyの記憶済みセッションからアクティブアカウントを切り替える。
  */
-router.post('/accounts/switch', async (req, res) => {
+router.post({
+	path: '/accounts/switch',
+	summary: '操作対象アカウントの切り替え',
+	auth: 'none',
+}, async (req, res) => {
   const userId = Number(req.body?.user_id);
   if (!Number.isInteger(userId) || userId < 0) {
     return res.status(400).json({ error: 'user_id is required' });
@@ -751,7 +832,11 @@ router.post('/accounts/switch', async (req, res) => {
   }
 });
 
-router.post('/imposters/:imposterId/switch', requireAuth, requireInteractiveSession, async (req, res) => {
+router.post({
+	path: '/imposters/:imposterId/switch',
+	summary: '操作対象をインポスターに切り替え',
+	auth: 'session',
+}, requireAuth, requireInteractiveSession, async (req, res) => {
   const imposterId = Number(req.params.imposterId);
   if (!Number.isInteger(imposterId) || imposterId <= 0) {
     return res.status(400).json({ error: 'インポスターIDが正しくありません。' });
@@ -779,7 +864,11 @@ router.post('/imposters/:imposterId/switch', requireAuth, requireInteractiveSess
   }
 });
 
-router.delete('/accounts/:userId', async (req, res) => {
+router.delete({
+	path: '/accounts/:userId',
+	summary: '端末の記憶アカウント一覧から特定アカウントを削除',
+	auth: 'none',
+}, async (req, res) => {
   const userId = Number(req.params.userId);
   if (!Number.isInteger(userId) || userId < 0) {
     return res.status(400).json({ error: 'Invalid user id' });
@@ -843,7 +932,11 @@ router.delete('/accounts/:userId', async (req, res) => {
  * POST /server/auth/logout
  * 現在のセッションを無効化しCookieを削除
  */
-router.post('/logout', optionalAuth, async (req, res) => {
+router.post({
+	path: '/logout',
+	summary: 'ログアウト処理',
+	auth: 'none',
+}, optionalAuth, async (req, res) => {
   const db = getDbAdapter(req);
 
   if (req.user && isImposter(req.user)) {
@@ -896,7 +989,11 @@ router.post('/logout', optionalAuth, async (req, res) => {
   res.json({ message: 'Logged out successfully' });
 });
 
-router.post('/turnstile/verify', async (req, res) => {
+router.post({
+	path: '/turnstile/verify',
+	summary: 'Cloudflare Turnstile キャプチャ検証',
+	auth: 'none',
+}, async (req, res) => {
   const { token } = req.body;
   if (!config.turnstile?.secret) {
     return res.status(500).json({ error: 'Turnstileがサーバー側で設定されていません' });
@@ -913,7 +1010,11 @@ router.post('/turnstile/verify', async (req, res) => {
   }
 });
 
-router.get('/test-protected', requireAuth, (req, res) => {
+router.get({
+	path: '/test-protected',
+	summary: '認証保護テストエンドポイント',
+	auth: 'required',
+}, requireAuth, (req, res) => {
   res.json({
     message: '認証に成功しました！',
     userId: req.user.id,
@@ -927,7 +1028,11 @@ router.get('/test-protected', requireAuth, (req, res) => {
  * 開発用簡易ログイン（DEV_BYPASS_AUTH=true のときのみ有効）
  * 実際のScratch認証をスキップして即座にユーザー+セッションを作成する
  */
-router.post('/dev-login', async (req, res) => {
+router.post({
+	path: '/dev-login',
+	summary: '開発環境用簡易ログイン',
+	auth: 'none',
+}, async (req, res) => {
   const isProd = (process.env.NODE_ENV || 'development') === 'production';
   if (process.env.DEV_BYPASS_AUTH !== 'true' || isProd) {
     return res.status(403).json({ error: 'DEV_BYPASS_AUTH が有効な場合のみ使用可能です（本番環境では無効）' });
@@ -958,7 +1063,11 @@ router.post('/dev-login', async (req, res) => {
   return payload;
 });
 
-router.post('/bot-tokens', requireAuth, async (req, res) => {
+router.post({
+	path: '/bot-tokens',
+	summary: 'Bot API トークンの新規発行',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
   const { name } = req.body;
   const userId = req.user?.id;
   const db = getDbAdapter(req);
@@ -983,7 +1092,11 @@ router.post('/bot-tokens', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/bot-tokens', requireAuth, async (req, res) => {
+router.get({
+	path: '/bot-tokens',
+	summary: '発行済み Bot API トークン一覧の取得',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
   const userId = req.user?.id;
   const db = getDbAdapter(req);
   if (!userId) return res.status(401).json({ error: '認証が必要です' });
@@ -994,7 +1107,11 @@ router.get('/bot-tokens', requireAuth, async (req, res) => {
   res.json({ tokens });
 });
 
-router.delete('/bot-tokens/:tokenId', requireAuth, async (req, res) => {
+router.delete({
+	path: '/bot-tokens/:tokenId',
+	summary: 'Bot API トークンの削除',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
   const userId = req.user?.id;
   const { tokenId } = req.params;
   const db = getDbAdapter(req);

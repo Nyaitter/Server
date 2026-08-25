@@ -1,4 +1,4 @@
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const config = require('../config');
 const {
 	getPublicUrl,
@@ -6,7 +6,11 @@ const {
 } = require('../utils/nyaitterAddress');
 const { defaultRegistry: authProviderRegistry } = require('../services/auth/AuthProviderRegistry');
 
-const router = express.Router();
+const router = api.createRouter({
+	tag: 'system',
+	basePath: '',
+	description: 'システム状態・基本設定 API',
+});
 
 function getDbAdapter(req) {
 	return req.app.locals.dbAdapter;
@@ -61,7 +65,11 @@ function getPublicClientLimits() {
 	};
 }
 
-router.get('/status', async (req, res) => {
+router.get({
+	path: '/status',
+	summary: 'サーバーの稼働状態・制限値・認証プロバイダー設定の取得',
+	auth: 'none',
+}, async (req, res) => {
 	let dbStatus = 'ok';
 
 	try {

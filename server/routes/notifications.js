@@ -1,4 +1,4 @@
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
 const { createRateLimiter } = require('../middleware/rateLimit');
 const config = require('../config');
@@ -12,7 +12,11 @@ const {
 	createNotificationIfAllowed,
 } = require('../services/NotificationDeliveryService');
 
-const router = express.Router();
+const router = api.createRouter({
+	tag: 'notifications',
+	basePath: '/notifications',
+	description: '通知 API',
+});
 
 const notificationLimiter = createRateLimiter(config.rateLimit.notification);
 
@@ -118,59 +122,56 @@ async function publishNewNotification(req, userId, notification) {
 	}
 }
 
-router.post('/', requireAuth, notificationLimiter, async (req, res) => {
+router.post({
+	path: '/',
+	summary: '通知の新規作成・送信',
+	auth: 'required',
+}, requireAuth, notificationLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const senderId = req.user.id;
 
 	const { recipient_id, type, target } = req.body || {};
-
 	const recipientId = parseInt(recipient_id, 10);
-	if (!Number.isInteger(recipientId)) {
-		return res.status(400).json({ error: 'recipient_id is required' });
+
+	if (!Number.isInteger(recipientId) || recipientId <= 0) {
+		return res.status(400).json({ error: 'recipient_id must be a positive integer' });
 	}
-	if (!NOTIFICATION_TYPES.has(type)) {
-		return res.status(400).json({ error: 'A supported notification type is required' });
+	if (!NOTIFICATION_TYPES.includes(type)) {
+		return res.status(400).json({ error: `Invalid notification type: ${type}` });
 	}
-	if (type === 'quote') {
-		return res.status(400).json({ error: 'Quote notifications are discontinued' });
-	}
-	if (type === 'admin_notice' && !req.user.admin) {
-		return res.status(403).json({ error: 'Admin access required for admin_notice' });
-	}
-	const normalizedTarget = target == null ? null : normalizeTarget(target);
-	if (target != null && !normalizedTarget) {
-		return res.status(400).json({ error: 'Invalid notification target' });
-	}
-	if (recipientId === senderId) {
-		return res.json({ success: true, notification: null });
-	}
-	if (type !== 'admin_notice') {
+
+	const normalizedTarget = normalizeTarget(target);
+	if (req.user.role !== 'admin') {
 		const validation = await validateClientNotification(db, senderId, recipientId, type, normalizedTarget);
-		if (validation) {
+		if (validation?.error) {
 			return res.status(403).json({ error: validation.error });
 		}
 	}
 
 	try {
-			const notification = await createNotificationIfAllowed(db, {
-				userId: recipientId,
-				type,
-				fromUserId: senderId,
-				target: normalizedTarget,
-			});
-			if (!notification) {
-				return res.json({ success: true, notification: null });
-			}
-			const serializedNotification = await serializeNotification(db, notification);
-			await publishNewNotification(req, recipientId, serializedNotification);
-			res.json({ success: true, notification: serializedNotification });
+		const notification = await createNotificationIfAllowed(db, {
+			userId: recipientId,
+			type,
+			fromUserId: senderId,
+			target: normalizedTarget,
+		});
+		if (!notification) {
+			return res.json({ success: true, notification: null });
+		}
+		const serializedNotification = await serializeNotification(db, notification);
+		await publishNewNotification(req, recipientId, serializedNotification);
+		res.json({ success: true, notification: serializedNotification });
 	} catch (err) {
 		console.error('[notifications] create error:', err);
 		res.status(500).json({ error: '通知の作成に失敗しました' });
 	}
 });
 
-router.get('/', requireAuth, async (req, res) => {
+router.get({
+	path: '/',
+	summary: '通知一覧の取得',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = req.user.id;
 	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
@@ -184,10 +185,10 @@ router.get('/', requireAuth, async (req, res) => {
 			notifications = notifications.filter(n => new Date(n.created_at || n.createdAt) > since);
 		}
 
-			const [serializedNotifications, unreadCount] = await Promise.all([
-				serializeNotifications(db, notifications),
-				db.getUnreadNotificationCount(userId),
-			]);
+		const [serializedNotifications, unreadCount] = await Promise.all([
+			serializeNotifications(db, notifications),
+			db.getUnreadNotificationCount(userId),
+		]);
 
 		res.json({
 			notifications: serializedNotifications.filter(Boolean),
@@ -199,7 +200,11 @@ router.get('/', requireAuth, async (req, res) => {
 	}
 });
 
-router.get('/unread', requireAuth, async (req, res) => {
+router.get({
+	path: '/unread',
+	summary: '未読通知件数の取得',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = req.user.id;
 
@@ -212,7 +217,11 @@ router.get('/unread', requireAuth, async (req, res) => {
 	}
 });
 
-router.put('/:id/read', requireAuth, async (req, res) => {
+router.put({
+	path: '/:id/read',
+	summary: '個別通知の既読化',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const notificationId = parseInt(req.params.id, 10);
 	const userId = req.user.id;
@@ -229,17 +238,21 @@ router.put('/:id/read', requireAuth, async (req, res) => {
 		if (Number(notification.userId ?? notification.user_id) !== Number(userId)) {
 			return res.status(403).json({ error: 'Forbidden' });
 		}
-			await db.markNotificationAsRead(notificationId);
-			const unreadCount = await db.getUnreadNotificationCount(userId);
-			await publishNotificationUnreadCount(req, userId);
-			res.json({ success: true, notification_unread_count: unreadCount });
+		await db.markNotificationAsRead(notificationId);
+		const unreadCount = await db.getUnreadNotificationCount(userId);
+		await publishNotificationUnreadCount(req, userId);
+		res.json({ success: true, notification_unread_count: unreadCount });
 	} catch (err) {
 		console.error('[notifications] mark read error:', err);
 		res.status(500).json({ error: '既読処理に失敗しました' });
 	}
 });
 
-router.put('/:id/clicked', requireAuth, async (req, res) => {
+router.put({
+	path: '/:id/clicked',
+	summary: '個別通知のクリック済みマーク',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const notificationId = parseInt(req.params.id, 10);
 	const userId = req.user.id;
@@ -269,7 +282,11 @@ router.put('/:id/clicked', requireAuth, async (req, res) => {
 	}
 });
 
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete({
+	path: '/:id',
+	summary: '個別通知の削除',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const notificationId = parseInt(req.params.id, 10);
 	const userId = req.user.id;
@@ -288,16 +305,20 @@ router.delete('/:id', requireAuth, async (req, res) => {
 		if (Number(notification.userId) !== Number(userId)) {
 			return res.status(403).json({ error: 'Forbidden' });
 		}
-			await db.deleteNotification(notificationId);
-			await publishNotificationUnreadCount(req, userId);
-			res.json({ success: true });
+		await db.deleteNotification(notificationId);
+		await publishNotificationUnreadCount(req, userId);
+		res.json({ success: true });
 	} catch (err) {
 		console.error('[notifications] delete error:', err);
 		res.status(500).json({ error: '通知の削除に失敗しました' });
 	}
 });
 
-router.put('/read-all', requireAuth, async (req, res) => {
+router.put({
+	path: '/read-all',
+	summary: 'すべての通知の一括既読化',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = req.user.id;
 
@@ -312,7 +333,11 @@ router.put('/read-all', requireAuth, async (req, res) => {
 	}
 });
 
-router.put('/click-all', requireAuth, async (req, res) => {
+router.put({
+	path: '/click-all',
+	summary: 'すべての通知の一括クリック済み化',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const userId = req.user.id;
 

@@ -1,4 +1,4 @@
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const config = require('../config');
 const {
   requireAuth,
@@ -7,7 +7,11 @@ const {
 } = require('../middleware/auth');
 const SessionManager = require('../services/auth/SessionManager');
 
-const router = express.Router();
+const router = api.createRouter({
+  tag: 'push',
+  basePath: '/push',
+  description: 'Web Push 通知 API',
+});
 
 function getPushService(req) {
   return req.app.locals.pushNotificationService;
@@ -57,7 +61,11 @@ function normalizeSubscription(value) {
   };
 }
 
-router.get('/config', requireAuth, requireSessionPrincipal, async (req, res) => {
+router.get({
+  path: '/config',
+  summary: 'Web Push 設定（VAPID 公開鍵等）の取得',
+  auth: 'session',
+}, requireAuth, requireSessionPrincipal, async (req, res) => {
   const pushService = getPushService(req);
   const publicConfig = pushService?.getPublicConfiguration?.() || {
     enabled: false,
@@ -77,7 +85,11 @@ router.get('/config', requireAuth, requireSessionPrincipal, async (req, res) => 
   });
 });
 
-router.post('/subscriptions', requireAuth, requireSessionPrincipal, async (req, res) => {
+router.post({
+  path: '/subscriptions',
+  summary: 'Web Push 購読情報の登録',
+  auth: 'session',
+}, requireAuth, requireSessionPrincipal, async (req, res) => {
   if (!isSameOriginRequest(req)) {
     return res.status(403).json({ error: 'Cross-origin subscription requests are not allowed' });
   }
@@ -110,7 +122,11 @@ router.post('/subscriptions', requireAuth, requireSessionPrincipal, async (req, 
   }
 });
 
-router.delete('/subscriptions', requireAuth, requireSessionPrincipal, async (req, res) => {
+router.delete({
+  path: '/subscriptions',
+  summary: 'Web Push 購読情報の削除',
+  auth: 'session',
+}, requireAuth, requireSessionPrincipal, async (req, res) => {
   if (!isSameOriginRequest(req)) {
     return res.status(403).json({ error: 'Cross-origin subscription requests are not allowed' });
   }

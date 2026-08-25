@@ -1,9 +1,14 @@
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const { requireAuth } = require('../middleware/auth');
 const { createRateLimiter } = require('../middleware/rateLimit');
 const config = require('../config');
 
-const router = express.Router();
+const router = api.createRouter({
+  tag: 'verification',
+  basePath: '/verification-applications',
+  description: '認証マーク（公式バッジ）申請 API',
+});
+
 const verificationApplicationLimiter = createRateLimiter(config.rateLimit.verificationApplication);
 
 function getModerationService(req) {
@@ -20,7 +25,11 @@ function serializeVerificationApplication(application) {
   };
 }
 
-router.get('/me', requireAuth, async (req, res) => {
+router.get({
+  path: '/me',
+  summary: '自分の認証バッジ申請状態の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const service = getModerationService(req);
   if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {
@@ -32,7 +41,11 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/', requireAuth, verificationApplicationLimiter, async (req, res) => {
+router.post({
+  path: '/',
+  summary: '認証バッジの新規申請',
+  auth: 'required',
+}, requireAuth, verificationApplicationLimiter, async (req, res) => {
   const service = getModerationService(req);
   if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {

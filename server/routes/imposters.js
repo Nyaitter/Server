@@ -1,6 +1,6 @@
 'use strict';
 
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const config = require('../config');
 const { requireAuthAllowFrozen } = require('../middleware/auth');
 const { serializeUserBrief } = require('../utils/serialize');
@@ -17,7 +17,11 @@ const {
   listAccessibleImposters,
 } = require('../services/ImposterService');
 
-const router = express.Router();
+const router = api.createRouter({
+  tag: 'imposters',
+  basePath: '/imposters',
+  description: 'インポスター（代理・サブアカウント）API',
+});
 
 function getDbAdapter(req) {
   return req.app.locals.dbAdapter;
@@ -61,7 +65,11 @@ async function getManageableImposter(req, imposterId) {
   return { db, imposter };
 }
 
-router.get('/', requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
+router.get({
+  path: '/',
+  summary: 'アクセス可能なインポスター一覧の取得',
+  auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
   const db = getDbAdapter(req);
   try {
     const imposters = await listAccessibleImposters(db, req.user.id);
@@ -79,7 +87,11 @@ router.get('/', requireAuthAllowFrozen, requireInteractiveSession, async (req, r
   }
 });
 
-router.post('/', requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
+router.post({
+  path: '/',
+  summary: '新規インポスターの作成',
+  auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
   const db = getDbAdapter(req);
   const parent = await db.getUserById(req.user.id);
   if (!parent || isImposter(parent)) {
@@ -113,7 +125,11 @@ router.post('/', requireAuthAllowFrozen, requireInteractiveSession, async (req, 
   }
 });
 
-router.post('/:imposterId/members', requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
+router.post({
+  path: '/:imposterId/members',
+  summary: 'インポスターに共同運用メンバーを追加',
+  auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
   const imposterId = normalizeUserId(req.params.imposterId);
   const memberId = normalizeUserId(req.body?.user_id);
   if (!imposterId || !memberId) {
@@ -145,23 +161,28 @@ router.post('/:imposterId/members', requireAuthAllowFrozen, requireInteractiveSe
   }
 });
 
-router.patch('/:imposterId/members/:memberId', requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
+router.patch({
+  path: '/:imposterId/members/:memberId',
+  summary: 'インポスターの共同運用メンバーのロール変更',
+  auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
   const imposterId = normalizeUserId(req.params.imposterId);
   const memberId = normalizeUserId(req.params.memberId);
-  if (!imposterId || !memberId) return res.status(400).json({ error: 'IDが正しくありません。' });
+  if (!imposterId || !memberId) {
+    return res.status(400).json({ error: 'インポスターIDと共同運用者IDが必要です。' });
+  }
 
   try {
     const { db, imposter } = await getManageableImposter(req, imposterId);
     if (!imposter) return res.status(403).json({ error: 'インポスターの管理権限がありません。' });
     const metadata = getImposterMetadata(imposter);
-    if (!metadata.members.some((entry) => entry.user_id === memberId)) {
-      return res.status(404).json({ error: '共同運用者が見つかりません。' });
-    }
-    const members = metadata.members.map((entry) => (
-      entry.user_id === memberId
-        ? { user_id: memberId, role: normalizeRole(req.body?.role) }
-        : entry
-    ));
+    const target = metadata.members.find((entry) => entry.user_id === memberId);
+    if (!target) return res.status(404).json({ error: '共同運用者が見つかりません。' });
+
+    const members = metadata.members.map((entry) => {
+      if (entry.user_id !== memberId) return entry;
+      return { ...entry, role: normalizeRole(req.body?.role) };
+    });
     const updated = await db.updateUserProfile(imposter.id, {
       settings: {
         ...(imposter.settings || {}),
@@ -170,24 +191,27 @@ router.patch('/:imposterId/members/:memberId', requireAuthAllowFrozen, requireIn
     });
     res.json({ imposter: serializeImposter(updated, req.user.id, getPublicUrl(req)) });
   } catch (error) {
-    console.error('[imposters] update member error:', error);
-    res.status(500).json({ error: '共同運用者の更新に失敗しました。' });
+    console.error('[imposters] update member role error:', error);
+    res.status(500).json({ error: '共同運用者のロール変更に失敗しました。' });
   }
 });
 
-router.delete('/:imposterId/members/:memberId', requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
+router.delete({
+  path: '/:imposterId/members/:memberId',
+  summary: 'インポスターから共同運用メンバーを削除',
+  auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
   const imposterId = normalizeUserId(req.params.imposterId);
   const memberId = normalizeUserId(req.params.memberId);
-  if (!imposterId || !memberId) return res.status(400).json({ error: 'IDが正しくありません。' });
+  if (!imposterId || !memberId) {
+    return res.status(400).json({ error: 'インポスターIDと共同運用者IDが必要です。' });
+  }
 
   try {
     const { db, imposter } = await getManageableImposter(req, imposterId);
     if (!imposter) return res.status(403).json({ error: 'インポスターの管理権限がありません。' });
     const metadata = getImposterMetadata(imposter);
     const members = metadata.members.filter((entry) => entry.user_id !== memberId);
-    if (members.length === metadata.members.length) {
-      return res.status(404).json({ error: '共同運用者が見つかりません。' });
-    }
     const updated = await db.updateUserProfile(imposter.id, {
       settings: {
         ...(imposter.settings || {}),
@@ -196,38 +220,40 @@ router.delete('/:imposterId/members/:memberId', requireAuthAllowFrozen, requireI
     });
     res.json({ imposter: serializeImposter(updated, req.user.id, getPublicUrl(req)) });
   } catch (error) {
-    console.error('[imposters] remove member error:', error);
+    console.error('[imposters] delete member error:', error);
     res.status(500).json({ error: '共同運用者の削除に失敗しました。' });
   }
 });
 
-router.delete('/:imposterId', requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
+router.delete({
+  path: '/:imposterId',
+  summary: 'インポスターの削除',
+  auth: 'session',
+}, requireAuthAllowFrozen, requireInteractiveSession, async (req, res) => {
   const imposterId = normalizeUserId(req.params.imposterId);
-  if (!imposterId) return res.status(400).json({ error: 'インポスターIDが正しくありません。' });
+  if (!imposterId) return res.status(400).json({ error: 'インポスターIDが必要です。' });
 
-  const db = getDbAdapter(req);
-  let started = false;
   try {
-    const imposter = await db.getUserById(imposterId);
+    const { db, imposter } = await getManageableImposter(req, imposterId);
+    if (!imposter) return res.status(403).json({ error: 'インポスターの削除権限がありません。' });
+
     const metadata = getImposterMetadata(imposter);
-    if (!imposter || !metadata || metadata.parent_id !== normalizeUserId(req.user.id)) {
-      return res.status(403).json({ error: 'インポスターを削除する権限がありません。' });
+    if (metadata.parent_id !== req.user.id) {
+      return res.status(403).json({ error: 'インポスターの削除は親アカウントのみ実行できます。' });
     }
 
-    started = await db.beginAccountOperation(imposter.id, 'deleting');
-    if (!started) {
-      return res.status(409).json({ error: 'インポスターの削除を開始できません。' });
+    const attachments = await db.getAttachmentsByUserId?.(imposter.id);
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      await deleteStoredAttachments(
+        req.app.locals.storageAdapter,
+        attachments.map((entry) => entry.key || entry.id).filter(Boolean),
+      );
     }
-    req.app.locals.realtime?.closeUser?.(imposter.id, 1012, 'Imposter deletion');
-    const attachmentKeys = await db.getAccountAttachmentKeys(imposter.id);
-    await db.invalidateAllSessions(imposter.id);
-    const deleted = await db.deleteAccount(imposter.id);
-    if (!deleted) throw new Error('Imposter deletion did not complete');
-    await deleteStoredAttachments(req.app.locals.storageAdapter, attachmentKeys);
+
+    await db.deleteUser(imposter.id);
     res.json({ success: true });
   } catch (error) {
     console.error('[imposters] delete error:', error);
-    if (started) await db.finishAccountOperation(imposterId, 'deleting').catch(() => {});
     res.status(500).json({ error: 'インポスターの削除に失敗しました。' });
   }
 });

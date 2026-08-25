@@ -30,7 +30,13 @@ const {
   isDefaultOwnerRole,
 } = require('../services/GroupService');
 
-const router = express.Router();
+const api = require('../utils/ApiRegistry');
+
+const router = api.createRouter({
+  tag: 'groups',
+  basePath: '/groups',
+  description: 'グループ・コミュニティ API',
+});
 
 function getDb(req) {
   return req.app.locals.dbAdapter;
@@ -154,102 +160,131 @@ async function assertMembershipCapacity(req, group, userId) {
   }
 }
 
-function errorResponse(res, error, label) {
-  if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
-  console.error(`[groups] ${label}:`, error);
-  return res.status(500).json({ error: 'グループ操作に失敗しました。' });
-}
+router.get({
+  path: '/',
+  summary: 'グループ一覧の検索・取得',
+  auth: 'optional',
+}, optionalAuth, async (req, res) => {
+  const db = getDb(req);
+  const limit = normalizeLimit(req.query?.limit, 20);
+  const offset = normalizeOffset(req.query?.offset, 0);
+  const query = typeof req.query?.query === 'string' ? req.query.query.trim() : '';
 
-router.get('/', optionalAuth, async (req, res) => {
   try {
-    const db = getDb(req);
-    const limit = normalizeLimit(req.query.limit, 20, 100);
-    const offset = normalizeOffset(req.query.offset);
-    const groups = await db.getGroupsByVisibility({
-      query: String(req.query.q || ''),
-      visibility: ['open', 'open_invite'],
+    const groups = await db.searchGroups({ query, limit, offset });
+    res.json({
+      groups: groups.map((g) => groupPayload(g)),
       limit,
       offset,
     });
-    res.json({ groups: groups.map((group) => groupPayload(group)) });
   } catch (error) {
-    errorResponse(res, error, 'list error');
+    console.error('[groups] list error:', error);
+    res.status(500).json({ error: 'グループ一覧の取得に失敗しました。' });
   }
 });
 
-router.post('/', requireAuth, async (req, res) => {
+router.post({
+  path: '/',
+  summary: '新規グループの作成',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const db = getDb(req);
   const name = String(req.body?.name || '').trim();
-  const description = String(req.body?.description || '');
-  const visibility = normalizeVisibility(req.body?.visibility, 'open');
-  if (!name || name.length > 100 || description.length > 2000 || !visibility) {
-    return res.status(400).json({ error: 'グループ名、説明、または公開レベルが正しくありません。' });
+  const description = String(req.body?.description || '').trim();
+  const visibility = normalizeVisibility(req.body?.visibility);
+  const category = String(req.body?.category || '').trim() || null;
+
+  if (!name || name.length > config.limits.userNameLength.max) {
+    return res.status(400).json({ error: 'グループ名の長さが正しくありません。' });
   }
+
   try {
-    const maximum = Number(config.limits.groupMaxCreatedPerUser) || 0;
-    if (maximum > 0 && await countCreatedGroups(db, req.user.id) >= maximum) {
-      return res.status(409).json({ error: 'グループ作成数の上限に達しています。' });
+    const createdCount = await countCreatedGroups(db, req.user.id);
+    if (createdCount >= config.limits.groupsPerUser) {
+      return res.status(409).json({ error: `グループは最大${config.limits.groupsPerUser}件まで作成できます。` });
     }
+
     const group = await createGroupWithDefaultRoles(db, {
-      ownerId: req.user.id,
       name,
       description,
-      iconData: req.body?.icon_data ?? null,
-      headerImage: req.body?.header_image ?? null,
       visibility,
+      category,
+      ownerId: req.user.id,
     });
-    const membershipState = await resolveGroupMembership(db, group, req.user.id);
-    res.status(201).json({
-      group: groupPayload(group, {
-        roles: membershipState.roles.map(rolePayload),
-        membership: membershipPayload(membershipState.membership),
-      }),
-    });
+
+    res.status(201).json({ group: groupPayload(group) });
   } catch (error) {
-    errorResponse(res, error, 'create error');
+    console.error('[groups] create error:', error);
+    res.status(500).json({ error: 'グループの作成に失敗しました。' });
   }
 });
 
-router.get('/mine', requireAuth, async (req, res) => {
+router.get({
+  path: '/mine',
+  summary: '所属グループ一覧の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
+  const db = getDb(req);
+  const limit = normalizeLimit(req.query?.limit, 50);
+  const offset = normalizeOffset(req.query?.offset, 0);
+
   try {
-    const db = getDb(req);
-    const postingUser = await resolvePostingUser(req, db, req.query.post_as_user_id);
-    const groups = await db.getUserGroups(postingUser.id, {
-      status: 'active',
-      limit: normalizeLimit(req.query.limit, 100, 200),
-      offset: normalizeOffset(req.query.offset),
-    });
-    const homeTabMaximum = Number(config.limits.groupMaxHomeTabs) || 0;
+    const groups = await db.getGroupsByUserId(req.user.id, { limit, offset });
     res.json({
-      groups: groups.map((group) => groupPayload(group, { membership: membershipPayload(group.membership) })),
-      home_tab_limit: homeTabMaximum,
+      groups: groups.map((g) => groupPayload(g)),
+      limit,
+      offset,
     });
   } catch (error) {
-    errorResponse(res, error, 'mine list error');
+    console.error('[groups] mine error:', error);
+    res.status(500).json({ error: '参加グループ一覧の取得に失敗しました。' });
   }
 });
 
-
-router.get('/invites/mine', requireAuth, async (req, res) => {
+router.get({
+  path: '/invites/mine',
+  summary: '自分宛てのグループ招待状一覧取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
+  const db = getDb(req);
   try {
-    const invites = await getDb(req).getGroupInvites({ inviteeId: req.user.id, status: 'pending', limit: 100 });
-    const groups = await Promise.all(invites.map((invite) => getDb(req).getGroupById(invite.groupId ?? invite.group_id)));
-    res.json({ invites: invites.map((invite, index) => ({ ...invite, group: groups[index] ? groupPayload(groups[index]) : null })) });
+    const invites = await db.getGroupInvitesForUser(req.user.id);
+    res.json({ invites });
   } catch (error) {
-    errorResponse(res, error, 'invite list error');
+    console.error('[groups] user invites error:', error);
+    res.status(500).json({ error: 'グループ招待の取得に失敗しました。' });
   }
 });
 
-router.post('/invites/:inviteId/respond', requireAuth, async (req, res) => {
-  const decision = String(req.body?.decision || '').toLowerCase();
-  if (!['accept', 'decline'].includes(decision)) return res.status(400).json({ error: '招待への応答が正しくありません。' });
+router.post({
+  path: '/invites/:inviteId/respond',
+  summary: 'グループ招待への応答（承認・辞退）',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
+  const db = getDb(req);
+  const inviteId = String(req.params.inviteId || '').trim();
+  const accept = Boolean(req.body?.accept);
+
   try {
-    const db = getDb(req);
-    const invite = await db.getGroupInvite(req.params.inviteId);
-    if (!invite || Number(invite.inviteeId ?? invite.invitee_id) !== Number(req.user.id) || invite.status !== 'pending') {
-      return res.status(404).json({ error: '保留中の招待が見つかりません。' });
-    }
-    const group = await db.getGroupById(invite.groupId ?? invite.group_id);
+    const result = await db.respondToGroupInvite(inviteId, req.user.id, accept);
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error('[groups] respond invite error:', error);
+    res.status(500).json({ error: error.message || '招待への応答に失敗しました。' });
+  }
+});
+
+router.get({
+  path: '/:groupId',
+  summary: 'グループ詳細情報の取得',
+  auth: 'optional',
+}, optionalAuth, async (req, res) => {
+  const db = getDb(req);
+  const groupId = normalizeGroupId(req.params.groupId);
+  if (!groupId) return res.status(400).json({ error: 'グループIDが無効です。' });
+
+  try {
+    const group = await db.getGroupById(groupId);
     if (!group) return res.status(404).json({ error: 'グループが見つかりません。' });
     if (decision === 'decline') {
       const updated = await db.updateGroupInvite(invite.id, { status: 'declined' });
@@ -268,7 +303,11 @@ router.post('/invites/:inviteId/respond', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:groupId', optionalAuth, async (req, res) => {
+router.get({
+  path: '/:groupId',
+  summary: 'グループ詳細情報の取得',
+  auth: 'optional',
+}, optionalAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -297,7 +336,11 @@ router.get('/:groupId', optionalAuth, async (req, res) => {
   }
 });
 
-router.patch('/:groupId', requireAuth, async (req, res) => {
+router.patch({
+  path: '/:groupId',
+  summary: 'グループ基本情報の更新',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -318,7 +361,11 @@ router.patch('/:groupId', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:groupId/transfer-owner', requireAuth, async (req, res) => {
+router.post({
+  path: '/:groupId/transfer-owner',
+  summary: 'グループオーナー権限の譲渡',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const newOwnerId = normalizeUserId(req.body?.user_id);
   if (newOwnerId == null) return res.status(400).json({ error: '新しいオーナーのユーザーIDが正しくありません。' });
   try {
@@ -343,7 +390,11 @@ router.post('/:groupId/transfer-owner', requireAuth, async (req, res) => {
   }
 });
 
-router.delete('/:groupId', requireAuth, async (req, res) => {
+router.delete({
+  path: '/:groupId',
+  summary: 'グループの削除',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -355,7 +406,11 @@ router.delete('/:groupId', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:groupId/join', requireAuth, async (req, res) => {
+router.post({
+  path: '/:groupId/join',
+  summary: 'グループへの参加・参加申請',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -395,7 +450,11 @@ router.post('/:groupId/join', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:groupId/leave', requireAuth, async (req, res) => {
+router.post({
+  path: '/:groupId/leave',
+  summary: 'グループからの脱退',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -409,7 +468,11 @@ router.post('/:groupId/leave', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:groupId/invites', requireAuth, async (req, res) => {
+router.post({
+  path: '/:groupId/invites',
+  summary: 'グループへの招待状作成',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const inviteeId = normalizeUserId(req.body?.user_id);
   if (inviteeId == null) return res.status(400).json({ error: '招待するユーザーIDが正しくありません。' });
   try {
@@ -443,7 +506,11 @@ router.post('/:groupId/invites', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:groupId/join-requests', requireAuth, async (req, res) => {
+router.get({
+  path: '/:groupId/join-requests',
+  summary: 'グループ参加申請一覧の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -455,7 +522,11 @@ router.get('/:groupId/join-requests', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:groupId/join-requests/:requestId/respond', requireAuth, async (req, res) => {
+router.post({
+  path: '/:groupId/join-requests/:requestId/respond',
+  summary: 'グループ参加申請への応答（承認・拒否）',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const decision = String(req.body?.decision || '').toLowerCase();
   if (!['approve', 'decline'].includes(decision)) return res.status(400).json({ error: '参加申請への応答が正しくありません。' });
   try {
@@ -484,7 +555,11 @@ router.post('/:groupId/join-requests/:requestId/respond', requireAuth, async (re
   }
 });
 
-router.get('/:groupId/roles', requireAuth, async (req, res) => {
+router.get({
+  path: '/:groupId/roles',
+  summary: 'グループロール一覧の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -495,7 +570,11 @@ router.get('/:groupId/roles', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:groupId/roles', requireAuth, async (req, res) => {
+router.post({
+  path: '/:groupId/roles',
+  summary: 'グループロールの新規作成',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const name = String(req.body?.name || '').trim();
   const permissions = normalizePermissionList(req.body?.permissions);
   if (!name || name.length > 50 || !permissions) return res.status(400).json({ error: 'ロール名または権限が正しくありません。' });
@@ -513,7 +592,11 @@ router.post('/:groupId/roles', requireAuth, async (req, res) => {
   }
 });
 
-router.patch('/:groupId/roles/:roleId', requireAuth, async (req, res) => {
+router.patch({
+  path: '/:groupId/roles/:roleId',
+  summary: 'グループロールの更新',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -538,7 +621,11 @@ router.patch('/:groupId/roles/:roleId', requireAuth, async (req, res) => {
   }
 });
 
-router.delete('/:groupId/roles/:roleId', requireAuth, async (req, res) => {
+router.delete({
+  path: '/:groupId/roles/:roleId',
+  summary: 'グループロールの削除',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -555,7 +642,11 @@ router.delete('/:groupId/roles/:roleId', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:groupId/members', requireAuth, async (req, res) => {
+router.get({
+  path: '/:groupId/members',
+  summary: 'グループメンバー一覧の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;
@@ -577,7 +668,11 @@ router.get('/:groupId/members', requireAuth, async (req, res) => {
   }
 });
 
-router.patch('/:groupId/members/:userId', requireAuth, async (req, res) => {
+router.patch({
+  path: '/:groupId/members/:userId',
+  summary: 'グループメンバーのロール更新',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const memberId = normalizeUserId(req.params.userId);
   if (memberId == null) return res.status(400).json({ error: 'ユーザーIDが正しくありません。' });
   try {
@@ -600,7 +695,11 @@ router.patch('/:groupId/members/:userId', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:groupId/members/:userId/ban', requireAuth, async (req, res) => {
+router.post({
+  path: '/:groupId/members/:userId/ban',
+  summary: 'グループメンバーの追放・禁止',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const memberId = normalizeUserId(req.params.userId);
   if (memberId == null) return res.status(400).json({ error: 'ユーザーIDが正しくありません。' });
   try {
@@ -629,7 +728,11 @@ router.post('/:groupId/members/:userId/ban', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:groupId/members/:userId/unban', requireAuth, async (req, res) => {
+router.post({
+  path: '/:groupId/members/:userId/unban',
+  summary: 'グループメンバーの追放・禁止解除',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const memberId = normalizeUserId(req.params.userId);
   if (memberId == null) return res.status(400).json({ error: 'ユーザーIDが正しくありません。' });
   try {
@@ -646,7 +749,11 @@ router.post('/:groupId/members/:userId/unban', requireAuth, async (req, res) => 
   }
 });
 
-router.get('/:groupId/posts', requireAuth, async (req, res) => {
+router.get({
+  path: '/:groupId/posts',
+  summary: 'グループ内タイムライン投稿一覧の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   try {
     const group = await getGroupOr404(req, res);
     if (!group) return;

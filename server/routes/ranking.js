@@ -1,7 +1,11 @@
-const express = require('express');
+const api = require('../utils/ApiRegistry');
 const { requireAuth } = require('../middleware/auth');
 
-const router = express.Router();
+const router = api.createRouter({
+  tag: 'ranking',
+  basePath: '/ranking',
+  description: 'ユーザーランキング API',
+});
 
 function getDbAdapter(req) {
   return req.app.locals.dbAdapter;
@@ -9,7 +13,11 @@ function getDbAdapter(req) {
 
 const VALID_RANKING_TYPES = new Set(['followers', 'posts', 'likes', 'stars']);
 
-router.get('/me', requireAuth, async (req, res) => {
+router.get({
+  path: '/me',
+  summary: '自分のランキング順位（フォロワー・投稿・いいね・スター）の取得',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
   const db = getDbAdapter(req);
   const userId = req.user.id;
 
@@ -33,7 +41,11 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:type', async (req, res) => {
+router.get({
+  path: '/:type',
+  summary: '指定した項目のランキング上位ユーザー一覧取得',
+  auth: 'none',
+}, async (req, res) => {
   const db = getDbAdapter(req);
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
   const type = req.params.type;
