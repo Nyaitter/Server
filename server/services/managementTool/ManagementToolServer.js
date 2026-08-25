@@ -53,6 +53,7 @@ class ManagementToolServer {
 
     this.app = express();
     this.app.disable('x-powered-by');
+    this.app.set('trust proxy', true);
     this.app.use(express.json({ limit: '1mb' }));
     this.app.use(express.urlencoded({ extended: false }));
 
@@ -98,7 +99,7 @@ class ManagementToolServer {
     this.app.get('/auth/login', async (req, res) => {
       try {
         const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-        const host = req.headers.host || `localhost:${this.port}`;
+        const host = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${this.port}`;
         const redirectUri = `${protocol}://${host}/auth/callback`;
 
         const authReq = await this.authManager.createAuthorizationRequest({
@@ -107,7 +108,7 @@ class ManagementToolServer {
           name: 'Nyaitter Management Tool',
           redirect_uri: redirectUri,
           scopes: ['profile:read'],
-        });
+        }, req);
 
         return res.redirect(authReq.auth_url);
       } catch (err) {

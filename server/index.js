@@ -468,6 +468,12 @@ let postShareServer = null;
 
 let managementToolServer = null;
 
+// ── NMT Sub-Route Mount (for reverse proxy & codespaces) ────────────────────────
+app.use('/nmt', (req, res, next) => {
+    if (!config.nmt?.enabled || !managementToolServer?.app) return next();
+    managementToolServer.app(req, res, next);
+});
+
 // ── Request Monitoring Hook (NMT) ──────────────────────────────────────────────
 app.use((req, res, next) => {
     if (!config.nmt?.enabled) return next();
@@ -564,10 +570,22 @@ app.locals.postActionQueue = postActionQueue;
 app.locals.postKeywordBackfillQueue = postKeywordBackfillQueue;
 app.locals.postKeywordBackfillService = postKeywordBackfillService;
 
+if (config.nmt?.enabled) {
+    try {
+        const ManagementToolServer = require('./services/managementTool/ManagementToolServer');
+        managementToolServer = new ManagementToolServer({ config, dbAdapter });
+        managementToolServer.start();
+        app.locals.managementToolServer = managementToolServer;
+    } catch (err) {
+        console.error('[management-tool] Failed to initialize NyaitterManagementTool:', err);
+    }
+}
+
 async function startServer() {
     await dbAdapter.connect();
     app.locals.dbAdapter = dbAdapter;
     app.locals.storageAdapter = storageAdapter;
+    managementToolServer?.setDbAdapter(dbAdapter);
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
     pollExpirationScheduler = startPollExpirationScheduler(dbAdapter, realtimeConnections, pushNotificationService);
     operatorControl = await startOperatorControlServer({
@@ -623,17 +641,6 @@ async function startServer() {
             await embeddedMailServer.start().catch((err) => {
                 console.error('[mail-server] Failed to start embedded mail server:', err.message);
             });
-        }
-
-        // ── NyaitterManagementTool (NMT) オンデマンド起動 ──────────────────────
-        if (config.nmt?.enabled) {
-            try {
-                const ManagementToolServer = require('./services/managementTool/ManagementToolServer');
-                managementToolServer = new ManagementToolServer({ config, dbAdapter });
-                managementToolServer.start();
-            } catch (err) {
-                console.error('[management-tool] Failed to start NyaitterManagementTool:', err);
-            }
         }
 
         console.log('[server] Ready. DB Adapter initialized.');
