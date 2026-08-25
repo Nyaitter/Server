@@ -35,7 +35,9 @@ class ErrorManager {
     this.githubToken = config.githubToken || '';
     this.githubRepo = config.githubRepo || 'Nyaitter/Server';
     this.errors = [];
+    this._lastFileMtime = 0;
     this._load();
+    this._startFileWatcher();
   }
 
   setNotificationManager(notificationManager) {
@@ -48,6 +50,31 @@ class ErrorManager {
 
   setLogHub(logHub) {
     this.logHub = logHub;
+  }
+
+  _broadcast(record, eventType = 'error_updated') {
+    if (this.logHub && typeof this.logHub.broadcastError === 'function') {
+      try {
+        this.logHub.broadcastError(record, eventType);
+      } catch (_) {}
+    }
+  }
+
+  _startFileWatcher() {
+    setInterval(() => {
+      try {
+        if (!fs.existsSync(ERRORS_FILE)) return;
+        const mtime = fs.statSync(ERRORS_FILE).mtimeMs;
+        if (mtime > this._lastFileMtime && this._lastFileMtime > 0) {
+          const oldFirstId = this.errors[0]?.id;
+          this._load();
+          const newFirst = this.errors[0];
+          if (newFirst && newFirst.id !== oldFirstId) {
+            this._broadcast(newFirst, 'error_created');
+          }
+        }
+      } catch (_) {}
+    }, 1000);
   }
 
   updateConfig(config = {}) {
@@ -64,6 +91,7 @@ class ErrorManager {
     try {
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
       if (fs.existsSync(ERRORS_FILE)) {
+        this._lastFileMtime = fs.statSync(ERRORS_FILE).mtimeMs;
         const raw = fs.readFileSync(ERRORS_FILE, 'utf8');
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) this.errors = parsed.slice(-MAX_ERROR_RECORDS);
@@ -78,6 +106,9 @@ class ErrorManager {
     try {
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.writeFileSync(ERRORS_FILE, JSON.stringify(this.errors.slice(-MAX_ERROR_RECORDS), null, 2), 'utf8');
+      if (fs.existsSync(ERRORS_FILE)) {
+        this._lastFileMtime = fs.statSync(ERRORS_FILE).mtimeMs;
+      }
     } catch (e) {
       console.warn('[NMT-Errors] Failed to save error logs:', e.message);
     }
@@ -100,6 +131,7 @@ class ErrorManager {
       existing.lastOccurredAt = new Date().toISOString();
       existing.context = { ...existing.context, ...context };
       this._save();
+      this._broadcast(existing, 'error_updated');
       return existing;
     }
 
@@ -130,6 +162,7 @@ class ErrorManager {
     this.errors.unshift(errorRecord);
     if (this.errors.length > MAX_ERROR_RECORDS) this.errors.pop();
     this._save();
+    this._broadcast(errorRecord, 'error_created');
 
     // 通知マネージャー経由で管理者にエラー通知
     if (this.notificationManager) {
@@ -176,6 +209,7 @@ class ErrorManager {
     } finally {
       record.analyzing = false;
       this._save();
+      this._broadcast(record, 'error_updated');
     }
   }
 
@@ -238,6 +272,7 @@ class ErrorManager {
       }
 
       this._save();
+      this._broadcast(record, 'error_updated');
       return { analysis: record.analysis, fixed: record.fixed, modifiedFiles: record.modifiedFiles };
     } catch (err) {
       console.error('[NMT-AutoFix] Failed to execute auto fix:', err);
@@ -247,6 +282,7 @@ class ErrorManager {
     } finally {
       record.fixing = false;
       this._save();
+      this._broadcast(record, 'error_updated');
     }
   }
 
@@ -297,6 +333,7 @@ ${record.analysis?.content || '(詳細なし)'}
       if (prUrl) {
         record.prUrl = prUrl;
         this._save();
+        this._broadcast(record, 'error_updated');
       }
 
       return prUrl;
@@ -382,6 +419,7 @@ ${record.analysis.content}` : ''}
     if (issueUrl) {
       record.issueUrl = issueUrl;
       this._save();
+      this._broadcast(record, 'error_updated');
     }
     return issueUrl;
   }
@@ -439,6 +477,7 @@ ${record.analysis.content}` : ''}
     if (['open', 'resolved', 'ignored'].includes(status)) {
       record.status = status;
       this._save();
+      this._broadcast(record, 'error_updated');
     }
     return record;
   }

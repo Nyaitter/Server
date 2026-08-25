@@ -27,6 +27,14 @@ class LogHubManager {
   static appendExternalLog(entry) {
     try {
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      if (fs.existsSync(UNIFIED_LOG_FILE)) {
+        const stats = fs.statSync(UNIFIED_LOG_FILE);
+        if (stats.size > MAX_LOG_FILE_SIZE) {
+          const rotated = `${UNIFIED_LOG_FILE}.1`;
+          if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
+          fs.renameSync(UNIFIED_LOG_FILE, rotated);
+        }
+      }
       const logItem = {
         id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         timestamp: entry.timestamp || new Date().toISOString(),
@@ -43,6 +51,48 @@ class LogHubManager {
     }
   }
 
+  static hookServerProcess(source = 'server') {
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+    const handleWrite = (chunk, isError = false) => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      const lines = text.split('\n');
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let type = isError ? 'error' : 'system';
+        let level = isError ? 'error' : 'info';
+        if (line.includes('[ERROR]') || line.includes('[server] Error') || line.includes('Error:')) {
+          type = 'error';
+          level = 'error';
+        } else if (line.includes('[SECURITY]') || line.includes('[RateLimit]')) {
+          type = 'security';
+          level = 'warn';
+        } else if (line.includes('[AI]')) {
+          type = 'ai';
+        }
+
+        LogHubManager.appendExternalLog({
+          type,
+          level,
+          message: line,
+          source,
+        });
+      }
+    };
+
+    process.stdout.write = (chunk, encoding, cb) => {
+      handleWrite(chunk, false);
+      return originalStdoutWrite(chunk, encoding, cb);
+    };
+
+    process.stderr.write = (chunk, encoding, cb) => {
+      handleWrite(chunk, true);
+      return originalStderrWrite(chunk, encoding, cb);
+    };
+  }
+
   _startFileWatcher() {
     // 外部プロセス（NyaitterServer 本体）からのログ追記をリアルタイム監視
     let lastSize = 0;
@@ -52,7 +102,7 @@ class LogHubManager {
       }
     } catch (_) {}
 
-    setInterval(() => {
+    const checkFile = () => {
       try {
         if (!fs.existsSync(UNIFIED_LOG_FILE)) return;
         const currentSize = fs.statSync(UNIFIED_LOG_FILE).size;
@@ -75,7 +125,6 @@ class LogHubManager {
           for (const line of lines) {
             try {
               const item = JSON.parse(line);
-              // 重複チェック（ID が既にあるか確認）
               if (!this.logs.some((l) => l.id === item.id)) {
                 this.logs.push(item);
                 if (this.logs.length > MAX_LOG_LINES) this.logs.shift();
@@ -85,7 +134,9 @@ class LogHubManager {
           }
         });
       } catch (_) {}
-    }, 1000);
+    };
+
+    setInterval(checkFile, 300);
   }
 
   _load() {
@@ -157,6 +208,25 @@ class LogHubManager {
     this.serverControl = serverControl;
   }
 
+  setErrorManager(errorManager) {
+    this.errorManager = errorManager;
+  }
+
+  broadcastError(errorRecord, eventType = 'error_created') {
+    if (!this.wss || !this.wss.clients) return;
+    const msg = JSON.stringify({
+      event: eventType,
+      error: errorRecord,
+    });
+    for (const client of this.wss.clients) {
+      if (client.readyState === 1) { // OPEN
+        try {
+          client.send(msg);
+        } catch (_) {}
+      }
+    }
+  }
+
   attachHttpServer(httpServer) {
     if (this.wss) return;
 
@@ -214,6 +284,14 @@ class LogHubManager {
         } catch (_) {}
       }
 
+      // 接続時に最新のエラー一覧を送信
+      if (this.errorManager && typeof this.errorManager.getErrors === 'function') {
+        try {
+          const errorData = this.errorManager.getErrors({ limit: 50 });
+          ws.send(JSON.stringify({ event: 'init_errors', errors: errorData.errors || [] }));
+        } catch (_) {}
+      }
+
       ws.on('message', async (message) => {
         try {
           const data = JSON.parse(message);
@@ -229,6 +307,15 @@ class LogHubManager {
             if (this.serverControl && typeof this.serverControl.getStatus === 'function') {
               const status = await this.serverControl.getStatus();
               ws.send(JSON.stringify({ event: 'server_status', status }));
+            }
+          } else if (data.action === 'get_errors') {
+            if (this.errorManager && typeof this.errorManager.getErrors === 'function') {
+              const errorData = this.errorManager.getErrors({
+                status: data.status,
+                search: data.search,
+                limit: data.limit || 50,
+              });
+              ws.send(JSON.stringify({ event: 'errors_data', errors: errorData.errors || [] }));
             }
           }
         } catch (_) {}

@@ -38,6 +38,10 @@ const { getPublicUrl } = require('./utils/nyaitterAddress');
 const { startOperatorControlServer } = require('./utils/operatorControl');
 const { getEmbeddedMailServer } = require('./services/mail/EmbeddedMailServer');
 const { isCrawler, generatePostOgpTags, generatePostHtml } = require('./services/OgpService');
+const LogHubManager = require('./services/managementTool/LogHubManager');
+
+// NyaitterServer 本体の全標準出力を NMT Unified Logs にフック
+LogHubManager.hookServerProcess('server');
 
 let embeddedMailServer = null;
 
@@ -469,8 +473,6 @@ let postShareServer = null;
 let managementToolServer = null;
 
 // ── Request Monitoring Hook (NMT) ──────────────────────────────────────────────
-const LogHubManager = require('./services/managementTool/LogHubManager');
-
 app.use((req, res, next) => {
     if (!config.nmt?.enabled) return next();
     const start = Date.now();

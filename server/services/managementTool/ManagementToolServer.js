@@ -652,6 +652,7 @@ class ManagementToolServer {
 
     this.httpServer.listen(this.port, () => {
       this.logHub.setServerControl(this.serverControl);
+      this.logHub.setErrorManager(this.errorManager);
       this.logHub.attachHttpServer(this.httpServer);
       console.log(`\n🐾 [NyaitterManagementTool] Started on port ${this.port} (IPv4/IPv6 dual-stack)`);
       console.log(`   - Error Logging & AI Assistance: Active`);

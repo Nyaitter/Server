@@ -93,61 +93,102 @@ async function loadActiveTabData() {
 }
 
 // ── 1. Errors ────────────────────────────────────────────────────────────
-async function loadErrors() {
+let cachedErrorsData = [];
+let currentOpenErrorId = null;
+
+function renderErrors(errors = cachedErrorsData) {
   const listEl = document.getElementById('errors-list');
-  const status = document.getElementById('error-filter-status').value;
-  const search = document.getElementById('error-search-input').value.trim();
+  if (!listEl) return;
 
-  try {
-    const data = await api(`/errors?status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`);
-    const errors = data.errors || [];
+  const status = document.getElementById('error-filter-status')?.value || 'all';
+  const search = (document.getElementById('error-search-input')?.value || '').trim().toLowerCase();
 
-    const openCount = errors.filter((e) => e.status === 'open').length;
-    const badge = document.getElementById('open-error-badge');
+  let filtered = errors;
+  if (status && status !== 'all') {
+    filtered = filtered.filter((e) => e.status === status);
+  }
+  if (search) {
+    filtered = filtered.filter((e) =>
+      (e.message || '').toLowerCase().includes(search) ||
+      (e.context?.url || '').toLowerCase().includes(search)
+    );
+  }
+
+  const openCount = errors.filter((e) => e.status === 'open').length;
+  const badge = document.getElementById('open-error-badge');
+  if (badge) {
     if (openCount > 0) {
       badge.textContent = openCount;
       badge.classList.remove('hidden');
     } else {
       badge.classList.add('hidden');
     }
+  }
 
-    if (errors.length === 0) {
-      listEl.innerHTML = '<div class="empty-state">No errors recorded.</div>';
-      return;
-    }
+  if (filtered.length === 0) {
+    listEl.innerHTML = '<div class="empty-state">No errors recorded.</div>';
+    return;
+  }
 
-    listEl.innerHTML = errors.map((err) => `
-      <div class="card" data-error-id="${escapeHTML(err.id)}">
-        <div class="card-header">
-          <span class="card-title">${escapeHTML(err.message)}</span>
-          <span class="tag tag-${err.status}">${err.status.toUpperCase()}</span>
-        </div>
-        <div class="card-meta">
-          <span>${new Date(err.timestamp).toLocaleTimeString()}</span>
-          <span>Hits: ${err.occurrences || 1}</span>
-          ${err.fixed ? '<span style="color:#3fb950; font-weight:bold;">[Fixed]</span>' : ''}
-          ${err.analysis ? '<span style="color:var(--primary-color)">[Analyzed]</span>' : ''}
-          ${err.prUrl ? `<a href="${escapeHTML(err.prUrl)}" target="_blank" onclick="event.stopPropagation()" style="color:#58a6ff; font-weight:bold;">PR #${err.prUrl.split('/').pop()}</a>` : ''}
-          ${err.issueUrl ? `<a href="${escapeHTML(err.issueUrl)}" target="_blank" onclick="event.stopPropagation()">Issue #${err.issueUrl.split('/').pop()}</a>` : ''}
-        </div>
+  listEl.innerHTML = filtered.map((err) => `
+    <div class="card" data-error-id="${escapeHTML(err.id)}">
+      <div class="card-header">
+        <span class="card-title">${escapeHTML(err.message)}</span>
+        <span class="tag tag-${err.status}">${err.status.toUpperCase()}</span>
       </div>
-    `).join('');
+      <div class="card-meta">
+        <span>${new Date(err.timestamp).toLocaleTimeString()}</span>
+        <span>Hits: ${err.occurrences || 1}</span>
+        ${err.fixed ? '<span style="color:#3fb950; font-weight:bold;">[Fixed]</span>' : ''}
+        ${err.analysis ? '<span style="color:var(--primary-color)">[Analyzed]</span>' : ''}
+        ${err.prUrl ? `<a href="${escapeHTML(err.prUrl)}" target="_blank" onclick="event.stopPropagation()" style="color:#58a6ff; font-weight:bold;">PR #${err.prUrl.split('/').pop()}</a>` : ''}
+        ${err.issueUrl ? `<a href="${escapeHTML(err.issueUrl)}" target="_blank" onclick="event.stopPropagation()">Issue #${err.issueUrl.split('/').pop()}</a>` : ''}
+      </div>
+    </div>
+  `).join('');
 
-    listEl.querySelectorAll('.card').forEach((card) => {
-      card.addEventListener('click', () => openErrorDetail(card.dataset.errorId));
-    });
-  } catch (err) {
-    listEl.innerHTML = `<div class="error-msg">Failed to load errors: ${escapeHTML(err.message)}</div>`;
+  listEl.querySelectorAll('.card').forEach((card) => {
+    card.addEventListener('click', () => openErrorDetail(card.dataset.errorId));
+  });
+}
+
+function handleIncomingLiveError(errorRecord, eventType) {
+  if (!errorRecord || !errorRecord.id) return;
+  const idx = cachedErrorsData.findIndex((e) => e.id === errorRecord.id);
+  if (idx >= 0) {
+    cachedErrorsData[idx] = { ...cachedErrorsData[idx], ...errorRecord };
+  } else {
+    cachedErrorsData.unshift(errorRecord);
+  }
+  renderErrors();
+
+  if (currentOpenErrorId === errorRecord.id) {
+    openErrorDetail(errorRecord.id, false);
   }
 }
 
-document.getElementById('error-filter-status').addEventListener('change', loadErrors);
-document.getElementById('error-search-input').addEventListener('input', debounce(loadErrors, 300));
+async function loadErrors() {
+  const listEl = document.getElementById('errors-list');
+  const status = document.getElementById('error-filter-status')?.value || 'all';
+  const search = (document.getElementById('error-search-input')?.value || '').trim();
+
+  try {
+    const data = await api(`/errors?status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`);
+    cachedErrorsData = data.errors || [];
+    renderErrors(cachedErrorsData);
+  } catch (err) {
+    if (listEl) listEl.innerHTML = `<div class="error-msg">Failed to load errors: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+document.getElementById('error-filter-status').addEventListener('change', () => renderErrors());
+document.getElementById('error-search-input').addEventListener('input', debounce(() => renderErrors(), 200));
 document.getElementById('refresh-errors-btn').addEventListener('click', loadErrors);
 
-async function openErrorDetail(errorId) {
+async function openErrorDetail(errorId, showOverlay = true) {
+  currentOpenErrorId = errorId;
   const err = await api(`/errors/${encodeURIComponent(errorId)}`);
-  if (!err) return;
+  if (!err || currentOpenErrorId !== errorId) return;
 
   const modalTitle = document.getElementById('modal-title');
   const modalBody = document.getElementById('modal-body');
@@ -194,7 +235,7 @@ async function openErrorDetail(errorId) {
     try {
       const res = await api(`/errors/${encodeURIComponent(errorId)}/fix`, { method: 'POST' });
       alert(res.fixed ? `Auto-fix succeeded! Modified: ${res.modifiedFiles?.join(', ')}` : 'Fix completed.');
-      openErrorDetail(errorId);
+      openErrorDetail(errorId, false);
       loadErrors();
     } catch (e) {
       alert(`Auto-fix error: ${e.message}`);
@@ -210,7 +251,7 @@ async function openErrorDetail(errorId) {
     try {
       const res = await api(`/errors/${encodeURIComponent(errorId)}/pr`, { method: 'POST' });
       alert(`Pull Request created: ${res.prUrl}`);
-      openErrorDetail(errorId);
+      openErrorDetail(errorId, false);
       loadErrors();
     } catch (e) {
       alert(`PR creation error: ${e.message}`);
@@ -225,7 +266,7 @@ async function openErrorDetail(errorId) {
     btn.textContent = 'Analyzing...';
     try {
       await api(`/errors/${encodeURIComponent(errorId)}/analyze`, { method: 'POST' });
-      openErrorDetail(errorId);
+      openErrorDetail(errorId, false);
     } catch (e) {
       alert(`AI error: ${e.message}`);
       btn.disabled = false;
@@ -240,7 +281,7 @@ async function openErrorDetail(errorId) {
     try {
       const res = await api(`/errors/${encodeURIComponent(errorId)}/issue`, { method: 'POST' });
       alert(`Issue created: ${res.issueUrl}`);
-      openErrorDetail(errorId);
+      openErrorDetail(errorId, false);
     } catch (e) {
       alert(`Issue error: ${e.message}`);
       btn.disabled = false;
@@ -260,7 +301,7 @@ async function openErrorDetail(errorId) {
     loadErrors();
   });
 
-  showModal();
+  if (showOverlay) showModal();
 }
 
 // ── 2. Admins ────────────────────────────────────────────────────────────
@@ -840,6 +881,11 @@ function initUnifiedLogsWS() {
           handleIncomingLiveLog(data.log);
         } else if (data.event === 'server_status') {
           renderServerStatus(data.status);
+        } else if (data.event === 'init_errors' || data.event === 'errors_data') {
+          cachedErrorsData = data.errors || [];
+          renderErrors(cachedErrorsData);
+        } else if (data.event === 'error_created' || data.event === 'error_updated' || data.event === 'error') {
+          handleIncomingLiveError(data.error, data.event);
         }
       } catch (_) {}
     };
@@ -1215,6 +1261,7 @@ function showModal() {
 }
 
 function closeModal() {
+  currentOpenErrorId = null;
   document.getElementById('detail-modal').classList.add('hidden');
 }
 
