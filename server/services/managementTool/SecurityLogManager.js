@@ -23,13 +23,18 @@ const SUSPICIOUS_PATH_PATTERNS = [
 ];
 
 class SecurityLogManager {
-  constructor({ aiService, config = {} } = {}) {
+  constructor({ aiService, config = {}, notificationManager = null } = {}) {
     this.aiService = aiService;
+    this.notificationManager = notificationManager;
     this.autoAnalysis = config.autoAnalysis ?? false;
     this.securityEvents = [];
     this.recentAccessLogs = [];
     this.ipRequestCounts = new Map(); // ip -> { count, lastSeen, 404s }
     this._load();
+  }
+
+  setNotificationManager(notificationManager) {
+    this.notificationManager = notificationManager;
   }
 
   updateConfig(config = {}) {
@@ -155,6 +160,15 @@ class SecurityLogManager {
     this.securityEvents.unshift(eventRecord);
     if (this.securityEvents.length > MAX_SECURITY_EVENTS) this.securityEvents.pop();
     this._save();
+
+    if (this.notificationManager) {
+      this.notificationManager.broadcast({
+        type: 'security_alert',
+        title: `🛡️ セキュリティ警告: ${eventRecord.reason}`,
+        message: `${eventRecord.ip} (${eventRecord.method} ${eventRecord.url})`,
+        data: eventRecord,
+      });
+    }
 
     if (this.autoAnalysis && this.aiService) {
       this.triggerAnalysis(id).catch((e) => console.warn('[NMT-Security] Auto AI analysis error:', e.message));

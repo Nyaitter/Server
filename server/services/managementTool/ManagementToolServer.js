@@ -10,26 +10,44 @@ const ErrorManager = require('./ErrorManager');
 const SecurityLogManager = require('./SecurityLogManager');
 const AdminManager = require('./AdminManager');
 const ServerControlManager = require('./ServerControlManager');
+const ManagementNotificationManager = require('./ManagementNotificationManager');
+const AccessApprovalManager = require('./AccessApprovalManager');
+const LogHubManager = require('./LogHubManager');
 const NyaitterAuthManager = require('../auth/NyaitterAuthManager');
 const { getPublicUrl } = require('../../utils/nyaitterAddress');
 
 class ManagementToolServer {
-  constructor({ config, dbAdapter, shutdownFn, getStatusFn } = {}) {
+  constructor({ config, dbAdapter, shutdownFn, getStatusFn, mainPushService = null, realtimeService = null } = {}) {
     this.config = config.nmt || {};
     this.mainConfig = config;
     this.dbAdapter = dbAdapter;
     this.port = this.config.port || 4040;
     this.host = this.config.host || '0.0.0.0';
 
+    this.sessions = new Map(); // token -> { userId, admin, expiresAt }
+
     // サービス群初期化
+    this.logHub = new LogHubManager({ sessions: this.sessions });
+    this.notificationManager = new ManagementNotificationManager({ mainPushService, realtimeService });
+    this.approvalManager = new AccessApprovalManager({ notificationManager: this.notificationManager });
     this.aiService = new AiAnalysisService(this.config);
-    this.errorManager = new ErrorManager({ aiService: this.aiService, config: this.config });
-    this.securityManager = new SecurityLogManager({ aiService: this.aiService, config: this.config });
+    this.aiService.setApprovalManager(this.approvalManager);
+    this.errorManager = new ErrorManager({
+      aiService: this.aiService,
+      config: this.config,
+      notificationManager: this.notificationManager,
+      approvalManager: this.approvalManager,
+    });
+    this.errorManager.setLogHub(this.logHub);
+    this.securityManager = new SecurityLogManager({
+      aiService: this.aiService,
+      config: this.config,
+      notificationManager: this.notificationManager,
+    });
     this.adminManager = new AdminManager({ dbAdapter });
     this.serverControl = new ServerControlManager({ shutdownFn, getStatusFn });
     this.authManager = new NyaitterAuthManager({ dbAdapter });
 
-    this.sessions = new Map(); // token -> { userId, admin, expiresAt }
     this.app = null;
     this.httpServer = null;
   }
@@ -47,6 +65,14 @@ class ManagementToolServer {
 
   // ── メインサーバーからのフック ─────────────────────────────────────────
   recordError(err, context = {}) {
+    const msg = typeof err === 'string' ? err : err.message || 'Unknown Error';
+    this.logHub.addLog({
+      type: 'error',
+      level: 'error',
+      message: `[Error] ${msg}${context.url ? ` at ${context.method || 'GET'} ${context.url}` : ''}`,
+      source: 'error-handler',
+      details: { stack: err.stack, context },
+    });
     return this.errorManager.recordError(err, context);
   }
 
@@ -74,9 +100,17 @@ class ManagementToolServer {
       const token = authHeader.replace(/^Bearer\s+/i, '').trim();
       if (!token) return res.status(401).json({ error: '認証が必要です。' });
 
-      // NMT 内部セッション確認
+      // NMT 内部セッション確認 (TTL有効期限チェック)
       const session = this.sessions.get(token);
-      let userId = session?.userId;
+      let userId = null;
+
+      if (session) {
+        if (session.expiresAt && Date.now() > session.expiresAt) {
+          this.sessions.delete(token);
+          return res.status(401).json({ error: 'セッションの有効期限が切れています。再度ログインしてください。' });
+        }
+        userId = session.userId;
+      }
 
       // Nyaitter メインセッション直接検証
       if (!userId && typeof this.dbAdapter.getSession === 'function') {
@@ -105,8 +139,10 @@ class ManagementToolServer {
     // 1. NyaitterAuth 認可画面へのリダイレクト
     this.app.get('/auth/login', async (req, res) => {
       try {
-        const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-        const currentHost = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${this.port}`;
+        const protocol = req.headers['x-forwarded-proto'] === 'https' ? 'https' : (req.protocol === 'https' ? 'https' : 'http');
+        const rawHost = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${this.port}`;
+        // ホストヘッダーのサニタイズ（安全な文字種のみ許可）
+        const currentHost = /^[a-zA-Z0-9.\-:]+$/.test(rawHost) ? rawHost : `localhost:${this.port}`;
         
         // NMT コールバックURL
         const nmtPublicUrl = this.config.publicUrl ? this.config.publicUrl.replace(/\/+$/, '') : `${protocol}://${currentHost}`;
@@ -330,6 +366,15 @@ class ManagementToolServer {
         autoFix: this.errorManager.autoFix,
         autoIssue: this.errorManager.autoIssue,
         autoPr: this.errorManager.autoPr,
+        allowBash: this.aiService.allowBash,
+        requireApprovalForEdit: this.aiService.requireApprovalForEdit,
+        requireApprovalForBash: this.aiService.requireApprovalForBash,
+        guardrails: this.mainConfig?.nmt?.guardrails || {
+          restrictToGitTracked: true,
+          syntaxValidation: true,
+          blockEnvModification: true,
+          blockSuspiciousCommands: true,
+        },
         aiModel: this.aiService.preferredModel || 'auto',
         githubToken: this.errorManager.githubToken ? '********' : '',
         githubRepo: this.errorManager.githubRepo,
@@ -339,13 +384,35 @@ class ManagementToolServer {
     });
 
     this.app.post('/api/settings', authMiddleware, (req, res) => {
-      const { autoAnalysis, autoFix, autoIssue, autoPr, aiModel, githubToken, githubRepo, geminiApiKey, openaiApiKey } = req.body;
+      const {
+        autoAnalysis,
+        autoFix,
+        autoIssue,
+        autoPr,
+        allowBash,
+        requireApprovalForEdit,
+        requireApprovalForBash,
+        guardrails,
+        aiModel,
+        githubToken,
+        githubRepo,
+        geminiApiKey,
+        openaiApiKey,
+      } = req.body;
       
       const newSettings = {};
       if (autoAnalysis !== undefined) newSettings.autoAnalysis = autoAnalysis;
       if (autoFix !== undefined) newSettings.autoFix = autoFix;
       if (autoIssue !== undefined) newSettings.autoIssue = autoIssue;
       if (autoPr !== undefined) newSettings.autoPr = autoPr;
+      if (allowBash !== undefined) newSettings.allowBash = allowBash;
+      if (requireApprovalForEdit !== undefined) newSettings.requireApprovalForEdit = requireApprovalForEdit;
+      if (requireApprovalForBash !== undefined) newSettings.requireApprovalForBash = requireApprovalForBash;
+      if (guardrails !== undefined) {
+        if (!this.mainConfig.nmt) this.mainConfig.nmt = {};
+        this.mainConfig.nmt.guardrails = { ...(this.mainConfig.nmt.guardrails || {}), ...guardrails };
+        newSettings.guardrails = this.mainConfig.nmt.guardrails;
+      }
       if (aiModel !== undefined) newSettings.aiModel = aiModel;
       if (githubToken && githubToken !== '********') newSettings.githubToken = githubToken;
       if (githubRepo !== undefined) newSettings.githubRepo = githubRepo;
@@ -357,6 +424,87 @@ class ManagementToolServer {
       this.securityManager.updateConfig(newSettings);
 
       res.json({ success: true, message: '設定を更新しました。' });
+    });
+
+    // ── 4.2. 統合ログ API ────────────────────────────────────────────────
+    this.app.get('/api/logs/all', authMiddleware, (req, res) => {
+      const { types, search, level, limit } = req.query;
+      const typeList = types ? types.split(',').map((s) => s.trim()).filter(Boolean) : ['error', 'security', 'ai'];
+      const logs = this.logHub.getLogs({
+        types: typeList,
+        search,
+        level,
+        limit: Number(limit) || 200,
+      });
+      res.json({ logs });
+    });
+
+    this.app.post('/api/logs/clear', authMiddleware, (req, res) => {
+      this.logHub.clearLogs();
+      res.json({ success: true, message: 'ログをクリアしました。' });
+    });
+
+    // ── 4.5. 通知 & アクセス承認 API ──────────────────────────────────────
+    this.app.get('/api/notifications', authMiddleware, (req, res) => {
+      res.json({
+        notifications: this.notificationManager.getNotifications(50),
+        isSubscribed: this.notificationManager.isUserSubscribed(req.adminUser.id),
+      });
+    });
+
+    this.app.get('/api/notifications/stream', (req, res) => {
+      const token = req.query.token;
+      const session = this.sessions.get(token);
+      if (!session || !session.admin) {
+        return res.status(401).send('Unauthorized');
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+      res.write(': connected\n\n');
+
+      this.notificationManager.addClient(res, session.userId);
+    });
+
+    this.app.post('/api/notifications/subscribe', authMiddleware, (req, res) => {
+      const { enabled } = req.body;
+      if (enabled) {
+        this.notificationManager.subscribeUser(req.adminUser.id);
+      } else {
+        this.notificationManager.unsubscribeUser(req.adminUser.id);
+      }
+      res.json({ success: true, isSubscribed: this.notificationManager.isUserSubscribed(req.adminUser.id) });
+    });
+
+    this.app.post('/api/notifications/read-all', authMiddleware, (req, res) => {
+      this.notificationManager.markAllAsRead();
+      res.json({ success: true });
+    });
+
+    this.app.get('/api/approvals/pending', authMiddleware, (req, res) => {
+      res.json({ requests: this.approvalManager.getPendingRequests() });
+    });
+
+    this.app.post('/api/approvals/:id/approve', authMiddleware, (req, res) => {
+      try {
+        const { scope = 'session' } = req.body;
+        const result = this.approvalManager.approveRequest(req.params.id, req.adminUser, { scope });
+        res.json(result);
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
+    });
+
+    this.app.post('/api/approvals/:id/deny', authMiddleware, (req, res) => {
+      try {
+        const result = this.approvalManager.denyRequest(req.params.id, req.adminUser);
+        res.json(result);
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
     });
 
     // ── 5. サーバー制御・管理 API ─────────────────────────────────────────
@@ -430,6 +578,7 @@ class ManagementToolServer {
     });
 
     this.httpServer.listen(this.port, () => {
+      this.logHub.attachHttpServer(this.httpServer);
       console.log(`\n🐾 [NyaitterManagementTool] Started on port ${this.port} (IPv4/IPv6 dual-stack)`);
       console.log(`   - Error Logging & AI Assistance: Active`);
       console.log(`   - Admin Management: Active`);

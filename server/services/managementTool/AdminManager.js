@@ -1,13 +1,38 @@
-'use strict';
+const fs = require('fs');
+const path = require('path');
+
+const DATA_DIR = path.resolve(__dirname, '../../data');
+const AUDITS_FILE = path.join(DATA_DIR, 'nmt-audits.json');
 
 class AdminManager {
   constructor({ dbAdapter }) {
     this.dbAdapter = dbAdapter;
     this.auditLogs = [];
+    this._load();
   }
 
   setDbAdapter(dbAdapter) {
     this.dbAdapter = dbAdapter;
+  }
+
+  _load() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      if (fs.existsSync(AUDITS_FILE)) {
+        const raw = fs.readFileSync(AUDITS_FILE, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) this.auditLogs = parsed.slice(-200);
+      }
+    } catch (_) {
+      this.auditLogs = [];
+    }
+  }
+
+  _save() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(AUDITS_FILE, JSON.stringify(this.auditLogs.slice(0, 200), null, 2), 'utf8');
+    } catch (_) {}
   }
 
   async getAdmins() {
@@ -83,6 +108,7 @@ class AdminManager {
     };
     this.auditLogs.unshift(log);
     if (this.auditLogs.length > 200) this.auditLogs.pop();
+    this._save();
 
     return {
       success: true,

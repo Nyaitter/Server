@@ -11,7 +11,11 @@ const ROOT_ENV_FILE = path.join(PROJECT_ROOT, '.env');
 const CONFIG_FILE = path.join(SERVER_DIR, 'config.json');
 const ROOT_CONFIG_FILE = path.join(PROJECT_ROOT, 'config.json');
 
+const DATA_DIR = path.resolve(__dirname, '../../data');
+const SERVER_LOG_FILE = path.join(DATA_DIR, 'nmt-server.log');
+
 const MAX_LOG_LINES = 2000;
+const MAX_LOG_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 
 class ServerControlManager {
   constructor({ shutdownFn = null, getStatusFn = null } = {}) {
@@ -19,6 +23,7 @@ class ServerControlManager {
     this.getStatusFn = getStatusFn;
     this.logs = [];
     this.startedAt = new Date().toISOString();
+    this._loadLogs();
     this._hookConsole();
   }
 
@@ -28,6 +33,42 @@ class ServerControlManager {
 
   setStatusProvider(getStatusFn) {
     this.getStatusFn = getStatusFn;
+  }
+
+  _loadLogs() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      if (fs.existsSync(SERVER_LOG_FILE)) {
+        const raw = fs.readFileSync(SERVER_LOG_FILE, 'utf8');
+        const lines = raw.split('\n').filter(Boolean);
+        for (const line of lines.slice(-MAX_LOG_LINES)) {
+          try {
+            const parsed = JSON.parse(line);
+            this.logs.push(parsed);
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      console.warn('[NMT-Logs] Failed to load server log file:', e.message);
+    }
+  }
+
+  _persistLogLine(logObj) {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+      // ローテーション確認
+      if (fs.existsSync(SERVER_LOG_FILE)) {
+        const stats = fs.statSync(SERVER_LOG_FILE);
+        if (stats.size > MAX_LOG_FILE_SIZE) {
+          const rotated = `${SERVER_LOG_FILE}.1`;
+          if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
+          fs.renameSync(SERVER_LOG_FILE, rotated);
+        }
+      }
+
+      fs.appendFileSync(SERVER_LOG_FILE, JSON.stringify(logObj) + '\n', 'utf8');
+    } catch (_) {}
   }
 
   _hookConsole() {
@@ -41,11 +82,13 @@ class ServerControlManager {
 
       for (const line of lines) {
         if (!line.trim()) continue;
-        this.logs.push({
+        const logObj = {
           timestamp: now,
           level: isError ? 'error' : 'info',
           message: line,
-        });
+        };
+        this.logs.push(logObj);
+        this._persistLogLine(logObj);
       }
 
       if (this.logs.length > MAX_LOG_LINES) {

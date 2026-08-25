@@ -73,6 +73,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
 function loadActiveTabData() {
   const activeTab = document.querySelector('.tab-pane.active')?.id;
   if (activeTab === 'errors-tab') loadErrors();
+  if (activeTab === 'logs-tab') loadUnifiedLogs();
   if (activeTab === 'admins-tab') { loadAdmins(); loadAuditLogs(); }
   if (activeTab === 'security-tab') { loadSecurityEvents(); loadRecentAccessLogs(); }
   if (activeTab === 'server-tab') loadServerTab();
@@ -509,8 +510,18 @@ async function loadSettings() {
 
     document.getElementById('setting-auto-analysis').checked = Boolean(s.autoAnalysis);
     document.getElementById('setting-auto-fix').checked = Boolean(s.autoFix);
+    document.getElementById('setting-allow-bash').checked = Boolean(s.allowBash);
+    document.getElementById('setting-approval-edit').checked = Boolean(s.requireApprovalForEdit);
+    document.getElementById('setting-approval-bash').checked = Boolean(s.requireApprovalForBash);
     document.getElementById('setting-auto-issue').checked = Boolean(s.autoIssue);
     document.getElementById('setting-auto-pr').checked = Boolean(s.autoPr);
+
+    // Guardrails 設定の反映
+    const g = s.guardrails || {};
+    document.getElementById('guard-git-tracked').checked = g.restrictToGitTracked !== false;
+    document.getElementById('guard-syntax-validation').checked = g.syntaxValidation !== false;
+    document.getElementById('guard-block-env').checked = g.blockEnvModification !== false;
+    document.getElementById('guard-block-commands').checked = g.blockSuspiciousCommands !== false;
 
     const modelSelect = document.getElementById('setting-ai-model');
     const availableModels = modelsData.models || [];
@@ -530,6 +541,26 @@ async function loadSettings() {
   }
 }
 
+document.getElementById('settings-guardrails-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api('/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        guardrails: {
+          restrictToGitTracked: document.getElementById('guard-git-tracked').checked,
+          syntaxValidation: document.getElementById('guard-syntax-validation').checked,
+          blockEnvModification: document.getElementById('guard-block-env').checked,
+          blockSuspiciousCommands: document.getElementById('guard-block-commands').checked,
+        },
+      }),
+    });
+    alert('Safety Guardrails settings saved.');
+  } catch (err) {
+    alert(`Save error: ${err.message}`);
+  }
+});
+
 document.getElementById('settings-ai-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
@@ -538,6 +569,9 @@ document.getElementById('settings-ai-form').addEventListener('submit', async (e)
       body: JSON.stringify({
         autoAnalysis: document.getElementById('setting-auto-analysis').checked,
         autoFix: document.getElementById('setting-auto-fix').checked,
+        allowBash: document.getElementById('setting-allow-bash').checked,
+        requireApprovalForEdit: document.getElementById('setting-approval-edit').checked,
+        requireApprovalForBash: document.getElementById('setting-approval-bash').checked,
         aiModel: document.getElementById('setting-ai-model').value,
         geminiApiKey: document.getElementById('setting-gemini-key').value.trim(),
         openaiApiKey: document.getElementById('setting-openai-key').value.trim(),
@@ -569,9 +603,8 @@ document.getElementById('settings-github-form').addEventListener('submit', async
 
 // ── 5. Server Management ────────────────────────────────────────────────
 async function loadServerTab() {
-  await Promise.all([
+  await Promise.allSettled([
     loadServerStatus(),
-    loadServerLogs(),
     loadServerEnv(),
     loadServerConfigJson(),
   ]);
@@ -737,6 +770,407 @@ document.getElementById('save-config-json-btn').addEventListener('click', async 
   }
 });
 
+// ── 5.5. Unified Real-time Live Logs (WebSocket) ─────────────────────────
+let unifiedLogWS = null;
+let unifiedLogData = [];
+
+function getSelectedLogTypes() {
+  const types = [];
+  if (document.getElementById('filter-log-system')?.checked) types.push('system');
+  if (document.getElementById('filter-log-error')?.checked) types.push('error');
+  if (document.getElementById('filter-log-security')?.checked) types.push('security');
+  if (document.getElementById('filter-log-ai')?.checked) types.push('ai');
+  return types;
+}
+
+function initUnifiedLogsWS() {
+  const token = localStorage.getItem('nmt_token');
+  if (!token) return;
+
+  if (unifiedLogWS) {
+    try { unifiedLogWS.close(); } catch (_) {}
+  }
+
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${window.location.host}/ws/logs?token=${encodeURIComponent(token)}`;
+
+  const statusBadge = document.getElementById('ws-status-badge');
+  if (statusBadge) {
+    statusBadge.textContent = '🟡 CONNECTING...';
+    statusBadge.className = 'tag tag-open';
+  }
+
+  try {
+    unifiedLogWS = new WebSocket(wsUrl);
+
+    unifiedLogWS.onopen = () => {
+      if (statusBadge) {
+        statusBadge.textContent = '🟢 WS LIVE';
+        statusBadge.className = 'tag tag-resolved';
+      }
+      sendWSFilter();
+    };
+
+    unifiedLogWS.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.event === 'init' || data.event === 'filtered') {
+          unifiedLogData = data.logs || [];
+          renderUnifiedLogs();
+        } else if (data.event === 'log') {
+          handleIncomingLiveLog(data.log);
+        }
+      } catch (_) {}
+    };
+
+    unifiedLogWS.onclose = () => {
+      if (statusBadge) {
+        statusBadge.textContent = '🔴 OFFLINE';
+        statusBadge.className = 'tag tag-ignored';
+      }
+    };
+
+    unifiedLogWS.onerror = () => {
+      if (statusBadge) {
+        statusBadge.textContent = '🔴 WS ERROR';
+        statusBadge.className = 'tag tag-ignored';
+      }
+    };
+  } catch (e) {
+    console.warn('WS log connection error:', e);
+  }
+}
+
+function sendWSFilter() {
+  if (unifiedLogWS && unifiedLogWS.readyState === WebSocket.OPEN) {
+    const types = getSelectedLogTypes();
+    const search = document.getElementById('unified-log-search')?.value.trim() || '';
+    const level = document.getElementById('unified-log-level')?.value || 'all';
+    unifiedLogWS.send(JSON.stringify({
+      action: 'filter',
+      types,
+      search,
+      level,
+      limit: 200,
+    }));
+  }
+}
+
+function handleIncomingLiveLog(logItem) {
+  unifiedLogData.push(logItem);
+  if (unifiedLogData.length > 500) unifiedLogData.shift();
+
+  // 現在のフィルター条件にマッチするか判定
+  const selectedTypes = getSelectedLogTypes();
+  const search = document.getElementById('unified-log-search')?.value.trim().toLowerCase() || '';
+  const level = document.getElementById('unified-log-level')?.value || 'all';
+
+  if (!selectedTypes.includes(logItem.type)) return;
+  if (level !== 'all' && logItem.level !== level) return;
+  if (search && !logItem.message.toLowerCase().includes(search) && !logItem.type.toLowerCase().includes(search)) return;
+
+  const container = document.getElementById('unified-logs-container');
+  if (!container) return;
+
+  const lineEl = document.createElement('div');
+  lineEl.innerHTML = formatLogLineHTML(logItem);
+  container.appendChild(lineEl);
+  container.scrollTop = container.scrollHeight;
+}
+
+function renderUnifiedLogs() {
+  const container = document.getElementById('unified-logs-container');
+  if (!container) return;
+
+  const selectedTypes = getSelectedLogTypes();
+  const search = document.getElementById('unified-log-search')?.value.trim().toLowerCase() || '';
+  const level = document.getElementById('unified-log-level')?.value || 'all';
+
+  const filtered = unifiedLogData.filter((l) => {
+    if (!selectedTypes.includes(l.type)) return false;
+    if (level !== 'all' && l.level !== level) return false;
+    if (search && !l.message.toLowerCase().includes(search) && !l.type.toLowerCase().includes(search)) return false;
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="empty-state">No matching logs.</div>';
+    return;
+  }
+
+  container.innerHTML = filtered.map(formatLogLineHTML).join('');
+  container.scrollTop = container.scrollHeight;
+}
+
+function formatLogLineHTML(l) {
+  const time = new Date(l.timestamp).toLocaleTimeString();
+  let typeTag = '';
+  let color = 'color:var(--text-color);';
+
+  if (l.type === 'error') {
+    typeTag = '<span style="color:#f85149; font-weight:bold;">[ERROR]</span>';
+    color = 'color:#f85149;';
+  } else if (l.type === 'security') {
+    typeTag = '<span style="color:#e3b341; font-weight:bold;">[SECURITY]</span>';
+    color = 'color:#e3b341;';
+  } else if (l.type === 'ai') {
+    typeTag = '<span style="color:#58a6ff; font-weight:bold;">[AI]</span>';
+    color = 'color:#58a6ff;';
+  } else {
+    typeTag = '<span style="color:#8b949e;">[SYSTEM]</span>';
+    color = 'color:#8b949e;';
+  }
+
+  return `
+    <div style="${color} line-height:1.4; margin-bottom:2px; word-break:break-all;">
+      <span style="color:#484f58;">[${time}]</span> ${typeTag} <span style="color:#7ee787;">[${escapeHTML(l.source || 'app')}]</span> ${escapeHTML(l.message)}
+    </div>
+  `;
+}
+
+async function loadUnifiedLogs() {
+  if (!unifiedLogWS || unifiedLogWS.readyState !== WebSocket.OPEN) {
+    initUnifiedLogsWS();
+  } else {
+    sendWSFilter();
+  }
+}
+
+// フィルターイベントリスナー
+['filter-log-system', 'filter-log-error', 'filter-log-security', 'filter-log-ai'].forEach((id) => {
+  document.getElementById(id)?.addEventListener('change', () => {
+    renderUnifiedLogs();
+    sendWSFilter();
+  });
+});
+
+document.getElementById('unified-log-search')?.addEventListener('input', debounce(() => {
+  renderUnifiedLogs();
+  sendWSFilter();
+}, 300));
+
+document.getElementById('unified-log-level')?.addEventListener('change', () => {
+  renderUnifiedLogs();
+  sendWSFilter();
+});
+
+document.getElementById('reconnect-ws-btn')?.addEventListener('click', initUnifiedLogsWS);
+document.getElementById('clear-unified-logs-btn')?.addEventListener('click', async () => {
+  await api('/logs/clear', { method: 'POST' });
+  unifiedLogData = [];
+  renderUnifiedLogs();
+});
+
+// ── 6. Real-time Notifications & Approvals ──────────────────────────────
+let notificationEventSource = null;
+
+function initNotificationsSSE() {
+  const token = localStorage.getItem('nmt_token');
+  if (!token) return;
+
+  if (notificationEventSource) {
+    notificationEventSource.close();
+  }
+
+  try {
+    notificationEventSource = new EventSource(`/api/notifications/stream?token=${encodeURIComponent(token)}`);
+
+    notificationEventSource.onmessage = (event) => {
+      try {
+        const item = JSON.parse(event.data);
+        handleIncomingNotification(item);
+      } catch (_) {}
+    };
+
+    notificationEventSource.onerror = () => {
+      // 再接続はブラウザが自動実行
+    };
+  } catch (e) {
+    console.warn('SSE connection failed:', e);
+  }
+
+  // 初期通知 & 承認リクエスト取得
+  loadUnreadNotificationCount();
+  checkPendingApprovals();
+}
+
+function handleIncomingNotification(item) {
+  // バッジ更新
+  loadUnreadNotificationCount();
+
+  // 承認リクエスト通知の場合
+  if (item.type === 'approval_request') {
+    checkPendingApprovals();
+  }
+
+  // ブラウザ通知が許可されていれば表示
+  if (window.Notification && Notification.permission === 'granted') {
+    try {
+      new Notification(item.title, {
+        body: item.message,
+        icon: '/favicon.ico',
+      });
+    } catch (_) {}
+  }
+}
+
+async function loadUnreadNotificationCount() {
+  try {
+    const data = await api('/notifications');
+    const list = data.notifications || [];
+    const unread = list.filter((n) => !n.read).length;
+    const badge = document.getElementById('unread-notifications-badge');
+    if (unread > 0) {
+      badge.textContent = unread;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+  } catch (_) {}
+}
+
+async function checkPendingApprovals() {
+  try {
+    const data = await api('/approvals/pending');
+    const requests = data.requests || [];
+    const btn = document.getElementById('nav-approvals-btn');
+    const badge = document.getElementById('pending-approvals-badge');
+
+    if (requests.length > 0) {
+      badge.textContent = requests.length;
+      btn.classList.remove('hidden');
+    } else {
+      btn.classList.add('hidden');
+    }
+  } catch (_) {}
+}
+
+// 承認リクエストモーダル
+async function openApprovalsModal() {
+  const data = await api('/approvals/pending');
+  const requests = data.requests || [];
+
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody = document.getElementById('modal-body');
+  const modalFooter = document.getElementById('modal-footer');
+
+  modalTitle.textContent = 'Pending Access Approvals';
+  if (requests.length === 0) {
+    modalBody.innerHTML = '<div class="empty-state">No pending approval requests.</div>';
+    modalFooter.innerHTML = '';
+  } else {
+    modalBody.innerHTML = `
+      <div style="display:flex; flex-direction:column; gap:0.8rem;">
+        ${requests.map((r) => `
+          <div class="card" style="border-left: 3px solid #e3b341;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <strong style="color:#e3b341;">[${r.type.toUpperCase()}] ${escapeHTML(r.reason)}</strong>
+              <span style="font-size:10px; color:var(--secondary-text-color);">${new Date(r.requestedAt).toLocaleTimeString()}</span>
+            </div>
+            ${r.target ? `<div style="font-size:12px; margin-top:0.3rem;">Target: <code>${escapeHTML(r.target)}</code></div>` : ''}
+            ${r.command ? `<div style="font-size:12px; margin-top:0.3rem;"><pre class="code-box" style="margin:0.2rem 0;">${escapeHTML(r.command)}</pre></div>` : ''}
+            <div style="display:flex; gap:0.4rem; margin-top:0.6rem;">
+              <button class="btn btn-primary btn-sm btn-approve-session" data-id="${escapeHTML(r.id)}">Approve for Session</button>
+              <button class="btn btn-secondary btn-sm btn-approve-once" data-id="${escapeHTML(r.id)}">Approve Once</button>
+              <button class="btn btn-secondary btn-sm btn-deny" data-id="${escapeHTML(r.id)}" style="color:#f85149; border-color:#f85149;">Deny</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    modalFooter.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button>';
+
+    modalBody.querySelectorAll('.btn-approve-session').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await api(`/approvals/${encodeURIComponent(btn.dataset.id)}/approve`, { method: 'POST', body: JSON.stringify({ scope: 'session' }) });
+        openApprovalsModal();
+        checkPendingApprovals();
+      });
+    });
+
+    modalBody.querySelectorAll('.btn-approve-once').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await api(`/approvals/${encodeURIComponent(btn.dataset.id)}/approve`, { method: 'POST', body: JSON.stringify({ scope: 'once' }) });
+        openApprovalsModal();
+        checkPendingApprovals();
+      });
+    });
+
+    modalBody.querySelectorAll('.btn-deny').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await api(`/approvals/${encodeURIComponent(btn.dataset.id)}/deny`, { method: 'POST' });
+        openApprovalsModal();
+        checkPendingApprovals();
+      });
+    });
+  }
+
+  showModal();
+}
+
+// 通知一覧モーダル
+async function openNotificationsModal() {
+  const data = await api('/notifications');
+  const list = data.notifications || [];
+
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody = document.getElementById('modal-body');
+  const modalFooter = document.getElementById('modal-footer');
+
+  modalTitle.textContent = 'Notifications & Alerts';
+  if (list.length === 0) {
+    modalBody.innerHTML = '<div class="empty-state">No notifications.</div>';
+  } else {
+    modalBody.innerHTML = `
+      <div style="display:flex; flex-direction:column; gap:0.5rem; max-height:400px; overflow-y:auto;">
+        ${list.map((n) => {
+          const borderColor = n.type === 'error' ? '#f85149' : n.type === 'approval_request' ? '#e3b341' : n.type === 'security_alert' ? '#da3633' : '#58a6ff';
+          return `
+            <div class="card" style="border-left: 3px solid ${borderColor}; padding:0.6rem;">
+              <div style="display:flex; justify-content:space-between; font-size:11px;">
+                <strong>${escapeHTML(n.title)}</strong>
+                <span style="color:var(--secondary-text-color);">${new Date(n.timestamp).toLocaleTimeString()}</span>
+              </div>
+              <div style="font-size:12px; margin-top:0.2rem;">${escapeHTML(n.message)}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  modalFooter.innerHTML = `
+    <button class="btn btn-secondary btn-sm" id="modal-mark-read-btn">Mark All as Read</button>
+    <button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button>
+  `;
+
+  document.getElementById('modal-mark-read-btn')?.addEventListener('click', async () => {
+    await api('/notifications/read-all', { method: 'POST' });
+    loadUnreadNotificationCount();
+    closeModal();
+  });
+
+  showModal();
+}
+
+document.getElementById('nav-approvals-btn').addEventListener('click', openApprovalsModal);
+document.getElementById('nav-notifications-btn').addEventListener('click', openNotificationsModal);
+
+document.getElementById('enable-browser-notifications-btn')?.addEventListener('click', async () => {
+  if (!('Notification' in window)) {
+    alert('This browser does not support desktop notifications.');
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission === 'granted') {
+    await api('/notifications/subscribe', { method: 'POST', body: JSON.stringify({ enabled: true }) });
+    alert('Browser notifications enabled!');
+  } else {
+    alert(`Notification permission: ${permission}`);
+  }
+});
+
 // ── Modal & Utilities ────────────────────────────────────────────────────
 function showModal() {
   document.getElementById('detail-modal').classList.remove('hidden');
@@ -779,3 +1213,5 @@ function debounce(fn, ms) {
 }
 
 checkAuth();
+setInterval(checkPendingApprovals, 15000);
+initNotificationsSSE();

@@ -1,0 +1,216 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { WebSocketServer } = require('ws');
+
+const DATA_DIR = path.resolve(__dirname, '../../data');
+const UNIFIED_LOG_FILE = path.join(DATA_DIR, 'nmt-unified.log');
+const MAX_LOG_LINES = 3000;
+const MAX_LOG_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+class LogHubManager {
+  constructor({ sessions = new Map() } = {}) {
+    this.sessions = sessions;
+    this.logs = [];
+    this.wss = null;
+    this._load();
+    this._hookConsole();
+  }
+
+  setSessionsMap(sessions) {
+    this.sessions = sessions;
+  }
+
+  _load() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      if (fs.existsSync(UNIFIED_LOG_FILE)) {
+        const raw = fs.readFileSync(UNIFIED_LOG_FILE, 'utf8');
+        const lines = raw.split('\n').filter(Boolean);
+        for (const line of lines.slice(-MAX_LOG_LINES)) {
+          try {
+            const parsed = JSON.parse(line);
+            this.logs.push(parsed);
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      console.warn('[LogHub] Failed to load unified logs:', e.message);
+    }
+  }
+
+  _persistLog(logEntry) {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+      if (fs.existsSync(UNIFIED_LOG_FILE)) {
+        const stats = fs.statSync(UNIFIED_LOG_FILE);
+        if (stats.size > MAX_LOG_FILE_SIZE) {
+          const rotated = `${UNIFIED_LOG_FILE}.1`;
+          if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
+          fs.renameSync(UNIFIED_LOG_FILE, rotated);
+        }
+      }
+
+      fs.appendFileSync(UNIFIED_LOG_FILE, JSON.stringify(logEntry) + '\n', 'utf8');
+    } catch (_) {}
+  }
+
+  _hookConsole() {
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+    const handleWrite = (chunk, isError = false) => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      const lines = text.split('\n');
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        this.addLog({
+          type: isError ? 'error' : 'system',
+          level: isError ? 'error' : 'info',
+          message: line,
+          source: 'console',
+        }, false);
+      }
+    };
+
+    process.stdout.write = (chunk, encoding, cb) => {
+      handleWrite(chunk, false);
+      return originalStdoutWrite(chunk, encoding, cb);
+    };
+
+    process.stderr.write = (chunk, encoding, cb) => {
+      handleWrite(chunk, true);
+      return originalStderrWrite(chunk, encoding, cb);
+    };
+  }
+
+  attachHttpServer(httpServer) {
+    if (this.wss) return;
+
+    this.wss = new WebSocketServer({ noServer: true });
+
+    httpServer.on('upgrade', (request, socket, head) => {
+      const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+      if (url.pathname !== '/ws/logs') return;
+
+      const token = url.searchParams.get('token');
+      const session = this.sessions.get(token);
+
+      if (!session || !session.admin || (session.expiresAt && Date.now() > session.expiresAt)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+
+      this.wss.handleUpgrade(request, socket, head, (ws) => {
+        this.wss.emit('connection', ws, request);
+      });
+    });
+
+    this.wss.on('connection', (ws) => {
+      // 接続時に直近のフィルタリングログ（通常ログ除外）を送信
+      const initialLogs = this.getLogs({
+        types: ['error', 'security', 'ai'],
+        limit: 100,
+      });
+
+      ws.send(JSON.stringify({
+        event: 'init',
+        logs: initialLogs,
+      }));
+
+      ws.on('message', (message) => {
+        try {
+          const data = JSON.parse(message);
+          if (data.action === 'filter') {
+            // クライアントからのフィルタ変更リクエストに応答
+            const filtered = this.getLogs({
+              types: data.types || ['error', 'security', 'ai'],
+              search: data.search || '',
+              level: data.level || 'all',
+              limit: data.limit || 150,
+            });
+            ws.send(JSON.stringify({ event: 'filtered', logs: filtered }));
+          }
+        } catch (_) {}
+      });
+    });
+  }
+
+  addLog(entry, shouldBroadcast = true) {
+    const logItem = {
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: entry.timestamp || new Date().toISOString(),
+      type: entry.type || 'system', // 'system' | 'error' | 'security' | 'ai'
+      level: entry.level || 'info', // 'info' | 'warn' | 'error'
+      message: entry.message || '',
+      source: entry.source || 'server',
+      details: entry.details || null,
+    };
+
+    this.logs.push(logItem);
+    if (this.logs.length > MAX_LOG_LINES) {
+      this.logs = this.logs.slice(-MAX_LOG_LINES);
+    }
+    this._persistLog(logItem);
+
+    if (shouldBroadcast && this.wss) {
+      this._broadcast(logItem);
+    }
+
+    return logItem;
+  }
+
+  _broadcast(logItem) {
+    if (!this.wss || !this.wss.clients) return;
+    const msg = JSON.stringify({
+      event: 'log',
+      log: logItem,
+    });
+
+    for (const client of this.wss.clients) {
+      if (client.readyState === 1) { // WebSocket.OPEN
+        try {
+          client.send(msg);
+        } catch (_) {}
+      }
+    }
+  }
+
+  getLogs({ types = ['error', 'security', 'ai'], search = '', level = 'all', limit = 200 } = {}) {
+    let result = this.logs;
+
+    if (Array.isArray(types) && types.length > 0) {
+      const typeSet = new Set(types);
+      result = result.filter((l) => typeSet.has(l.type));
+    }
+
+    if (level && level !== 'all') {
+      result = result.filter((l) => l.level === level);
+    }
+
+    if (search) {
+      const q = search.toLowerCase();
+      result = result.filter((l) => {
+        return (l.message || '').toLowerCase().includes(q) ||
+               (l.source || '').toLowerCase().includes(q) ||
+               (l.type || '').toLowerCase().includes(q);
+      });
+    }
+
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 200, MAX_LOG_LINES));
+    return result.slice(-safeLimit);
+  }
+
+  clearLogs() {
+    this.logs = [];
+    try {
+      if (fs.existsSync(UNIFIED_LOG_FILE)) fs.unlinkSync(UNIFIED_LOG_FILE);
+    } catch (_) {}
+  }
+}
+
+module.exports = LogHubManager;

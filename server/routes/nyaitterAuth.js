@@ -88,6 +88,71 @@ router.post({
   }
 });
 
+// 3.5 Auto pass-through for already-authorized apps without scope changes
+router.post({
+  path: '/auto-pass',
+  summary: '許可済みアプリの自動パススルー承認',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
+  try {
+    const { request_id } = req.body;
+    if (!request_id) {
+      return res.status(400).json({ success: false, error: 'リクエストID (request_id) が必要です。' });
+    }
+
+    const manager = getAuthManager(req);
+    const authReq = await manager.getAuthorizationRequest(request_id, req.user.id, req.app.locals.dbAdapter);
+
+    if (!authReq.can_pass_through) {
+      return res.status(400).json({
+        success: false,
+        error: '権限の変更または未許可の権限があるため、ユーザーの明示的な承認が必要です。',
+        has_scope_changes: authReq.has_scope_changes,
+        new_scopes: authReq.new_scopes,
+      });
+    }
+
+    // 以前の許可済みスコープをそのまま適用して承認
+    const result = await manager.approveAuthorization(
+      request_id,
+      req.user.id,
+      authReq.existing_scopes,
+      req.app.locals.dbAdapter,
+    );
+    return res.json(result);
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message || '自動パススルーに失敗しました。',
+    });
+  }
+});
+
+// 3.6 Check if application is already granted
+router.get({
+  path: '/check-grant',
+  summary: 'アプリが許可済みかどうかの確認',
+  auth: 'required',
+}, requireAuth, async (req, res) => {
+  try {
+    const { app_id, api_token, app_token_hash } = req.query;
+    if (!app_id) {
+      return res.status(400).json({ success: false, error: 'app_id が必要です。' });
+    }
+
+    const hash = app_token_hash || (api_token ? NyaitterAuthManager.computeAppTokenHash(app_id, api_token) : null);
+    const manager = getAuthManager(req);
+    const grant = await manager.checkUserGrant(req.user.id, app_id, hash, req.app.locals.dbAdapter);
+
+    return res.json({ success: true, ...grant });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || '許可状態の取得に失敗しました。',
+    });
+  }
+});
+
 // 4. User denies authorization
 router.post({
   path: '/deny',

@@ -11,14 +11,25 @@ class AiAnalysisService {
     this.geminiApiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || '';
     this.openaiApiKey = config.openaiApiKey || process.env.OPENAI_API_KEY || '';
     this.preferredModel = config.aiModel || process.env.NMT_AI_MODEL || 'auto';
+    this.allowBash = config.allowBash ?? false;
+    this.requireApprovalForEdit = config.requireApprovalForEdit ?? false;
+    this.requireApprovalForBash = config.requireApprovalForBash ?? true;
+    this.approvalManager = null;
     this.zenModelsCache = null;
     this.zenModelsLastFetched = 0;
+  }
+
+  setApprovalManager(approvalManager) {
+    this.approvalManager = approvalManager;
   }
 
   updateConfig(config = {}) {
     if (config.geminiApiKey !== undefined) this.geminiApiKey = config.geminiApiKey;
     if (config.openaiApiKey !== undefined) this.openaiApiKey = config.openaiApiKey;
     if (config.aiModel !== undefined) this.preferredModel = config.aiModel;
+    if (config.allowBash !== undefined) this.allowBash = Boolean(config.allowBash);
+    if (config.requireApprovalForEdit !== undefined) this.requireApprovalForEdit = Boolean(config.requireApprovalForEdit);
+    if (config.requireApprovalForBash !== undefined) this.requireApprovalForBash = Boolean(config.requireApprovalForBash);
   }
 
   // ── OpenCode Zen 提供のモデル一覧を動的取得 ───────────────────────────
@@ -227,10 +238,19 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     return 'zen/deepseek-v4-flash-free';
   }
 
-  _callOpencodeAgent(prompt, { allowEdit = false } = {}) {
+  _callOpencodeAgent(prompt, { allowEdit = false, allowBash = this.allowBash } = {}) {
     return new Promise((resolve, reject) => {
       const model = this._resolveOpencodeModelName();
-      const configName = allowEdit ? 'opencode-autofix-config.json' : 'opencode-readonly-config.json';
+      
+      // パーミッション構成の決定
+      let configName = 'opencode-readonly-config.json';
+      if (allowEdit && allowBash) {
+        configName = 'opencode-full-config.json';
+      } else if (allowEdit) {
+        configName = 'opencode-autofix-config.json';
+      } else if (allowBash) {
+        configName = 'opencode-bashonly-config.json';
+      }
       const configPath = path.resolve(__dirname, configName);
 
       const args = ['run', '--pure', '-m', model, prompt];

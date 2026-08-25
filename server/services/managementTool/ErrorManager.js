@@ -23,16 +23,31 @@ function execGit(args, cwd = PROJECT_ROOT) {
 }
 
 class ErrorManager {
-  constructor({ aiService, config = {} } = {}) {
+  constructor({ aiService, config = {}, notificationManager = null, approvalManager = null } = {}) {
     this.aiService = aiService;
+    this.notificationManager = notificationManager;
+    this.approvalManager = approvalManager;
     this.autoAnalysis = config.autoAnalysis ?? false;
     this.autoFix = config.autoFix ?? false;
     this.autoIssue = config.autoIssue ?? false;
     this.autoPr = config.autoPr ?? false;
+    this.requireApprovalForEdit = config.requireApprovalForEdit ?? false;
     this.githubToken = config.githubToken || '';
     this.githubRepo = config.githubRepo || 'Nyaitter/Server';
     this.errors = [];
     this._load();
+  }
+
+  setNotificationManager(notificationManager) {
+    this.notificationManager = notificationManager;
+  }
+
+  setApprovalManager(approvalManager) {
+    this.approvalManager = approvalManager;
+  }
+
+  setLogHub(logHub) {
+    this.logHub = logHub;
   }
 
   updateConfig(config = {}) {
@@ -40,6 +55,7 @@ class ErrorManager {
     if (config.autoFix !== undefined) this.autoFix = Boolean(config.autoFix);
     if (config.autoIssue !== undefined) this.autoIssue = Boolean(config.autoIssue);
     if (config.autoPr !== undefined) this.autoPr = Boolean(config.autoPr);
+    if (config.requireApprovalForEdit !== undefined) this.requireApprovalForEdit = Boolean(config.requireApprovalForEdit);
     if (config.githubToken !== undefined) this.githubToken = config.githubToken;
     if (config.githubRepo !== undefined) this.githubRepo = config.githubRepo;
   }
@@ -114,6 +130,17 @@ class ErrorManager {
     this.errors.unshift(errorRecord);
     if (this.errors.length > MAX_ERROR_RECORDS) this.errors.pop();
     this._save();
+
+    // 通知マネージャー経由で管理者にエラー通知
+    if (this.notificationManager) {
+      this.notificationManager.broadcast({
+        type: 'error',
+        title: `🚨 新規エラー検知: ${message.slice(0, 60)}`,
+        message: `${context.method || 'GET'} ${context.url || ''} でエラーが発生しました。`,
+        errorId: id,
+        data: { id, message, timestamp: errorRecord.timestamp },
+      });
+    }
 
     // 自動修正または自動AI解析が有効な場合
     if (this.autoFix) {

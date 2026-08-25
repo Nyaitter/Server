@@ -14,3 +14,4 @@ node_modules
 /.nyaitter-dev-server.log
 
 /data/
+/server/data/

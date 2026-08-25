@@ -227,6 +227,14 @@ class NyaitterAuthManager {
       }
     }
 
+    // 権限の変更・追加差分（New Scopes）の計算
+    const requestedScopes = Array.isArray(requestData.scopes) ? requestData.scopes : [];
+    const newScopes = alreadyAuthorized
+      ? requestedScopes.filter((s) => !existingScopes.includes(s.scope))
+      : requestedScopes;
+    const hasScopeChanges = alreadyAuthorized && newScopes.length > 0;
+    const canPassThrough = alreadyAuthorized && newScopes.length === 0;
+
     return {
       request_id: requestData.requestId,
       app_id: requestData.appId,
@@ -237,8 +245,32 @@ class NyaitterAuthManager {
       state: requestData.state,
       already_authorized: alreadyAuthorized,
       existing_scopes: existingScopes,
+      has_scope_changes: hasScopeChanges,
+      new_scopes: newScopes,
+      can_pass_through: canPassThrough,
       expires_at: new Date(requestData.expiresAt).toISOString(),
     };
+  }
+
+  async checkUserGrant(userId, appId, appTokenHash, db = this.db) {
+    if (!userId || !appId || !db || typeof db.getAuthorizedAppByUserAndAppToken !== 'function') {
+      return { granted: false, scopes: [] };
+    }
+    try {
+      const existing = await db.getAuthorizedAppByUserAndAppToken(userId, appId, appTokenHash);
+      if (existing) {
+        return {
+          granted: true,
+          scopes: Array.isArray(existing.scopes) ? existing.scopes : [],
+          app_id: existing.app_id || appId,
+          name: existing.name || '',
+          authorized_at: existing.authorized_at || existing.created_at || null,
+        };
+      }
+    } catch (e) {
+      console.warn('[nyaitter-auth] Failed to checkUserGrant:', e.message);
+    }
+    return { granted: false, scopes: [] };
   }
 
   async approveAuthorization(requestId, userId, grantedScopes = [], db = this.db) {
