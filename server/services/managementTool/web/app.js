@@ -643,36 +643,7 @@ async function loadServerStatus() {
   }
 }
 
-async function loadServerLogs() {
-  const container = document.getElementById('server-logs-container');
-  const level = document.getElementById('server-log-level').value;
-  const search = document.getElementById('server-log-search').value.trim();
-
-  try {
-    const data = await api(`/server/logs?limit=300&level=${encodeURIComponent(level)}&search=${encodeURIComponent(search)}`);
-    const logs = data.logs || [];
-
-    if (logs.length === 0) {
-      container.textContent = 'No logs available.';
-      return;
-    }
-
-    container.innerHTML = logs.map((l) => {
-      const color = l.level === 'error' ? 'color:#f85149;' : 'color:var(--text-color);';
-      return `<div style="${color} line-height:1.4;">[${new Date(l.timestamp).toLocaleTimeString()}] ${escapeHTML(l.message)}</div>`;
-    }).join('');
-
-    container.scrollTop = container.scrollHeight;
-  } catch (e) {
-    container.textContent = `Failed to load logs: ${e.message}`;
-  }
-}
-
-document.getElementById('refresh-server-logs-btn').addEventListener('click', loadServerLogs);
-document.getElementById('server-log-level').addEventListener('change', loadServerLogs);
-document.getElementById('server-log-search').addEventListener('input', debounce(loadServerLogs, 300));
-
-document.getElementById('server-restart-btn').addEventListener('click', async () => {
+document.getElementById('server-restart-btn')?.addEventListener('click', async () => {
   if (!confirm('NyaitterServer を再起動しますか？')) return;
   const btn = document.getElementById('server-restart-btn');
   btn.disabled = true;
@@ -1234,3 +1205,4 @@ function debounce(fn, ms) {
 checkAuth();
 setInterval(checkPendingApprovals, 15000);
 initNotificationsSSE();
+initUnifiedLogsWS();
