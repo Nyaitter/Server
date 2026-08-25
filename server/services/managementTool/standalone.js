@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../../config');
-const { createDatabaseAdapter } = require('../../adapters/database');
+const { createDatabaseAdapter } = require('../../adapters');
 const ManagementToolServer = require('./ManagementToolServer');
 
 const DATA_DIR = path.resolve(__dirname, '../../data');
