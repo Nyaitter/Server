@@ -52,25 +52,52 @@ class ErrorManager {
     this.logHub = logHub;
   }
 
+  static isNmtInternal(msg, context = {}) {
+    const text = String(msg || '');
+    if (
+      text.includes('[NMT') ||
+      text.includes('[NyaitterManagementTool') ||
+      text.includes('opencode') ||
+      text.includes('Opencode') ||
+      text.includes('nmt-') ||
+      text.includes('nmt.')
+    ) {
+      return true;
+    }
+    if (context.source === 'nmt' || (context.source === 'console' && text.includes('NMT-'))) {
+      return true;
+    }
+    return false;
+  }
+
+  static _saveAtomic(filepath, data) {
+    const tmp = `${filepath}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+    fs.renameSync(tmp, filepath);
+  }
+
   static recordExternalError(err, context = {}) {
     if (!err) return null;
     try {
+      const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
+      if (ErrorManager.isNmtInternal(message, context)) return null;
+
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
       let list = [];
       if (fs.existsSync(ERRORS_FILE)) {
         try {
-          const raw = fs.readFileSync(ERRORS_FILE, 'utf8');
-          list = JSON.parse(raw) || [];
+          const raw = fs.readFileSync(ERRORS_FILE, 'utf8').trim();
+          if (raw) list = JSON.parse(raw) || [];
         } catch (_) {}
       }
-      const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
+
       const stack = err.stack || (typeof err === 'object' ? JSON.stringify(err) : '');
       const existing = list.find((e) => e.message === message && e.status === 'open');
       if (existing) {
         existing.occurrences = (existing.occurrences || 1) + 1;
         existing.lastSeen = new Date().toISOString();
         existing.context = { ...existing.context, ...context };
-        fs.writeFileSync(ERRORS_FILE, JSON.stringify(list.slice(-MAX_ERROR_RECORDS), null, 2), 'utf8');
+        ErrorManager._saveAtomic(ERRORS_FILE, list.slice(-MAX_ERROR_RECORDS));
         return existing;
       }
       const id = `err_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -96,10 +123,9 @@ class ErrorManager {
         modifiedFiles: [],
       };
       list.unshift(errorRecord);
-      fs.writeFileSync(ERRORS_FILE, JSON.stringify(list.slice(-MAX_ERROR_RECORDS), null, 2), 'utf8');
+      ErrorManager._saveAtomic(ERRORS_FILE, list.slice(-MAX_ERROR_RECORDS));
       return errorRecord;
     } catch (e) {
-      console.warn('[NMT-Errors] Failed to record external error:', e.message);
       return null;
     }
   }
@@ -159,19 +185,18 @@ class ErrorManager {
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
       if (fs.existsSync(ERRORS_FILE)) {
         this._lastFileMtime = fs.statSync(ERRORS_FILE).mtimeMs;
-        const raw = fs.readFileSync(ERRORS_FILE, 'utf8');
+        const raw = fs.readFileSync(ERRORS_FILE, 'utf8').trim();
+        if (!raw) return;
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
           this.errors = parsed.slice(-MAX_ERROR_RECORDS).map((e) => {
-            // クラッシュ時のフラグ残留をリセット
             if (e.analyzing && !e.analysis) e.analyzing = false;
             if (e.fixing && !e.analysis) e.fixing = false;
             return e;
           });
         }
       }
-    } catch (e) {
-      console.warn('[NMT-Errors] Failed to load persisted error logs:', e.message);
+    } catch (_) {
       this.errors = [];
     }
   }
@@ -179,19 +204,19 @@ class ErrorManager {
   _save() {
     try {
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(ERRORS_FILE, JSON.stringify(this.errors.slice(-MAX_ERROR_RECORDS), null, 2), 'utf8');
+      ErrorManager._saveAtomic(ERRORS_FILE, this.errors.slice(-MAX_ERROR_RECORDS));
       if (fs.existsSync(ERRORS_FILE)) {
         this._lastFileMtime = fs.statSync(ERRORS_FILE).mtimeMs;
       }
-    } catch (e) {
-      console.warn('[NMT-Errors] Failed to save error logs:', e.message);
-    }
+    } catch (_) {}
   }
 
   async recordError(err, context = {}) {
     if (!err) return null;
 
     const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
+    if (ErrorManager.isNmtInternal(message, context)) return null;
+
     const stack = typeof err === 'string' ? '' : err.stack || '';
 
     // 重複エラー（直近5分以内の同一メッセージ）は発生回数をインクリメント

@@ -97,6 +97,9 @@ router.get({
   if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {
     const reportId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(reportId) || reportId < 1) {
+      return res.status(400).json({ error: '通報IDが不正です' });
+    }
     const report = await service.getReportById(reportId);
     if (!report) return res.status(404).json({ error: '通報が見つかりません' });
     res.json({ report });
@@ -115,6 +118,9 @@ router.patch({
   if (!service) return res.status(503).json({ error: 'Moderation service is unavailable' });
   try {
     const reportId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(reportId) || reportId < 1) {
+      return res.status(400).json({ error: '通報IDが不正です' });
+    }
     const { status, note, action } = req.body || {};
     const updated = await service.updateReportStatus(reportId, { status, note, action, moderatorId: req.user.id });
 
