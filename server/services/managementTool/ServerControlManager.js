@@ -157,15 +157,179 @@ class ServerControlManager {
       return { success: true, mode: 'pm2', message: 'PM2 再起動シグナルを送信しました。' };
     }
 
-    if (typeof this.shutdownFn === 'function') {
-      setTimeout(() => {
-        this.shutdownFn('NMT_RESTART');
-      }, 500);
-      return { success: true, mode: 'shutdown', message: 'サーバー再起動/シャットダウンを開始しました。' };
-    }
+    // ── 安全なプロセス分離再起動（新プロセスの起動確認後に旧プロセスを交代） ──
+    const { spawn } = require('child_process');
+    const net = require('net');
+    const mainScript = path.resolve(PROJECT_ROOT, 'server/index.js');
+    const serverPort = Number(process.env.PORT) || 3000;
 
-    setTimeout(() => process.exit(0), 500);
-    return { success: true, mode: 'exit', message: 'プロセスを終了します（スーパーバイザーで再起動されます）。' };
+    return new Promise((resolve) => {
+      let isResolved = false;
+      const child = spawn(process.execPath, [mainScript], {
+        cwd: PROJECT_ROOT,
+        detached: true,
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          NMT_ENABLED: 'true',
+        },
+      });
+
+      child.unref();
+
+      let checkInterval = null;
+      let timeoutTimer = null;
+
+      const cleanup = () => {
+        if (checkInterval) clearInterval(checkInterval);
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+      };
+
+      // 1. 新プロセスのヘルスチェック（ポート接続確認）
+      checkInterval = setInterval(() => {
+        const socket = net.createConnection({ port: serverPort, host: '127.0.0.1' }, () => {
+          socket.end();
+          cleanup();
+          if (isResolved) return;
+          isResolved = true;
+
+          // 新プロセスの正常起動が確認できたため、旧プロセスを安全にシャットダウン
+          if (typeof this.shutdownFn === 'function') {
+            setTimeout(() => this.shutdownFn('NMT_ZERO_DOWNTIME_HANDOVER'), 500);
+          }
+
+          resolve({
+            success: true,
+            mode: 'safe_handover',
+            newPid: child.pid,
+            message: `NyaitterServer 新プロセス (PID: ${child.pid}) の正常起動を確認しました。旧プロセスを安全に交代しました。`,
+          });
+        });
+
+        socket.on('error', () => {
+          // まだ起動中
+        });
+      }, 1000);
+
+      // 2. タイムアウト（30秒以内に起動しない場合は旧プロセス維持）
+      timeoutTimer = setTimeout(() => {
+        cleanup();
+        if (isResolved) return;
+        isResolved = true;
+
+        try {
+          process.kill(child.pid, 'SIGKILL');
+        } catch (_) {}
+
+        resolve({
+          success: false,
+          mode: 'failed_maintained',
+          message: '新プロセスの起動がタイムアウトしました。安全のため旧プロセスをそのまま維持しています。',
+        });
+      }, 30000);
+
+      // 3. 新プロセスの異常終了検知
+      child.on('exit', (code) => {
+        cleanup();
+        if (isResolved) return;
+        isResolved = true;
+
+        resolve({
+          success: false,
+          mode: 'crash_prevented',
+          message: `新プロセスがエラー終了しました (Exit code: ${code})。安全のため旧プロセスをそのまま維持しています。`,
+        });
+      });
+    });
+  }
+
+  // ── NMT 自身の安全なホットリスタート ───────────────────────────────────
+  async restartNMT(nmtServerInstance = null) {
+    console.log('[NMT] Self-restart requested via Management Tool.');
+    const { fork } = require('child_process');
+    const standaloneScript = path.resolve(__dirname, 'standalone.js');
+
+    return new Promise((resolve) => {
+      // 1. 事前構文チェック
+      execFile('node', ['--check', standaloneScript], (checkErr) => {
+        if (checkErr) {
+          return resolve({
+            success: false,
+            mode: 'syntax_error_prevented',
+            message: `NMT スクリプトの構文エラーを検知しました: ${checkErr.message}。安全のため旧プロセスを維持します。`,
+          });
+        }
+
+        let isResolved = false;
+        const child = fork(standaloneScript, [], {
+          cwd: PROJECT_ROOT,
+          detached: true,
+          stdio: 'inherit',
+          env: { ...process.env },
+        });
+
+        let timeoutTimer = null;
+
+        const cleanup = () => {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+        };
+
+        // 2. 新 NMT プロセスからの起動完了 IPC メッセージを待機
+        child.on('message', (msg) => {
+          if (msg && msg.type === 'nmt_ready') {
+            cleanup();
+            if (isResolved) return;
+            isResolved = true;
+
+            // 新 NMT プロセスが正常起動したため、旧 NMT を安全に終了
+            setTimeout(() => {
+              if (nmtServerInstance && typeof nmtServerInstance.stop === 'function') {
+                nmtServerInstance.stop();
+              }
+              child.unref();
+              process.exit(0);
+            }, 500);
+
+            resolve({
+              success: true,
+              mode: 'nmt_handover_success',
+              newPid: msg.pid || child.pid,
+              message: `新 NMT プロセス (PID: ${msg.pid || child.pid}) の正常起動を確認しました。旧 NMT プロセスを安全に終了します。`,
+            });
+          }
+        });
+
+        // 3. タイムアウト（15秒）
+        timeoutTimer = setTimeout(() => {
+          cleanup();
+          if (isResolved) return;
+          isResolved = true;
+
+          try {
+            child.kill('SIGKILL');
+          } catch (_) {}
+
+          resolve({
+            success: false,
+            mode: 'nmt_timeout_prevented',
+            message: '新 NMT プロセスの起動がタイムアウトしました。安全のため旧 NMT プロセスをそのまま維持しています。',
+          });
+        }, 15000);
+
+        // 4. 新プロセスの異常終了
+        child.on('exit', (code) => {
+          cleanup();
+          if (isResolved) return;
+          isResolved = true;
+
+          resolve({
+            success: false,
+            mode: 'nmt_crash_prevented',
+            message: `新 NMT プロセスが起動途中で異常終了しました (Exit code: ${code})。安全のため旧 NMT プロセスを維持しています。`,
+          });
+        });
+      });
+    });
   }
 
   async stopServer() {

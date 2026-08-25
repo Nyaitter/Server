@@ -527,6 +527,15 @@ class ManagementToolServer {
       }
     });
 
+    this.app.post('/api/server/restart-nmt', authMiddleware, async (req, res) => {
+      try {
+        const result = await this.serverControl.restartNMT(this);
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     this.app.post('/api/server/stop', authMiddleware, async (req, res) => {
       try {
         const result = await this.serverControl.stopServer();
