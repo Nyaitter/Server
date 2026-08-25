@@ -69,16 +69,6 @@ class ManagementToolServer {
     return requestOperatorCommand({ action, ...params }, { timeoutMs });
   }
 
-  // ログを NyaitterServer 本体へリアルタイム転送（IPC経由）
-  async _pushLogToMain(logEntry) {
-    if (!config.nmt?.enabled) return;
-    try {
-      await this._ipc('push-log', { log: logEntry }, { timeoutMs: 500 });
-    } catch (_) {
-      // IPC 失敗時は無視（ローカル logHub に残る）
-    }
-  }
-
   // ── メインサーバーからのフック ─────────────────────────────────────────
   recordError(err, context = {}) {
     const msg = typeof err === 'string' ? err : err.message || 'Unknown Error';
@@ -90,7 +80,6 @@ class ManagementToolServer {
       details: { stack: err.stack, context },
     };
     this.logHub.addLog(logEntry);
-    this._pushLogToMain(logEntry);
     return this.errorManager.recordError(err, context);
   }
 
