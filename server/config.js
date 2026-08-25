@@ -712,6 +712,23 @@ const config = {
 		    return this.autoMod;
 		  },
 
+		  moderation: {
+		    descriptionMaxLength: exactIntegerSetting(
+		      'moderation description max length',
+		      ['REPORT_DESCRIPTION_MAX_LENGTH', 'MODERATION_DESCRIPTION_MAX_LENGTH'],
+		      ['moderation.descriptionMaxLength', 'limits.reportDescriptionLength'],
+		      2000,
+		      1,
+		    ),
+		    reassignAfterMs: exactIntegerSetting(
+		      'moderation reassign after ms',
+		      ['REPORT_REASSIGN_AFTER_MS', 'MODERATION_REASSIGN_AFTER_MS'],
+		      ['moderation.reassignAfterMs'],
+		      24 * 60 * 60 * 1000,
+		      1000,
+		    ),
+		  },
+
 		  // VAPID private keys must only be supplied through environment variables
 		  // in production. The public key is exposed only to authenticated clients.
 		  push: {

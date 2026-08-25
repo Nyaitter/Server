@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 const { createNotificationIfAllowed } = require('./NotificationDeliveryService');
+const config = require('../config');
 
 const REPORT_TARGET_KINDS = new Set(['user', 'post', 'dm', 'dm_message']);
-const REPORT_DESCRIPTION_MAX_LENGTH = 2000;
-const REPORT_REASSIGN_AFTER_MS = 24 * 60 * 60 * 1000;
+const REPORT_DESCRIPTION_MAX_LENGTH = config.moderation?.descriptionMaxLength || 2000;
+const REPORT_REASSIGN_AFTER_MS = config.moderation?.reassignAfterMs || (24 * 60 * 60 * 1000);
 
 function assignmentNotificationMessage() {
   return '新しいリクエストが割り当てられました。';
@@ -50,11 +51,13 @@ function attachmentKeys(attachments) {
 }
 
 class ModerationReportService {
-  constructor({ dbAdapter, storageAdapter = null, publishNotification = null, now = () => new Date() }) {
+  constructor({ dbAdapter, storageAdapter = null, publishNotification = null, now = () => new Date(), config: serviceConfig = null } = {}) {
     this.db = dbAdapter;
     this.storage = storageAdapter;
     this.publishNotification = publishNotification;
     this.now = now;
+    this.descriptionMaxLength = serviceConfig?.descriptionMaxLength || config.moderation?.descriptionMaxLength || REPORT_DESCRIPTION_MAX_LENGTH;
+    this.reassignAfterMs = serviceConfig?.reassignAfterMs || config.moderation?.reassignAfterMs || REPORT_REASSIGN_AFTER_MS;
   }
 
   async createReport({ reporterUserId, reporterId: altReporterId, targetKind, targetId, description = '' }) {
@@ -69,8 +72,8 @@ class ModerationReportService {
     }
 
     const normalizedDescription = String(description || '').trim();
-    if (normalizedDescription.length > REPORT_DESCRIPTION_MAX_LENGTH) {
-      throw new Error(`description must be ${REPORT_DESCRIPTION_MAX_LENGTH} characters or less`);
+    if (normalizedDescription.length > this.descriptionMaxLength) {
+      throw new Error(`description must be ${this.descriptionMaxLength} characters or less`);
     }
 
     const snapshot = await this._captureTargetSnapshot({
@@ -93,8 +96,8 @@ class ModerationReportService {
     const appellantId = toSafeInteger(userId, 'userId');
     const normalizedDescription = String(description || '').trim();
     if (!normalizedDescription) throw new Error('異議申し立ての説明を入力してください');
-    if (normalizedDescription.length > REPORT_DESCRIPTION_MAX_LENGTH) {
-      throw new Error(`description must be ${REPORT_DESCRIPTION_MAX_LENGTH} characters or less`);
+    if (normalizedDescription.length > this.descriptionMaxLength) {
+      throw new Error(`description must be ${this.descriptionMaxLength} characters or less`);
     }
 
     const appellant = await this.db.getUserById(appellantId);
@@ -143,6 +146,42 @@ class ModerationReportService {
 
   async getVerificationApplicationStatus(userId) {
     return this.db.getOpenModerationVerificationByUserId(toSafeInteger(userId, 'userId'));
+  }
+
+  async getReportById(reportId) {
+    const id = toSafeInteger(reportId, 'reportId', { minimum: 1 });
+    return this.db.getModerationReportById(id);
+  }
+
+  async listReports({ status = 'assigned', limit = 50, offset = 0, adminId = null } = {}) {
+    if (adminId != null && typeof this.db.listModerationReportsForAdmin === 'function') {
+      return this.db.listModerationReportsForAdmin(adminId, { status, limit, offset });
+    }
+    if (typeof this.db.listModerationReports === 'function') {
+      return this.db.listModerationReports({ status, limit, offset });
+    }
+    if (typeof this.db.getUnassignedModerationReports === 'function') {
+      const reports = await this.db.getUnassignedModerationReports(limit + offset);
+      return reports.slice(offset, offset + limit);
+    }
+    return [];
+  }
+
+  async updateReportStatus(reportId, { status, note, action, moderatorId } = {}) {
+    const id = toSafeInteger(reportId, 'reportId', { minimum: 1 });
+    const adminId = toSafeInteger(moderatorId, 'moderatorId');
+    if (status === 'resolved' || status === 'closed') {
+      const actions = {};
+      if (action === 'delete_post') actions.deletePost = true;
+      if (action === 'freeze') actions.freeze = true;
+      if (action === 'search_exclude') actions.searchExclude = true;
+      if (note) actions.notice = note;
+      return this.resolveReport({ reportId: id, adminId, actions });
+    }
+    if (typeof this.db.updateModerationReport === 'function') {
+      return this.db.updateModerationReport(id, { status, note, updatedAt: this.now().toISOString() });
+    }
+    return this.getReportById(id);
   }
 
   async _captureTargetSnapshot({ reporterUserId, targetKind, targetId }) {
@@ -289,7 +328,7 @@ class ModerationReportService {
       if (result) assigned.push(result);
     }
 
-    const cutoff = new Date(this.now().getTime() - REPORT_REASSIGN_AFTER_MS).toISOString();
+    const cutoff = new Date(this.now().getTime() - this.reassignAfterMs).toISOString();
     const overdue = await this.db.getOverdueModerationReports(cutoff);
     for (const report of overdue) {
       const excluded = [...new Set([
@@ -335,8 +374,8 @@ class ModerationReportService {
       notice: String(actions.notice || '').trim(),
       targetUserId: actions.targetUserId == null ? null : toSafeInteger(actions.targetUserId, 'targetUserId'),
     };
-    if (normalizedActions.notice.length > REPORT_DESCRIPTION_MAX_LENGTH) {
-      throw new Error(`notice must be ${REPORT_DESCRIPTION_MAX_LENGTH} characters or less`);
+    if (normalizedActions.notice.length > this.descriptionMaxLength) {
+      throw new Error(`notice must be ${this.descriptionMaxLength} characters or less`);
     }
     if (normalizedActions.freeze && !normalizedActions.freezeReason) {
       throw new Error('凍結する場合は理由が必要です');
