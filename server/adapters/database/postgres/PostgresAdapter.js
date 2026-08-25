@@ -5081,9 +5081,11 @@ class PostgresAdapter extends DatabaseAdapter {
 			throw new Error('投票には最低2つの選択肢が必要です');
 		}
 
-		const pollId = id ? String(id).trim() : crypto.randomUUID();
-		const pId = String(postId).trim();
-		const uId = String(userId).trim();
+		const pollId = id != null
+			? (Number(id) || String(id).trim())
+			: Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+		const pId = Number(postId) || String(postId).trim();
+		const uId = Number(userId) || String(userId).trim();
 
 		const { rows } = await this.pool.query(
 			`INSERT INTO polls (id, post_id, user_id, title, options, allow_multiple, allow_other, show_results_before_voting, expires_at)
@@ -5134,7 +5136,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		const { rows: voteRows } = await this.pool.query(
 			'SELECT * FROM poll_votes WHERE poll_id::text = $1',
-			[pId],
+			[String(pollRows[0].id)],
 		);
 
 		return this._formatPoll(pollRows[0], voteRows, currentUserId);
@@ -5220,23 +5222,23 @@ class PostgresAdapter extends DatabaseAdapter {
 			// 既存の投票を削除（再投票/更新）
 			await client.query(
 				'DELETE FROM poll_votes WHERE poll_id::text = $1 AND user_id::text = $2',
-				[pId, uId],
+				[String(poll.id), uId],
 			);
 
-			// 新規投票を挿入（アダプター共通でアプリ側でユニークIDを明示的に生成）
+			// 新規投票を挿入（アダプター共通でアプリ側でユニークIDを明示的に生成し、poll.id を確実に渡す）
 			for (const optId of targetOptionIds) {
 				const voteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
 				await client.query(
 					`INSERT INTO poll_votes (id, poll_id, user_id, option_id, other_text, created_at)
 					 VALUES ($1, $2, $3, $4, $5, NOW())`,
-					[voteId, Number(pId) || pId, Number(uId) || uId, optId, optId === -1 ? sanitizedOtherText : null],
+					[voteId, poll.id, Number(uId) || uId, optId, optId === -1 ? sanitizedOtherText : null],
 				);
 			}
 
 			// 更新後の全票を取得
 			const { rows: voteRows } = await client.query(
 				'SELECT * FROM poll_votes WHERE poll_id::text = $1',
-				[pId],
+				[String(poll.id)],
 			);
 
 			return this._formatPoll(poll, voteRows, uId);

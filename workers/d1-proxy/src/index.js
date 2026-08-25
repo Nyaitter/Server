@@ -183,12 +183,95 @@ function rewriteAttachmentReferences(attachments, replacementMap) {
 	return { attachments: rewritten, changed };
 }
 
+function formatD1PollRow(poll, voteRows = [], currentUserId = null) {
+	if (!poll) return null;
+	const isExpired = Boolean(poll.expires_at && new Date(poll.expires_at) <= new Date()) || Boolean(poll.closed);
+	let rawOptions = [];
+	try {
+		rawOptions = typeof poll.options === 'string' ? JSON.parse(poll.options) : (poll.options || []);
+	} catch (_) {
+		rawOptions = [];
+	}
+
+	const votes = voteRows || [];
+	const totalVotesCount = votes.length;
+	const voterIds = new Set(votes.map((v) => Number(v.user_id)));
+	const totalVotersCount = voterIds.size;
+
+	const myVotes = [];
+	let myOtherText = null;
+	const votesByOption = new Map();
+	let otherCount = 0;
+	const otherVotes = [];
+
+	for (const v of votes) {
+		const optId = Number(v.option_id);
+		const vUserId = Number(v.user_id);
+		if (currentUserId != null && vUserId === Number(currentUserId)) {
+			myVotes.push(optId);
+			if (optId === -1 && v.other_text) {
+				myOtherText = v.other_text;
+			}
+		}
+
+		if (optId === -1) {
+			otherCount += 1;
+			if (v.other_text) {
+				otherVotes.push({
+					user_id: vUserId,
+					text: v.other_text,
+					created_at: v.created_at,
+				});
+			}
+		} else {
+			votesByOption.set(optId, (votesByOption.get(optId) || 0) + 1);
+		}
+	}
+
+	const hasVoted = currentUserId != null && myVotes.length > 0;
+	const showResultsBeforeVoting = Boolean(poll.show_results_before_voting);
+
+	const formattedOptions = rawOptions.map((opt) => {
+		const count = votesByOption.get(Number(opt.id)) || 0;
+		const percentage = totalVotesCount > 0 ? Math.round((count / totalVotesCount) * 100) : 0;
+		return {
+			id: Number(opt.id),
+			text: String(opt.text || ''),
+			votes_count: count,
+			percentage,
+		};
+	});
+
+	return {
+		id: poll.id,
+		post_id: poll.post_id,
+		user_id: poll.user_id,
+		title: poll.title,
+		options: formattedOptions,
+		allow_multiple: Boolean(poll.allow_multiple),
+		allow_other: Boolean(poll.allow_other),
+		show_results_before_voting: showResultsBeforeVoting,
+		other_votes_count: otherCount,
+		other_percentage: totalVotesCount > 0 ? Math.round((otherCount / totalVotesCount) * 100) : 0,
+		other_votes: isExpired || hasVoted || showResultsBeforeVoting ? otherVotes : [],
+		total_votes: totalVotesCount,
+		total_voters: totalVotersCount,
+		my_votes: myVotes,
+		my_other_text: myOtherText,
+		has_voted: hasVoted,
+		expires_at: poll.expires_at || null,
+		is_expired: isExpired,
+		closed: Boolean(poll.closed),
+		created_at: poll.created_at,
+	};
+}
+
 const MIGRATION_TABLES = [
 	'users', 'sessions', 'trusted_login_ips', 'login_approvals', 'bot_tokens', 'posts',
 	'likes', 'stars', 'reposts', 'pinned_posts', 'follows', 'dm_channels', 'dm_messages',
 		'group_dms', 'dm_e2e_keys', 'notifications', 'push_subscriptions', 'moderation_reports', 'logs',
 		'groups', 'group_roles', 'group_memberships', 'group_invites', 'group_join_requests',
-		'user_keyword_affinities',
+		'user_keyword_affinities', 'polls', 'poll_votes',
 ];
 const MIGRATION_COLUMNS = {
 	users: ['id', 'scid', 'name', 'handle', 'nyaitter_address', 'auth_provider', 'provider_domain', 'external_id', 'external_profile', 'uuid', 'settings', 'bio', 'header_image', 'icon_data', 'verify', 'freeze', 'admin', 'shadow', 'block', 'account_operation', 'created_at'],
@@ -216,8 +299,10 @@ const MIGRATION_COLUMNS = {
 	group_invites: ['id', 'group_id', 'inviter_id', 'invitee_id', 'status', 'created_at', 'responded_at'],
 	group_join_requests: ['id', 'group_id', 'user_id', 'status', 'reviewed_by', 'created_at', 'reviewed_at'],
 	user_keyword_affinities: ['user_id', 'keyword', 'score', 'updated_at'],
+	polls: ['id', 'post_id', 'user_id', 'title', 'options', 'allow_multiple', 'allow_other', 'show_results_before_voting', 'expires_at', 'closed', 'closed_notified', 'created_at'],
+	poll_votes: ['id', 'poll_id', 'user_id', 'option_id', 'other_text', 'created_at'],
 };
-const MIGRATION_JSON_COLUMNS = new Set(['external_profile', 'settings', 'block', 'attachments', 'tags', 'participants', 'member', 'post', 'unread', 'target', 'target_snapshot', 'excluded_admin_ids', 'resolution', 'permissions']);
+const MIGRATION_JSON_COLUMNS = new Set(['external_profile', 'settings', 'block', 'attachments', 'tags', 'participants', 'member', 'post', 'unread', 'target', 'target_snapshot', 'excluded_admin_ids', 'resolution', 'permissions', 'options']);
 const MIGRATION_BOOLEAN_COLUMNS = new Set(['verify', 'admin', 'shadow', 'mask', 'lock', 'announcement', 'group_announcement', 'is_system', 'read', 'clicked']);
 const MIGRATION_INSERT_ORDER = ['users', 'groups', 'group_roles', 'group_memberships', 'group_invites', 'group_join_requests', 'posts', 'dm_channels', 'group_dms', 'dm_e2e_keys', 'sessions', 'trusted_login_ips', 'login_approvals', 'bot_tokens', 'follows', 'likes', 'stars', 'reposts', 'pinned_posts', 'user_keyword_affinities', 'dm_messages', 'notifications', 'push_subscriptions', 'moderation_reports', 'logs'];
 
@@ -3003,6 +3088,165 @@ export default {
 				const limit = Math.min(Number(url.searchParams.get('limit') || 20), 100);
 				const offset = Number(url.searchParams.get('offset') || 0);
 				const { results } = await db.prepare('SELECT * FROM logs ORDER BY log_time DESC LIMIT ? OFFSET ?').bind(limit, offset).all();
+				return json(results || []);
+			}
+
+			// ==================== Polls ====================
+
+			if (method === 'POST' && pathname === '/polls') {
+				const body = await request.json();
+				const pollId = Number(body.id) || Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+				const postId = Number(body.postId ?? body.post_id);
+				const userId = Number(body.userId ?? body.user_id);
+				const title = String(body.title || '').trim() || '投票';
+				const options = JSON.stringify(body.options || []);
+				const allowMultiple = body.allowMultiple || body.allow_multiple ? 1 : 0;
+				const allowOther = body.allowOther || body.allow_other ? 1 : 0;
+				const showResultsBeforeVoting = body.showResultsBeforeVoting !== false && body.show_results_before_voting !== false ? 1 : 0;
+				const expiresAt = body.expiresAt || body.expires_at || null;
+				const now = new Date().toISOString();
+
+				await db.prepare(
+					`INSERT INTO polls (id, post_id, user_id, title, options, allow_multiple, allow_other, show_results_before_voting, expires_at, closed, closed_notified, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`
+				).bind(pollId, postId, userId, title, options, allowMultiple, allowOther, showResultsBeforeVoting, expiresAt, now).run();
+
+				const created = await db.prepare('SELECT * FROM polls WHERE id = ?').bind(pollId).first();
+				return json(formatD1PollRow(created, [], userId));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/poll$/)) {
+				const postId = Number(pathname.split('/')[2]);
+				const currentUserId = url.searchParams.get('currentUserId') != null ? Number(url.searchParams.get('currentUserId')) : null;
+				const poll = await db.prepare('SELECT * FROM polls WHERE post_id = ?').bind(postId).first();
+				if (!poll) return json(null);
+				const { results: voteRows } = await db.prepare('SELECT * FROM poll_votes WHERE poll_id = ?').bind(poll.id).all();
+				return json(formatD1PollRow(poll, voteRows || [], currentUserId));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/polls\/(\d+)$/)) {
+				const pollId = Number(pathname.split('/')[2]);
+				const currentUserId = url.searchParams.get('currentUserId') != null ? Number(url.searchParams.get('currentUserId')) : null;
+				const poll = await db.prepare('SELECT * FROM polls WHERE id = ?').bind(pollId).first();
+				if (!poll) return notFound('Poll not found');
+				const { results: voteRows } = await db.prepare('SELECT * FROM poll_votes WHERE poll_id = ?').bind(poll.id).all();
+				return json(formatD1PollRow(poll, voteRows || [], currentUserId));
+			}
+
+			if (method === 'GET' && pathname === '/polls/by-posts') {
+				const rawPostIds = url.searchParams.get('postIds') || '';
+				const currentUserId = url.searchParams.get('currentUserId') != null ? Number(url.searchParams.get('currentUserId')) : null;
+				const postIds = rawPostIds.split(',').map(Number).filter(Number.isSafeInteger);
+				if (postIds.length === 0) return json([]);
+
+				const placeholders = postIds.map(() => '?').join(', ');
+				const { results: polls } = await db.prepare(`SELECT * FROM polls WHERE post_id IN (${placeholders})`).bind(...postIds).all();
+				if (!polls || polls.length === 0) return json([]);
+
+				const pollIds = polls.map((p) => p.id);
+				const pollPlaceholders = pollIds.map(() => '?').join(', ');
+				const { results: allVotes } = await db.prepare(`SELECT * FROM poll_votes WHERE poll_id IN (${pollPlaceholders})`).bind(...pollIds).all();
+
+				const votesByPoll = new Map();
+				for (const v of allVotes || []) {
+					if (!votesByPoll.has(v.poll_id)) votesByPoll.set(v.poll_id, []);
+					votesByPoll.get(v.poll_id).push(v);
+				}
+
+				const formattedList = polls.map((p) => formatD1PollRow(p, votesByPoll.get(p.id) || [], currentUserId)).filter(Boolean);
+				return json(formattedList);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/polls\/(\d+)\/vote$/)) {
+				const pollId = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const userId = Number(body.userId ?? body.user_id);
+				const poll = await db.prepare('SELECT * FROM polls WHERE id = ?').bind(pollId).first();
+				if (!poll) return notFound('Poll not found');
+
+				const isExpired = Boolean(poll.expires_at && new Date(poll.expires_at) <= new Date()) || Boolean(poll.closed);
+				if (isExpired) return badRequest('この投票は既に終了しています');
+
+				const optionIds = Array.isArray(body.optionIds) ? body.optionIds.map(Number) : [];
+				const otherText = body.otherText ? String(body.otherText).trim().slice(0, 200) : null;
+				const now = new Date().toISOString();
+
+				// 既存の投票を削除
+				await db.prepare('DELETE FROM poll_votes WHERE poll_id = ? AND user_id = ?').bind(poll.id, userId).run();
+
+				// 新規投票を挿入（poll.id を確実に外部キーとして渡す）
+				for (const optId of optionIds) {
+					const voteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+					await db.prepare(
+						'INSERT INTO poll_votes (id, poll_id, user_id, option_id, other_text, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+					).bind(voteId, poll.id, userId, optId, optId === -1 ? otherText : null, now).run();
+				}
+
+				const { results: voteRows } = await db.prepare('SELECT * FROM poll_votes WHERE poll_id = ?').bind(poll.id).all();
+				return json(formatD1PollRow(poll, voteRows || [], userId));
+			}
+
+			if (method === 'GET' && pathname === '/polls/expired-unnotified') {
+				const now = new Date().toISOString();
+				const { results } = await db.prepare('SELECT * FROM polls WHERE expires_at IS NOT NULL AND expires_at <= ? AND closed_notified = 0 LIMIT 50').bind(now).all();
+				return json(results || []);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/polls\/(\d+)\/mark-notified$/)) {
+				const pollId = Number(pathname.split('/')[2]);
+				await db.prepare('UPDATE polls SET closed_notified = 1 WHERE id = ?').bind(pollId).run();
+				return json({ success: true });
+			}
+
+			if (method === 'GET' && pathname.match(/^\/polls\/(\d+)\/voters$/)) {
+				const pollId = Number(pathname.split('/')[2]);
+				const { results } = await db.prepare(
+					`SELECT pv.option_id, pv.created_at, pv.other_text, u.id as user_id, u.name, u.scid, u.icon_data
+					 FROM poll_votes pv
+					 JOIN users u ON u.id = pv.user_id
+					 WHERE pv.poll_id = ?
+					 ORDER BY pv.created_at DESC`
+				).bind(pollId).all();
+				return json(results || []);
+			}
+
+			// ==================== Post Activities ====================
+
+			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/reposts$/)) {
+				const postId = Number(pathname.split('/')[2]);
+				const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
+				const { results } = await db.prepare(
+					`SELECT u.id, u.name, u.scid, u.icon_data, r.created_at
+					 FROM reposts r
+					 JOIN users u ON u.id = r.user_id
+					 WHERE r.post_id = ?
+					 ORDER BY r.created_at DESC LIMIT ?`
+				).bind(postId, limit).all();
+				return json(results || []);
+			}
+
+			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/quotes$/)) {
+				const postId = Number(pathname.split('/')[2]);
+				const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
+				const { results } = await db.prepare(
+					`SELECT p.*
+					 FROM posts p
+					 WHERE p.repost_to = ? AND p.content != ''
+					 ORDER BY p.created_at DESC LIMIT ?`
+				).bind(postId, limit).all();
+				return json((results || []).map(normalizePostRow));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/likes$/)) {
+				const postId = Number(pathname.split('/')[2]);
+				const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
+				const { results } = await db.prepare(
+					`SELECT u.id, u.name, u.scid, u.icon_data, l.created_at
+					 FROM likes l
+					 JOIN users u ON u.id = l.user_id
+					 WHERE l.post_id = ?
+					 ORDER BY l.created_at DESC LIMIT ?`
+				).bind(postId, limit).all();
 				return json(results || []);
 			}
 

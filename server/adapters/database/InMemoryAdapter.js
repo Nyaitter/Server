@@ -3774,9 +3774,11 @@ class InMemoryAdapter extends DatabaseAdapter {
 			throw new Error('投票には最低2つの選択肢が必要です');
 		}
 
-		const pollId = id ? String(id).trim() : crypto.randomUUID();
-		const pId = String(postId).trim();
-		const uId = String(userId).trim();
+		const pollId = id != null
+			? (Number(id) || String(id).trim())
+			: Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+		const pId = Number(postId) || String(postId).trim();
+		const uId = Number(userId) || String(userId).trim();
 		const poll = {
 			id: pollId,
 			post_id: pId,
@@ -3821,8 +3823,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 	async getPollsByPostIds(postIds, currentUserId = null) {
 		const map = new Map();
-		for (const postId of postIds || []) {
-			const pId = String(postId).trim();
+		for (const id of postIds || []) {
+			const pId = String(id).trim();
 			const pollId = this.pollByPostId.get(pId) ?? this.pollByPostId.get(Number(pId));
 			if (pollId) {
 				const formatted = await this.getPollById(pollId, currentUserId);
@@ -3858,10 +3860,10 @@ class InMemoryAdapter extends DatabaseAdapter {
 		}
 
 		// 既存の投票を削除
-		const voteIds = this.pollVoteIdsByPoll.get(pId) ?? this.pollVoteIdsByPoll.get(Number(pId)) ?? new Set();
+		const voteIds = this.pollVoteIdsByPoll.get(String(poll.id)) ?? this.pollVoteIdsByPoll.get(Number(poll.id)) ?? new Set();
 		for (const vId of Array.from(voteIds)) {
 			const v = this.pollVotes.get(vId);
-			if (v && String(v.user_id) === uId) {
+			if (v && String(v.user_id) === String(uId)) {
 				voteIds.delete(vId);
 				this.pollVotes.delete(vId);
 			}

@@ -1070,7 +1070,6 @@ router.delete('/admin/:id', requireAuth, postWriteLimiter, (req, res) => {
 router.get('/:id/activity', optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const postId = safeParsePostId(req.params.id);
-	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
 
 	if (!postId) {
 		return res.status(400).json({ error: 'Invalid post id' });
@@ -1083,40 +1082,55 @@ router.get('/:id/activity', optionalAuth, async (req, res) => {
 			return res.status(404).json({ error: 'Post not found' });
 		}
 
-		const isAuthor = Boolean(currentUserId && Number(post.userId) === currentUserId);
+		const isAuthor = Boolean(currentUserId && (Number(post.userId) === currentUserId || req.user?.admin));
 
-		// リポストしたユーザー一覧
-		const reposts = await db.getRepostsOfPost(postId, limit);
+		// リポスト数・引用ポスト数
+		const reposts = await db.getRepostsOfPost(postId, 100);
+		const quotePosts = await db.getQuotesOfPost(postId, 100);
 
-		// 引用ポスト一覧
-		const quotePosts = await db.getQuotesOfPost(postId, limit);
-		const serializedQuotes = await serializePostsBatch(db, quotePosts, currentUserId, getPublicUrl(req));
-
-		// いいね・お気に入り（ポスト主のみ）
-		let likes = undefined;
-		let stars = undefined;
+		// いいね数（ポスト主のみ）
+		let likesCount = undefined;
 		if (isAuthor) {
-			likes = await db.getLikesOfPost(postId, limit);
-			stars = await db.getStarsOfPost(postId, limit);
+			const likes = await db.getLikesOfPost(postId, 100);
+			likesCount = Array.isArray(likes) ? likes.length : 0;
 		}
 
 		res.json({
 			success: true,
 			is_author: isAuthor,
-			reposts,
-			quotes: serializedQuotes,
-			likes,
-			stars,
 			counts: {
-				reposts: reposts.length,
-				quotes: serializedQuotes.length,
-				likes: isAuthor ? (likes ? likes.length : 0) : undefined,
-				stars: isAuthor ? (stars ? stars.length : 0) : undefined,
+				reposts: Array.isArray(reposts) ? reposts.length : 0,
+				quotes: Array.isArray(quotePosts) ? quotePosts.length : 0,
+				likes: likesCount,
 			},
 		});
 	} catch (err) {
 		console.error('[posts] activity error:', err);
 		res.status(500).json({ error: 'ポストアクティビティの取得に失敗しました' });
+	}
+});
+
+router.get('/:id/quotes', optionalAuth, async (req, res) => {
+	const db = getDbAdapter(req);
+	const postId = safeParsePostId(req.params.id);
+	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+
+	if (!postId) {
+		return res.status(400).json({ error: 'Invalid post id' });
+	}
+
+	try {
+		const post = await db.getPostById(postId);
+		const currentUserId = req.user ? Number(req.user.id) : null;
+		if (!post || !(await canViewPost(db, post, currentUserId, null, null, req.user?.visibilityUser || null))) {
+			return res.status(404).json({ error: 'Post not found' });
+		}
+		const quotePosts = await db.getQuotesOfPost(postId, limit);
+		const serializedQuotes = await serializePostsBatch(db, quotePosts, currentUserId, getPublicUrl(req));
+		res.json({ quotes: serializedQuotes });
+	} catch (err) {
+		console.error('[posts] quotes list error:', err);
+		res.status(500).json({ error: '引用ポスト一覧の取得に失敗しました' });
 	}
 });
 
@@ -1131,7 +1145,7 @@ router.get('/:id/reposts', optionalAuth, async (req, res) => {
 
 	try {
 		const post = await db.getPostById(postId);
-		const currentUserId = req.user ? req.user.id : null;
+		const currentUserId = req.user ? Number(req.user.id) : null;
 		if (!post || !(await canViewPost(db, post, currentUserId, null, null, req.user?.visibilityUser || null))) {
 			return res.status(404).json({ error: 'Post not found' });
 		}
@@ -1140,6 +1154,33 @@ router.get('/:id/reposts', optionalAuth, async (req, res) => {
 	} catch (err) {
 		console.error('[posts] reposts list error:', err);
 		res.status(500).json({ error: 'リポスト一覧の取得に失敗しました' });
+	}
+});
+
+router.get('/:id/likes', optionalAuth, async (req, res) => {
+	const db = getDbAdapter(req);
+	const postId = safeParsePostId(req.params.id);
+	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+
+	if (!postId) {
+		return res.status(400).json({ error: 'Invalid post id' });
+	}
+
+	try {
+		const post = await db.getPostById(postId);
+		const currentUserId = req.user ? Number(req.user.id) : null;
+		if (!post || !(await canViewPost(db, post, currentUserId, null, null, req.user?.visibilityUser || null))) {
+			return res.status(404).json({ error: 'Post not found' });
+		}
+		const isAuthor = Boolean(currentUserId && (Number(post.userId) === currentUserId || req.user?.admin));
+		if (!isAuthor) {
+			return res.status(403).json({ error: 'いいね一覧の閲覧権限がありません' });
+		}
+		const likes = await db.getLikesOfPost(postId, limit);
+		res.json({ likes });
+	} catch (err) {
+		console.error('[posts] likes list error:', err);
+		res.status(500).json({ error: 'いいね一覧の取得に失敗しました' });
 	}
 });
 

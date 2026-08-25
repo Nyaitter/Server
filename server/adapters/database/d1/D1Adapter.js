@@ -1486,7 +1486,11 @@ class D1Adapter extends DatabaseAdapter {
 	// ==================== Polls ====================
 
 	async createPoll(pollData) {
-		return this._write('/polls', pollData);
+		const payload = { ...pollData };
+		if (payload.id == null) {
+			payload.id = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+		}
+		return this._write('/polls', payload);
 	}
 
 	async getPollByPostId(postId, currentUserId = null) {
@@ -1516,10 +1520,16 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	async votePoll({ pollId, userId, optionIds = [], otherText = null }) {
+		const validOptionIds = (optionIds || []).map(Number);
+		const votes = validOptionIds.map((optId) => ({
+			id: Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`),
+			optionId: optId,
+		}));
 		return this._write(`/polls/${requireId(pollId, 'pollId')}/vote`, {
 			userId: requireId(userId, 'userId'),
-			optionIds,
+			optionIds: validOptionIds,
 			otherText,
+			votes,
 		});
 	}
 
