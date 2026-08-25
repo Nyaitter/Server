@@ -1,11 +1,17 @@
 'use strict';
 
 process.env.AWS_SDK_JS_SUPPRESS_MAINTENANCE_MODE_MESSAGE = '1';
-process.on('warning', (warning) => {
-    if (warning && (warning.name === 'NodeVersionSupportWarning' || warning.message?.includes('AWS SDK for JavaScript'))) {
-        return;
-    }
-});
+const originalEmitWarning = process.emitWarning ? process.emitWarning.bind(process) : null;
+if (originalEmitWarning) {
+    process.emitWarning = (warning, ...args) => {
+        const name = typeof warning === 'object' ? warning?.name : (typeof args[0] === 'string' ? args[0] : '');
+        const message = typeof warning === 'string' ? warning : (warning?.message || '');
+        if (name === 'NodeVersionSupportWarning' || message.includes('AWS SDK') || message.includes('upgrade to node')) {
+            return;
+        }
+        return originalEmitWarning(warning, ...args);
+    };
+}
 
 require('dotenv').config({ path: __dirname + '/.env' });
 

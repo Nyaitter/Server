@@ -85,9 +85,12 @@ class LogHubManager {
             line.includes('The AWS SDK for JavaScript') ||
             line.includes('versions published after') ||
             line.includes('will require node') ||
-            line.includes('To continue receiving updates to AWS') ||
+            line.includes('upgrade to node') ||
+            line.includes('You are running node') ||
+            line.includes('To continue receiving updates') ||
+            line.includes('security updates please') ||
             line.includes('a.co/') ||
-            line.includes('More information can be found at');
+            line.includes('More information can be found');
           const isNmtInternal =
             line.includes('[NMT') ||
             line.includes('[NyaitterManagementTool') ||
