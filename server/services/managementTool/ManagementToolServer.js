@@ -120,11 +120,13 @@ class ManagementToolServer {
         } catch (_) {}
       }
 
-      if (!userId) {
-        return res.status(401).json({ error: 'セッションが無効または期限切れです。' });
+      let user = session?.user || null;
+      if (!user && this.dbAdapter && typeof this.dbAdapter.getUserById === 'function') {
+        try {
+          user = await this.dbAdapter.getUserById(userId);
+        } catch (_) {}
       }
 
-      const user = await this.dbAdapter.getUserById(userId);
       if (!user || user.admin !== true) {
         if (session) this.sessions.delete(token);
         return res.status(403).json({ error: '管理者（Admin）権限が必要です。' });
@@ -210,7 +212,12 @@ class ManagementToolServer {
         NyaitterAuthManager.pendingCodes.delete(String(code));
         NyaitterAuthManager._savePendingStore();
 
-        const user = await this.dbAdapter.getUserById(userId);
+        // ユーザー情報の解決（approved スナップショットまたは dbAdapter）
+        let user = approved.user || null;
+        if (!user && this.dbAdapter && typeof this.dbAdapter.getUserById === 'function') {
+          user = await this.dbAdapter.getUserById(userId);
+        }
+
         if (!user) {
           return res.redirect('/#error=user_not_found');
         }
@@ -224,6 +231,13 @@ class ManagementToolServer {
         const token = `nmt_${crypto.randomBytes(32).toString('hex')}`;
         this.sessions.set(token, {
           userId: user.id,
+          user: {
+            id: user.id,
+            username: user.username,
+            name: user.name,
+            admin: user.admin,
+            icon_url: user.icon_url,
+          },
           admin: true,
           expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         });

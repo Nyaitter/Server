@@ -375,6 +375,23 @@ class NyaitterAuthManager {
       );
     }
 
+    // 承認ユーザーのスナップショット情報取得（プロセス分離時の確実な共有のため）
+    let userSnapshot = null;
+    if (db && typeof db.getUserById === 'function') {
+      try {
+        const u = await db.getUserById(userId);
+        if (u) {
+          userSnapshot = {
+            id: u.id,
+            username: u.username,
+            name: u.name,
+            admin: u.admin === true,
+            icon_url: u.icon_url || null,
+          };
+        }
+      } catch (_) {}
+    }
+
     // Generate temporary one-time authorization code
     const code = 'authcode_' + crypto.randomBytes(32).toString('hex');
     const codeExpiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes TTL
@@ -386,6 +403,7 @@ class NyaitterAuthManager {
       appId: requestData.appId,
       appTokenHash: requestData.appTokenHash,
       userId: Number(userId),
+      user: userSnapshot,
       grantedScopes: finalGrantedScopes,
       accessToken: fullAccessToken,
       createdAt: Date.now(),

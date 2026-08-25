@@ -469,12 +469,16 @@ let postShareServer = null;
 let managementToolServer = null;
 
 // ── Request Monitoring Hook (NMT) ──────────────────────────────────────────────
+const LogHubManager = require('./services/managementTool/LogHubManager');
+
 app.use((req, res, next) => {
     if (!config.nmt?.enabled) return next();
     const start = Date.now();
     res.on('finish', () => {
         const duration = Date.now() - start;
-        managementToolServer?.recordRequest(req, res, duration);
+        if (managementToolServer) {
+            managementToolServer.recordRequest(req, res, duration);
+        }
     });
     next();
 });
@@ -482,14 +486,24 @@ app.use((req, res, next) => {
 // ── Error & 404 Handlers ───────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
     console.error('[server] Unhandled error:', err);
-    managementToolServer?.recordError(err, {
-        method: req.method,
-        url: req.originalUrl || req.url,
-        userId: req.user?.id || null,
-        ip: req.headers['cf-connecting-ip'] || req.ip,
-        userAgent: req.headers['user-agent'],
-        requestId: req.id || undefined,
-    });
+    if (managementToolServer) {
+        managementToolServer.recordError(err, {
+            method: req.method,
+            url: req.originalUrl || req.url,
+            userId: req.user?.id || null,
+            ip: req.headers['cf-connecting-ip'] || req.ip,
+            userAgent: req.headers['user-agent'],
+            requestId: req.id || undefined,
+        });
+    } else {
+        LogHubManager.appendExternalLog({
+            type: 'error',
+            level: 'error',
+            source: 'nyaitter-server',
+            message: `${req.method} ${req.originalUrl || req.url} - ${err.message}`,
+            details: { stack: err.stack, userId: req.user?.id || null },
+        });
+    }
 
     const status = err.status || 500;
     const isDev = process.env.NODE_ENV === 'development';
@@ -763,11 +777,32 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 process.on('uncaughtException', (err) => {
     console.error('[server] Uncaught Exception:', err);
-    managementToolServer?.recordError(err, { source: 'uncaughtException' });
+    if (managementToolServer) {
+        managementToolServer.recordError(err, { source: 'uncaughtException' });
+    } else {
+        LogHubManager.appendExternalLog({
+            type: 'error',
+            level: 'error',
+            source: 'uncaughtException',
+            message: `Uncaught Exception: ${err.message}`,
+            details: { stack: err.stack },
+        });
+    }
     shutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason) => {
     console.error('[server] Unhandled Rejection:', reason);
-    managementToolServer?.recordError(reason instanceof Error ? reason : new Error(String(reason)), { source: 'unhandledRejection' });
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    if (managementToolServer) {
+        managementToolServer.recordError(err, { source: 'unhandledRejection' });
+    } else {
+        LogHubManager.appendExternalLog({
+            type: 'error',
+            level: 'error',
+            source: 'unhandledRejection',
+            message: `Unhandled Rejection: ${err.message}`,
+            details: { stack: err.stack },
+        });
+    }
 });

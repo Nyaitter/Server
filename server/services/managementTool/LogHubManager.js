@@ -14,12 +14,78 @@ class LogHubManager {
     this.sessions = sessions;
     this.logs = [];
     this.wss = null;
+    this.lastReadOffset = 0;
     this._load();
     this._hookConsole();
+    this._startFileWatcher();
   }
 
   setSessionsMap(sessions) {
     this.sessions = sessions;
+  }
+
+  static appendExternalLog(entry) {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      const logItem = {
+        id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        timestamp: entry.timestamp || new Date().toISOString(),
+        type: entry.type || 'system',
+        level: entry.level || 'info',
+        message: entry.message || '',
+        source: entry.source || 'server',
+        details: entry.details || null,
+      };
+      fs.appendFileSync(UNIFIED_LOG_FILE, JSON.stringify(logItem) + '\n', 'utf8');
+      return logItem;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _startFileWatcher() {
+    // 外部プロセス（NyaitterServer 本体）からのログ追記をリアルタイム監視
+    let lastSize = 0;
+    try {
+      if (fs.existsSync(UNIFIED_LOG_FILE)) {
+        lastSize = fs.statSync(UNIFIED_LOG_FILE).size;
+      }
+    } catch (_) {}
+
+    setInterval(() => {
+      try {
+        if (!fs.existsSync(UNIFIED_LOG_FILE)) return;
+        const currentSize = fs.statSync(UNIFIED_LOG_FILE).size;
+        if (currentSize <= lastSize) {
+          if (currentSize < lastSize) lastSize = currentSize; // ローテーション時
+          return;
+        }
+
+        const stream = fs.createReadStream(UNIFIED_LOG_FILE, {
+          start: lastSize,
+          end: currentSize,
+          encoding: 'utf8',
+        });
+
+        let chunkData = '';
+        stream.on('data', (c) => { chunkData += c; });
+        stream.on('end', () => {
+          lastSize = currentSize;
+          const lines = chunkData.split('\n').filter(Boolean);
+          for (const line of lines) {
+            try {
+              const item = JSON.parse(line);
+              // 重複チェック（ID が既にあるか確認）
+              if (!this.logs.some((l) => l.id === item.id)) {
+                this.logs.push(item);
+                if (this.logs.length > MAX_LOG_LINES) this.logs.shift();
+                if (this.wss) this._broadcast(item);
+              }
+            } catch (_) {}
+          }
+        });
+      } catch (_) {}
+    }, 1000);
   }
 
   _load() {
