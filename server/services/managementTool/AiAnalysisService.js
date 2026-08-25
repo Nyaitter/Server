@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const https = require('https');
 const path = require('path');
 const { execFile } = require('child_process');

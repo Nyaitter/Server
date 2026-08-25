@@ -84,7 +84,13 @@ class ErrorManager {
       text.includes('thoughtSignature') ||
       text.includes('"candidates"') ||
       text.includes('"parts"') ||
-      text.includes('candidates')
+      text.includes('candidates') ||
+      text.includes('Warning:') ||
+      text.includes('NodeVersionSupportWarning') ||
+      text.includes('The AWS SDK for JavaScript') ||
+      text.includes('a.co/') ||
+      text.includes('More information can be found at') ||
+      text.includes('will require node')
     ) {
       return true;
     }
