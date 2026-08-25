@@ -4,6 +4,8 @@ const path = require('path');
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const AUDITS_FILE = path.join(DATA_DIR, 'nmt-audits.json');
 
+const { requestOperatorCommand } = require('../../utils/operatorControl');
+
 class AdminManager {
   constructor({ dbAdapter }) {
     this.dbAdapter = dbAdapter;
@@ -36,6 +38,15 @@ class AdminManager {
   }
 
   async getAdmins() {
+    // 1. ローカル専用 IPC (operatorControl) 経由で NyaitterServer 本体から優先取得
+    try {
+      const res = await requestOperatorCommand({ action: 'get-admins' }, { timeoutMs: 1500 });
+      if (res?.ok && Array.isArray(res.admins)) {
+        return res.admins;
+      }
+    } catch (_) {}
+
+    // 2. ローカル dbAdapter へのフォールバック
     if (!this.dbAdapter) return [];
     try {
       if (typeof this.dbAdapter.getAllUsers === 'function') {
@@ -54,25 +65,31 @@ class AdminManager {
   }
 
   async searchUsers(query, limit = 20) {
+    const q = String(query || '').trim();
+    if (!q) return [];
+
+    // 1. ローカル専用 IPC (operatorControl) 経由で優先検索
+    try {
+      const res = await requestOperatorCommand({ action: 'search-users', query: q, limit }, { timeoutMs: 1500 });
+      if (res?.ok && Array.isArray(res.users)) {
+        return res.users;
+      }
+    } catch (_) {}
+
+    // 2. ローカル dbAdapter へのフォールバック
     if (!this.dbAdapter) return [];
     try {
-      const q = String(query || '').trim();
-      if (!q) return [];
-
-      // 数値指定の場合は直接ID検索
       const numId = Number(q.replace(/^#/, ''));
       if (Number.isInteger(numId) && numId > 0) {
         const user = await this.dbAdapter.getUserById(numId);
         if (user) return [user];
       }
 
-      // SCID検索
       if (typeof this.dbAdapter.getUserByScid === 'function') {
         const user = await this.dbAdapter.getUserByScid(q);
         if (user) return [user];
       }
 
-      // 一般検索
       if (typeof this.dbAdapter.searchUsers === 'function') {
         return await this.dbAdapter.searchUsers({ query: q, limit });
       }
@@ -85,17 +102,31 @@ class AdminManager {
   }
 
   async setAdminStatus(targetUserId, adminStatus, operatorUser) {
-    if (!this.dbAdapter) throw new Error('Database adapter not available');
     const userId = Number(targetUserId);
     if (!Number.isInteger(userId) || userId <= 0) {
       throw new Error('無効なユーザーIDです。');
     }
 
-    const user = await this.dbAdapter.getUserById(userId);
-    if (!user) throw new Error(`ユーザー #${userId} が見つかりません。`);
+    let updatedUser = null;
 
-    const updated = await this.dbAdapter.updateUserProfile(userId, { admin: Boolean(adminStatus) });
-    if (!updated) throw new Error('ユーザー情報の更新に失敗しました。');
+    // 1. ローカル専用 IPC (operatorControl) 経由で優先実行
+    try {
+      const res = await requestOperatorCommand({ action: 'set-admin', userId, admin: Boolean(adminStatus) }, { timeoutMs: 2000 });
+      if (res?.ok && res.user) {
+        updatedUser = res.user;
+      }
+    } catch (_) {}
+
+    // 2. ローカル dbAdapter へのフォールバック
+    if (!updatedUser) {
+      if (!this.dbAdapter) throw new Error('NyaitterServer またはデータベースが利用できません');
+      const user = await this.dbAdapter.getUserById(userId);
+      if (!user) throw new Error(`ユーザー #${userId} が見つかりません。`);
+
+      const updated = await this.dbAdapter.updateUserProfile(userId, { admin: Boolean(adminStatus) });
+      if (!updated) throw new Error('ユーザー情報の更新に失敗しました。');
+      updatedUser = updated;
+    }
 
     // 監査ログ
     const log = {

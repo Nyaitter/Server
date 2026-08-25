@@ -527,8 +527,13 @@ class ManagementToolServer {
     });
 
     // ── 5. サーバー制御・管理 API ─────────────────────────────────────────
-    this.app.get('/api/server/status', authMiddleware, (req, res) => {
-      res.json(this.serverControl.getStatus());
+    this.app.get('/api/server/status', authMiddleware, async (req, res) => {
+      try {
+        const status = await this.serverControl.getStatus();
+        res.json(status);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
     });
 
     this.app.get('/api/server/logs', authMiddleware, (req, res) => {
@@ -606,6 +611,7 @@ class ManagementToolServer {
     });
 
     this.httpServer.listen(this.port, () => {
+      this.logHub.setServerControl(this.serverControl);
       this.logHub.attachHttpServer(this.httpServer);
       console.log(`\n🐾 [NyaitterManagementTool] Started on port ${this.port} (IPv4/IPv6 dual-stack)`);
       console.log(`   - Error Logging & AI Assistance: Active`);

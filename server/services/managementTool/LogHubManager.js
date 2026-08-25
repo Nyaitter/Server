@@ -153,10 +153,28 @@ class LogHubManager {
     };
   }
 
+  setServerControl(serverControl) {
+    this.serverControl = serverControl;
+  }
+
   attachHttpServer(httpServer) {
     if (this.wss) return;
 
     this.wss = new WebSocketServer({ noServer: true });
+
+    // 定期的な Server Status の WebSocket ブロードキャスト（3秒間隔）
+    setInterval(async () => {
+      if (!this.wss || !this.serverControl || typeof this.serverControl.getStatus !== 'function') return;
+      if (this.wss.clients.size === 0) return;
+
+      try {
+        const status = await this.serverControl.getStatus();
+        const msg = JSON.stringify({ event: 'server_status', status });
+        for (const client of this.wss.clients) {
+          if (client.readyState === 1) client.send(msg);
+        }
+      } catch (_) {}
+    }, 3000);
 
     httpServer.on('upgrade', (request, socket, head) => {
       const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
@@ -176,7 +194,7 @@ class LogHubManager {
       });
     });
 
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', async (ws) => {
       // 接続時に直近のフィルタリングログ（通常ログ除外）を送信
       const initialLogs = this.getLogs({
         types: ['error', 'security', 'ai'],
@@ -188,11 +206,18 @@ class LogHubManager {
         logs: initialLogs,
       }));
 
-      ws.on('message', (message) => {
+      // 接続時に即座に Server Status を送信
+      if (this.serverControl && typeof this.serverControl.getStatus === 'function') {
+        try {
+          const status = await this.serverControl.getStatus();
+          ws.send(JSON.stringify({ event: 'server_status', status }));
+        } catch (_) {}
+      }
+
+      ws.on('message', async (message) => {
         try {
           const data = JSON.parse(message);
           if (data.action === 'filter') {
-            // クライアントからのフィルタ変更リクエストに応答
             const filtered = this.getLogs({
               types: data.types || ['error', 'security', 'ai'],
               search: data.search || '',
@@ -200,6 +225,11 @@ class LogHubManager {
               limit: data.limit || 150,
             });
             ws.send(JSON.stringify({ event: 'filtered', logs: filtered }));
+          } else if (data.action === 'get_status') {
+            if (this.serverControl && typeof this.serverControl.getStatus === 'function') {
+              const status = await this.serverControl.getStatus();
+              ws.send(JSON.stringify({ event: 'server_status', status }));
+            }
           }
         } catch (_) {}
       });

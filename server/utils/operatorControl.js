@@ -37,8 +37,60 @@ function createCommandHandler({ dbAdapter, shutdown, getStatus }) {
       return { ok: false, error: 'Invalid operator command' };
     }
 
-    if (command.action === 'status') {
+    if (command.action === 'status' || command.action === 'get-server-status') {
       return { ok: true, status: getStatus() };
+    }
+
+    if (command.action === 'get-admins') {
+      try {
+        let admins = [];
+        if (typeof dbAdapter.getAllUsers === 'function') {
+          const users = await dbAdapter.getAllUsers();
+          admins = users.filter((u) => u.admin === true || u.is_admin === true);
+        } else if (typeof dbAdapter.searchUsers === 'function') {
+          const users = await dbAdapter.searchUsers({ query: '', limit: 1000 });
+          admins = users.filter((u) => u.admin === true || u.is_admin === true);
+        }
+        return { ok: true, admins };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (command.action === 'search-users') {
+      try {
+        const q = String(command.query || '').trim();
+        const limit = Number(command.limit) || 20;
+        let users = [];
+
+        const numId = Number(q.replace(/^#/, ''));
+        if (Number.isInteger(numId) && numId > 0) {
+          const user = await dbAdapter.getUserById(numId);
+          if (user) users = [user];
+        } else if (typeof dbAdapter.getUserByScid === 'function') {
+          const user = await dbAdapter.getUserByScid(q);
+          if (user) users = [user];
+        }
+
+        if (users.length === 0 && typeof dbAdapter.searchUsers === 'function') {
+          users = await dbAdapter.searchUsers({ query: q, limit });
+        }
+
+        return { ok: true, users };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (command.action === 'get-user') {
+      try {
+        const userId = parseUserId(command.userId);
+        if (userId == null) return { ok: false, error: 'Invalid userId' };
+        const user = await dbAdapter.getUserById(userId);
+        return { ok: true, user: user || null };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
     }
 
     if (command.action === 'set-admin') {

@@ -622,36 +622,46 @@ async function loadServerTab() {
   ]);
 }
 
+function renderServerStatus(s) {
+  const container = document.getElementById('server-status-grid');
+  if (!container || !s) return;
+
+  const uptimeHours = (s.uptime / 3600).toFixed(1);
+  const isOnline = s.serverOnline !== false;
+
+  container.innerHTML = `
+    <div class="card">
+      <div style="font-size:11px; color:var(--secondary-text-color);">Process Status</div>
+      <div style="font-size:16px; font-weight:600; color:${isOnline ? '#3fb950' : '#f85149'}; margin-top:0.2rem;">
+        ${isOnline ? 'ONLINE' : 'STOPPED'}
+      </div>
+      <div style="font-size:11px; margin-top:0.3rem;">Server PID: ${s.serverPid || s.pid} ${s.nmtPid ? `(NMT: ${s.nmtPid})` : ''}</div>
+    </div>
+    <div class="card">
+      <div style="font-size:11px; color:var(--secondary-text-color);">Uptime & Start</div>
+      <div style="font-size:16px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">${uptimeHours} hours</div>
+      <div style="font-size:11px; margin-top:0.3rem;">Since: ${new Date(s.startedAt).toLocaleTimeString()}</div>
+    </div>
+    <div class="card">
+      <div style="font-size:11px; color:var(--secondary-text-color);">Memory Usage (RSS)</div>
+      <div style="font-size:16px; font-weight:600; color:var(--primary-color); margin-top:0.2rem;">${s.memory?.rss || 0} MB</div>
+      <div style="font-size:11px; margin-top:0.3rem;">Heap: ${s.memory?.heapUsed || 0} / ${s.memory?.heapTotal || 0} MB</div>
+    </div>
+    <div class="card">
+      <div style="font-size:11px; color:var(--secondary-text-color);">Environment & Storage</div>
+      <div style="font-size:13px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">DB: ${escapeHTML(s.databaseAdapter || 'N/A')}</div>
+      <div style="font-size:11px; margin-top:0.3rem;">Storage: ${escapeHTML(s.storageAdapter || 'local')} | Node: ${s.nodeVersion || ''}</div>
+    </div>
+  `;
+}
+
 async function loadServerStatus() {
   const container = document.getElementById('server-status-grid');
   try {
     const s = await api('/server/status');
-    const uptimeHours = (s.uptime / 3600).toFixed(1);
-
-    container.innerHTML = `
-      <div class="card">
-        <div style="font-size:11px; color:var(--secondary-text-color);">Process Status</div>
-        <div style="font-size:16px; font-weight:600; color:#3fb950; margin-top:0.2rem;">ONLINE</div>
-        <div style="font-size:11px; margin-top:0.3rem;">PID: ${s.pid} ${s.isPm2 ? `(PM2 #${s.pm2Id})` : ''}</div>
-      </div>
-      <div class="card">
-        <div style="font-size:11px; color:var(--secondary-text-color);">Uptime & Start</div>
-        <div style="font-size:16px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">${uptimeHours} hours</div>
-        <div style="font-size:11px; margin-top:0.3rem;">Since: ${new Date(s.startedAt).toLocaleTimeString()}</div>
-      </div>
-      <div class="card">
-        <div style="font-size:11px; color:var(--secondary-text-color);">Memory Usage (RSS)</div>
-        <div style="font-size:16px; font-weight:600; color:var(--primary-color); margin-top:0.2rem;">${s.memory?.rss || 0} MB</div>
-        <div style="font-size:11px; margin-top:0.3rem;">Heap: ${s.memory?.heapUsed || 0} / ${s.memory?.heapTotal || 0} MB</div>
-      </div>
-      <div class="card">
-        <div style="font-size:11px; color:var(--secondary-text-color);">Environment & Storage</div>
-        <div style="font-size:13px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">DB: ${escapeHTML(s.databaseAdapter || 'N/A')}</div>
-        <div style="font-size:11px; margin-top:0.3rem;">Storage: ${escapeHTML(s.storageAdapter || 'local')} | Node: ${s.nodeVersion}</div>
-      </div>
-    `;
+    renderServerStatus(s);
   } catch (e) {
-    container.innerHTML = `<div class="error-msg">Failed to load server status: ${escapeHTML(e.message)}</div>`;
+    if (container) container.innerHTML = `<div class="error-msg">Failed to load server status: ${escapeHTML(e.message)}</div>`;
   }
 }
 
@@ -798,7 +808,7 @@ function initUnifiedLogsWS() {
 
   const statusBadge = document.getElementById('ws-status-badge');
   if (statusBadge) {
-    statusBadge.textContent = '🟡 CONNECTING...';
+    statusBadge.textContent = 'CONNECTING';
     statusBadge.className = 'tag tag-open';
   }
 
@@ -807,7 +817,7 @@ function initUnifiedLogsWS() {
 
     unifiedLogWS.onopen = () => {
       if (statusBadge) {
-        statusBadge.textContent = '🟢 WS LIVE';
+        statusBadge.textContent = 'LIVE';
         statusBadge.className = 'tag tag-resolved';
       }
       sendWSFilter();
@@ -821,20 +831,22 @@ function initUnifiedLogsWS() {
           renderUnifiedLogs();
         } else if (data.event === 'log') {
           handleIncomingLiveLog(data.log);
+        } else if (data.event === 'server_status') {
+          renderServerStatus(data.status);
         }
       } catch (_) {}
     };
 
     unifiedLogWS.onclose = () => {
       if (statusBadge) {
-        statusBadge.textContent = '🔴 OFFLINE';
+        statusBadge.textContent = 'OFFLINE';
         statusBadge.className = 'tag tag-ignored';
       }
     };
 
     unifiedLogWS.onerror = () => {
       if (statusBadge) {
-        statusBadge.textContent = '🔴 WS ERROR';
+        statusBadge.textContent = 'ERROR';
         statusBadge.className = 'tag tag-ignored';
       }
     };
@@ -923,11 +935,7 @@ function formatLogLineHTML(l) {
     color = 'color:#8b949e;';
   }
 
-  return `
-    <div style="${color} line-height:1.4; margin-bottom:2px; word-break:break-all;">
-      <span style="color:#484f58;">[${time}]</span> ${typeTag} <span style="color:#7ee787;">[${escapeHTML(l.source || 'app')}]</span> ${escapeHTML(l.message)}
-    </div>
-  `;
+  return `<div style="${color} line-height:1.3; padding:1px 0; word-break:break-all; white-space:pre-wrap;"><span style="color:#484f58;">[${time}]</span> ${typeTag} <span style="color:#7ee787;">[${escapeHTML(l.source || 'app')}]</span> ${escapeHTML(l.message)}</div>`;
 }
 
 async function loadUnifiedLogs() {

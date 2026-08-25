@@ -107,18 +107,34 @@ class ServerControlManager {
     };
   }
 
-  getStatus() {
+  async getStatus() {
+    const { requestOperatorCommand } = require('../../utils/operatorControl');
+    let nyaitterServerStatus = null;
+
+    // 1. ローカル専用 IPC (operatorControl) 経由で NyaitterServer 本体のステータスを取得
+    try {
+      const res = await requestOperatorCommand({ action: 'status' }, { timeoutMs: 1000 });
+      if (res?.ok && res.status) {
+        nyaitterServerStatus = res.status;
+      }
+    } catch (_) {}
+
     const memory = process.memoryUsage();
     const pm2Id = process.env.pm_id !== undefined ? process.env.pm_id : null;
     const baseStatus = typeof this.getStatusFn === 'function' ? this.getStatusFn() : {};
 
     return {
-      pid: process.pid,
-      uptime: process.uptime(),
-      startedAt: this.startedAt,
+      pid: nyaitterServerStatus?.pid || process.pid,
+      serverPid: nyaitterServerStatus?.pid || null,
+      nmtPid: process.pid,
+      serverOnline: nyaitterServerStatus !== null,
+      uptime: nyaitterServerStatus?.uptime || process.uptime(),
+      startedAt: nyaitterServerStatus?.startedAt || this.startedAt,
       nodeVersion: process.version,
       platform: process.platform,
       arch: process.arch,
+      databaseAdapter: nyaitterServerStatus?.databaseAdapter || 'memory',
+      storageAdapter: nyaitterServerStatus?.storageAdapter || 'local',
       isPm2: pm2Id !== null,
       pm2Id,
       memory: {
