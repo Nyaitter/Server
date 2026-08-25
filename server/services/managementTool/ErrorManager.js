@@ -174,16 +174,24 @@ class ErrorManager {
       if (!fs.existsSync(ERRORS_FILE)) return;
       const knownIds = new Set(this.errors.map((e) => e.id));
       this._load();
+
       const newRecords = this.errors.filter((e) => !knownIds.has(e.id));
       for (const newRecord of newRecords) {
         this._broadcast(newRecord, 'error_created');
+      }
 
-        const shouldAutoFix = process.env.NMT_AUTO_FIX === 'true' || this.autoFix;
-        const shouldAutoAnalysis = process.env.NMT_AUTO_ANALYSIS === 'true' || this.autoAnalysis;
-        if (shouldAutoFix) {
-          this.triggerAutoFix(newRecord.id).catch((e) => console.warn('[NMT-Errors] Auto fix error:', e.message));
-        } else if (shouldAutoAnalysis && this.aiService) {
-          this.triggerAnalysis(newRecord.id).catch((e) => console.warn('[NMT-Errors] Auto AI analysis error:', e.message));
+      // 未解析のオープンエラーをすべて自動解析/自動修正
+      const shouldAutoFix = process.env.NMT_AUTO_FIX === 'true' || this.autoFix;
+      const shouldAutoAnalysis = process.env.NMT_AUTO_ANALYSIS === 'true' || this.autoAnalysis;
+
+      if ((shouldAutoFix || shouldAutoAnalysis) && this.aiService) {
+        const unanalyzed = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing && !e.fixing);
+        for (const record of unanalyzed) {
+          if (shouldAutoFix) {
+            this.triggerAutoFix(record.id).catch((e) => console.warn('[NMT-Errors] Auto fix error:', e.message));
+          } else if (shouldAutoAnalysis) {
+            this.triggerAnalysis(record.id).catch((e) => console.warn('[NMT-Errors] Auto AI analysis error:', e.message));
+          }
         }
       }
     } catch (_) {}
