@@ -5308,11 +5308,11 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async markPollClosedNotified(pollId) {
-		const pId = pollId != null ? String(pollId).trim() : '';
-		if (!/^[A-Za-z0-9_-]+$/.test(pId)) return;
+		const pId = Number(pollId);
+		if (!Number.isFinite(pId) || pId <= 0) return;
 
 		await this.pool.query(
-			'UPDATE polls SET closed = TRUE, closed_notified = TRUE WHERE id::text = $1',
+			'UPDATE polls SET closed = TRUE, closed_notified = TRUE WHERE id = $1',
 			[pId],
 		);
 	}

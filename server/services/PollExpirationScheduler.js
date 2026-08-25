@@ -25,8 +25,13 @@ function startPollExpirationScheduler(
         const authorId = Number(poll.user_id);
         const title = String(poll.title || '投票');
 
-        // まず通知済みフラグをセットして二重送信を防止
-        await dbAdapter.markPollClosedNotified(pollId);
+        // 通知送信より先にフラグをセット。失敗した場合はこの投票をスキップして再送を防ぐ
+        try {
+          await dbAdapter.markPollClosedNotified(pollId);
+        } catch (markErr) {
+          logger.warn?.(`[polls] markPollClosedNotified failed for poll #${pollId}, skipping:`, markErr.message);
+          continue;
+        }
 
         const voters = typeof dbAdapter.getPollVoters === 'function'
           ? await dbAdapter.getPollVoters(pollId)
