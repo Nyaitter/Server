@@ -239,6 +239,19 @@ const config = {
       get('client.repository', 'Nyaitter/Client'),
   },
 
+  nmt: {
+    enabled: envBoolean('NMT_ENABLED', envBoolean('NYAITTER_MANAGEMENT_TOOL_ENABLED', get('nmt.enabled', false))),
+    port: envNonNegativeInteger('NMT_PORT', envNonNegativeInteger('NYAITTER_MANAGEMENT_TOOL_PORT', get('nmt.port', 4040))),
+    host: process.env.NMT_HOST || process.env.NYAITTER_MANAGEMENT_TOOL_HOST || get('nmt.host', '0.0.0.0'),
+    autoAnalysis: envBoolean('NMT_AUTO_ANALYSIS', get('nmt.autoAnalysis', false)),
+    autoIssue: envBoolean('NMT_AUTO_ISSUE', get('nmt.autoIssue', false)),
+    githubToken: process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || get('nmt.githubToken', ''),
+    githubRepo: process.env.NMT_GITHUB_REPO || get('nmt.githubRepo', 'Nyaitter/Server'),
+    geminiApiKey: process.env.GEMINI_API_KEY || get('nmt.geminiApiKey', ''),
+    openaiApiKey: process.env.OPENAI_API_KEY || get('nmt.openaiApiKey', ''),
+    aiModel: process.env.NMT_AI_MODEL || get('nmt.aiModel', 'auto'),
+  },
+
   cors: {
     // NYAITTER_CORS_ALLOWED_ORIGINS takes a comma-separated list of origins.
     // `*` を含めると全オリジンを許可する。config.json uses an array at cors.allowedOrigins.

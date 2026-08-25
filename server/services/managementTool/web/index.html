@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nyaitter Management Tool</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <!-- メインコンソール -->
+  <div id="app-container" class="app-screen">
+    <header class="navbar">
+      <div class="nav-brand">Nyaitter Management Tool</div>
+      <div class="nav-user">
+        <span id="current-admin-name">Admin</span>
+        <button id="logout-btn" class="btn btn-secondary btn-sm">Logout</button>
+      </div>
+    </header>
+
+    <div class="tabs-bar">
+      <button class="tab-btn active" data-tab="errors-tab">
+        Errors <span id="open-error-badge" class="badge hidden">0</span>
+      </button>
+      <button class="tab-btn" data-tab="admins-tab">Admins</button>
+      <button class="tab-btn" data-tab="security-tab">
+        Security <span id="security-alert-badge" class="badge badge-danger hidden">0</span>
+      </button>
+      <button class="tab-btn" data-tab="settings-tab">Settings</button>
+    </div>
+
+    <main class="container">
+      <!-- 1. Errors -->
+      <section id="errors-tab" class="tab-pane active">
+        <div class="toolbar">
+          <div class="toolbar-group">
+            <select id="error-filter-status" class="form-control">
+              <option value="all">All Status</option>
+              <option value="open" selected>Open</option>
+              <option value="resolved">Resolved</option>
+              <option value="ignored">Ignored</option>
+            </select>
+            <input type="text" id="error-search-input" class="form-control" placeholder="Filter errors...">
+          </div>
+          <button id="refresh-errors-btn" class="btn btn-secondary btn-sm">Refresh</button>
+        </div>
+
+        <div id="errors-list" class="list-container">
+          <div class="empty-state">Loading...</div>
+        </div>
+      </section>
+
+      <!-- 2. Admins -->
+      <section id="admins-tab" class="tab-pane">
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Current Admins</h3>
+          </div>
+          <div id="admins-list" class="admin-grid">
+            <div class="empty-state">Loading...</div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top: 1rem;">
+          <div class="panel-header">
+            <h3>User Search & Admin Grant</h3>
+          </div>
+          <div class="toolbar">
+            <input type="text" id="user-search-input" class="form-control" placeholder="User ID, SCID, or Name">
+            <button id="user-search-btn" class="btn btn-primary btn-sm">Search</button>
+          </div>
+          <div id="user-search-results" class="list-container" style="margin-top: 0.5rem;"></div>
+        </div>
+
+        <div class="panel" style="margin-top: 1rem;">
+          <div class="panel-header">
+            <h3>Audit Logs</h3>
+          </div>
+          <div id="admin-audit-logs" class="table-container"></div>
+        </div>
+      </section>
+
+      <!-- 3. Security -->
+      <section id="security-tab" class="tab-pane">
+        <div class="toolbar">
+          <select id="security-filter-severity" class="form-control">
+            <option value="all">All Severities</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+          <button id="refresh-security-btn" class="btn btn-secondary btn-sm">Refresh</button>
+        </div>
+
+        <div class="panel-header" style="margin-top: 0.5rem;">
+          <h3>Suspicious Events</h3>
+        </div>
+        <div id="security-events-list" class="list-container">
+          <div class="empty-state">Loading...</div>
+        </div>
+
+        <div class="panel-header" style="margin-top: 1.5rem;">
+          <h3>Recent Access Logs</h3>
+        </div>
+        <div id="recent-access-table" class="table-container">
+          <div class="empty-state">Loading...</div>
+        </div>
+      </section>
+
+      <!-- 4. Settings -->
+      <section id="settings-tab" class="tab-pane">
+        <div class="panel">
+          <div class="panel-header">
+            <h3>AI Analysis</h3>
+          </div>
+          <form id="settings-ai-form">
+            <div class="form-group">
+              <label class="checkbox-inline">
+                <input type="checkbox" id="setting-auto-analysis">
+                Enable Auto Analysis
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="setting-ai-model">Model</label>
+              <select id="setting-ai-model" class="form-control"></select>
+            </div>
+            <div class="form-group">
+              <label for="setting-gemini-key">Gemini API Key</label>
+              <input type="password" id="setting-gemini-key" class="form-control" placeholder="Optional">
+            </div>
+            <div class="form-group">
+              <label for="setting-openai-key">OpenAI API Key</label>
+              <input type="password" id="setting-openai-key" class="form-control" placeholder="Optional">
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+          </form>
+        </div>
+
+        <div class="panel" style="margin-top: 1rem;">
+          <div class="panel-header">
+            <h3>GitHub Auto Issue</h3>
+          </div>
+          <form id="settings-github-form">
+            <div class="form-group">
+              <label class="checkbox-inline">
+                <input type="checkbox" id="setting-auto-issue">
+                Enable Auto Issue
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="setting-github-token">GitHub Token</label>
+              <input type="password" id="setting-github-token" class="form-control" placeholder="ghp_...">
+            </div>
+            <div class="form-group">
+              <label for="setting-github-repo">Repository (owner/repo)</label>
+              <input type="text" id="setting-github-repo" class="form-control" placeholder="Nyaitter/Server">
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Detail Modal -->
+  <div id="detail-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-title">Detail</h3>
+        <button id="modal-close-btn" class="modal-close-btn">&times;</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

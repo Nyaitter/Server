@@ -466,9 +466,31 @@ if (userFilesEndpoint && userFilesPort) {
 
 let postShareServer = null;
 
+let managementToolServer = null;
+
+// ── Request Monitoring Hook (NMT) ──────────────────────────────────────────────
+app.use((req, res, next) => {
+    if (!config.nmt?.enabled) return next();
+    const start = Date.now();
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        managementToolServer?.recordRequest(req, res, duration);
+    });
+    next();
+});
+
 // ── Error & 404 Handlers ───────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
     console.error('[server] Unhandled error:', err);
+    managementToolServer?.recordError(err, {
+        method: req.method,
+        url: req.originalUrl || req.url,
+        userId: req.user?.id || null,
+        ip: req.headers['cf-connecting-ip'] || req.ip,
+        userAgent: req.headers['user-agent'],
+        requestId: req.id || undefined,
+    });
+
     const status = err.status || 500;
     const isDev = process.env.NODE_ENV === 'development';
 
@@ -603,6 +625,17 @@ async function startServer() {
             });
         }
 
+        // ── NyaitterManagementTool (NMT) オンデマンド起動 ──────────────────────
+        if (config.nmt?.enabled) {
+            try {
+                const ManagementToolServer = require('./services/managementTool/ManagementToolServer');
+                managementToolServer = new ManagementToolServer({ config, dbAdapter });
+                managementToolServer.start();
+            } catch (err) {
+                console.error('[management-tool] Failed to start NyaitterManagementTool:', err);
+            }
+        }
+
         console.log('[server] Ready. DB Adapter initialized.');
     });
 }
@@ -638,6 +671,10 @@ async function shutdown(signal) {
         postKeywordBackfillQueue.stop();
         postActionQueue.stop();
         realtimeConnections.closeAll();
+        if (managementToolServer) {
+            managementToolServer.stop();
+            managementToolServer = null;
+        }
         if (operatorControl) {
             await operatorControl.close();
             operatorControl = null;
@@ -683,9 +720,11 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 process.on('uncaughtException', (err) => {
     console.error('[server] Uncaught Exception:', err);
+    managementToolServer?.recordError(err, { source: 'uncaughtException' });
     shutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason) => {
     console.error('[server] Unhandled Rejection:', reason);
+    managementToolServer?.recordError(reason instanceof Error ? reason : new Error(String(reason)), { source: 'unhandledRejection' });
 });
