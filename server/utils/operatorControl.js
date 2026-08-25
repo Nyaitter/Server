@@ -211,6 +211,17 @@ function createCommandHandler({ dbAdapter, shutdown, getStatus, managers = {} })
       }
     }
 
+    // ── ログ転送（NyaitterServer → NMT） ──────────────────────────────────────
+    if (command.action === 'push-log') {
+      if (!managers.logHub) return { ok: false, error: 'LogHub not available' };
+      try {
+        managers.logHub.addLog(command.log);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
     // ── データ操作 ─────────────────────────────────────────────────────────
     if (command.action === 'export-data') {
       const filePath = typeof command.filePath === 'string' ? command.filePath : '';

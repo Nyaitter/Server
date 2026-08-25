@@ -654,6 +654,7 @@ async function startServer() {
             notificationManager: managementToolServer?.notificationManager || null,
             approvalManager:     managementToolServer?.approvalManager     || null,
             adminAuditFn:        () => managementToolServer?.adminManager?.getAuditLogs?.() || [],
+            logHub:              managementToolServer?.logHub              || null,
         },
     });
     console.log(`[operator-control] Listening on ${operatorControl.socketPath}`);

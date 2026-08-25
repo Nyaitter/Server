@@ -23,6 +23,10 @@ class ServerControlManager {
     this.getStatusFn = getStatusFn;
     this.logs = [];
     this.startedAt = new Date().toISOString();
+    this._cpuPercent = 0;
+    this._lastCpuUsage = process.cpuUsage();
+    this._lastCpuTime = Date.now();
+    this._startCpuTracking();
     this._loadLogs();
     this._hookConsole();
   }
@@ -33,6 +37,25 @@ class ServerControlManager {
 
   setStatusProvider(getStatusFn) {
     this.getStatusFn = getStatusFn;
+  }
+
+  _startCpuTracking() {
+    const sample = () => {
+      const now = Date.now();
+      const elapsed = now - this._lastCpuTime;
+      if (elapsed <= 0) return;
+
+      const usage = process.cpuUsage(this._lastCpuUsage);
+      // user + system マイクロ秒 → ミリ秒換算し、経過時間に対する割合(%)
+      const cpuMs = (usage.user + usage.system) / 1000;
+      this._cpuPercent = Math.min(100, Math.round((cpuMs / elapsed) * 100 * 10) / 10);
+
+      this._lastCpuUsage = process.cpuUsage();
+      this._lastCpuTime = now;
+    };
+
+    const timer = setInterval(sample, 2000);
+    timer.unref?.();
   }
 
   _loadLogs() {
@@ -143,6 +166,7 @@ class ServerControlManager {
         heapUsed: Math.round(memory.heapUsed / (1024 * 1024)),
         external: Math.round(memory.external / (1024 * 1024)),
       },
+      cpu: this._cpuPercent,
       ...baseStatus,
     };
   }
@@ -276,6 +300,11 @@ class ServerControlManager {
           });
         }
 
+        // 2. 旧 NMT の HTTP サーバーを先に停止してポートを解放
+        if (nmtServerInstance && typeof nmtServerInstance.stop === 'function') {
+          nmtServerInstance.stop();
+        }
+
         let isResolved = false;
         const child = fork(standaloneScript, [], {
           cwd: PROJECT_ROOT,
@@ -290,7 +319,7 @@ class ServerControlManager {
           if (timeoutTimer) clearTimeout(timeoutTimer);
         };
 
-        // 2. 新 NMT プロセスからの起動完了 IPC メッセージを待機
+        // 3. 新 NMT プロセスからの起動完了 IPC メッセージを待機
         child.on('message', (msg) => {
           if (msg && msg.type === 'nmt_ready') {
             cleanup();
@@ -299,9 +328,6 @@ class ServerControlManager {
 
             // 新 NMT プロセスが正常起動したため、旧 NMT を安全に終了
             setTimeout(() => {
-              if (nmtServerInstance && typeof nmtServerInstance.stop === 'function') {
-                nmtServerInstance.stop();
-              }
               child.unref();
               process.exit(0);
             }, 500);
@@ -315,7 +341,7 @@ class ServerControlManager {
           }
         });
 
-        // 3. タイムアウト（15秒）
+        // 4. タイムアウト（15秒）
         timeoutTimer = setTimeout(() => {
           cleanup();
           if (isResolved) return;
@@ -332,7 +358,7 @@ class ServerControlManager {
           });
         }, 15000);
 
-        // 4. 新プロセスの異常終了
+        // 5. 新プロセスの異常終了
         child.on('exit', (code) => {
           cleanup();
           if (isResolved) return;

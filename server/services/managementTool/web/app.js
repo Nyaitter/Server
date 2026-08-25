@@ -628,6 +628,8 @@ function renderServerStatus(s) {
 
   const uptimeHours = (s.uptime / 3600).toFixed(1);
   const isOnline = s.serverOnline !== false;
+  const cpu = s.cpu != null ? s.cpu : null;
+  const cpuColor = cpu == null ? 'var(--text-color)' : cpu >= 80 ? '#f85149' : cpu >= 50 ? '#e3b341' : '#3fb950';
 
   container.innerHTML = `
     <div class="card">
@@ -638,9 +640,14 @@ function renderServerStatus(s) {
       <div style="font-size:11px; margin-top:0.3rem;">Server PID: ${s.serverPid || s.pid} ${s.nmtPid ? `(NMT: ${s.nmtPid})` : ''}</div>
     </div>
     <div class="card">
-      <div style="font-size:11px; color:var(--secondary-text-color);">Uptime & Start</div>
+      <div style="font-size:11px; color:var(--secondary-text-color);">Uptime &amp; Start</div>
       <div style="font-size:16px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">${uptimeHours} hours</div>
       <div style="font-size:11px; margin-top:0.3rem;">Since: ${new Date(s.startedAt).toLocaleTimeString()}</div>
+    </div>
+    <div class="card">
+      <div style="font-size:11px; color:var(--secondary-text-color);">CPU Usage</div>
+      <div style="font-size:16px; font-weight:600; color:${cpuColor}; margin-top:0.2rem;">${cpu != null ? cpu + ' %' : 'N/A'}</div>
+      <div style="font-size:11px; margin-top:0.3rem;">Node: ${s.nodeVersion || ''} / ${s.arch || ''}</div>
     </div>
     <div class="card">
       <div style="font-size:11px; color:var(--secondary-text-color);">Memory Usage (RSS)</div>
@@ -650,7 +657,7 @@ function renderServerStatus(s) {
     <div class="card">
       <div style="font-size:11px; color:var(--secondary-text-color);">Environment & Storage</div>
       <div style="font-size:13px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">DB: ${escapeHTML(s.databaseAdapter || 'N/A')}</div>
-      <div style="font-size:11px; margin-top:0.3rem;">Storage: ${escapeHTML(s.storageAdapter || 'local')} | Node: ${s.nodeVersion || ''}</div>
+      <div style="font-size:11px; margin-top:0.3rem;">Storage: ${escapeHTML(s.storageAdapter || 'local')}</div>
     </div>
   `;
 }
