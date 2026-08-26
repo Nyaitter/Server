@@ -22,6 +22,11 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
+function getAdminDisplayName(req) {
+  const user = req.user?.visibilityUser || req.user || {};
+  return user.name || user.username || user.scratch_name || `#${req.user?.id ?? 'unknown'}`;
+}
+
 function serializeReportBrief(report) {
   if (!report) return null;
   return {
@@ -192,10 +197,10 @@ router.post({
     try {
       const LogHubManager = require('../services/managementTool/LogHubManager');
       LogHubManager.appendExternalLog({
-        type: 'moderation',
+        type: 'admin',
         level: 'info',
-        source: 'moderation',
-        message: `[Moderation] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) が通報 #${reportId} を対応完了`,
+        source: 'request',
+        message: `[Request] 管理者 @${getAdminDisplayName(req)} (#${req.user.id}) がリクエスト #${reportId} を対応完了`,
         details: { moderatorId: req.user.id, reportId, body: req.body },
       });
     } catch (_) {}

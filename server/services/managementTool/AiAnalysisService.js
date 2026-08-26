@@ -273,27 +273,31 @@ NMT_SECURITY_ESCALATE: true または false
     const { allowEdit = false } = options;
 
     // 自動修正（allowEdit = true）の場合は Opencode CLI エージェントを優先実行
-    if (allowEdit && this._isOpencodeAvailable()) {
-      try {
-        const cliResult = await this._callOpencodeAgent(prompt, { allowEdit: true });
-        if (cliResult) {
-          const resolvedName = await this._resolveOpencodeModelName();
-          return {
-            model: `Opencode Agent (${resolvedName})`,
-            content: cliResult,
-            provider: 'opencode-agent',
-          };
-        }
-      } catch (err) {
-        if (err.code === 'ENOENT') {
-          this.opencodeAvailable = false;
-        } else {
-          const reason = err.code === 'ETIMEDOUT'
-            ? 'timeout'
-            : err.code || 'command_failed';
-          console.warn(`[NMT-AI] Opencode agent execution failed (${reason}), falling back to API.`);
+    if (allowEdit) {
+      if (this._isOpencodeAvailable()) {
+        try {
+          const cliResult = await this._callOpencodeAgent(prompt, { allowEdit: true });
+          if (cliResult) {
+            const resolvedName = await this._resolveOpencodeModelName();
+            return {
+              model: `Opencode Agent (${resolvedName})`,
+              content: cliResult,
+              provider: 'opencode-agent',
+            };
+          }
+        } catch (err) {
+          if (err.code === 'ENOENT') {
+            this.opencodeAvailable = false;
+          } else {
+            const reason = err.code === 'ETIMEDOUT'
+              ? 'timeout'
+              : err.code || 'command_failed';
+            console.warn(`[NMT-AI] Opencode agent execution failed (${reason}); auto-fix aborted.`);
+          }
         }
       }
+
+      throw new Error('OpenCode agent is required for auto-fix but could not complete the request');
     }
 
     // エラー解析・セキュリティ調査（リードオンリー）は Direct API を優先して高速処理
@@ -392,18 +396,30 @@ NMT_SECURITY_ESCALATE: true または false
     const initialBin = fs.existsSync(localBin) ? localBin : 'opencode';
 
     return new Promise((resolve, reject) => {
+      const maxAttempts = 5;
+      const retryDelayMs = 2000;
 
-      const runWithCommand = (bin, args) => {
+      const isTransientFailure = (error, stderr = '') => {
+        const detail = `${error?.message || ''}\n${stderr}`;
+        return error?.code === 'ETIMEDOUT'
+          || error?.code === 'ECONNRESET'
+          || /(?:HTTP|status|\[)\s*(?:408|429|500|502|503|504)\b/i.test(detail)
+          || /(?:temporarily overloaded|upstream error|request failed|timeout|timed out)/i.test(detail);
+      };
+
+      const runWithCommand = (bin, args, attempt = 1) => {
         execFile(bin, args, {
           cwd: PROJECT_ROOT,
           env,
-          ...(securityMode ? {} : { timeout: 90000 }),
           maxBuffer: 20 * 1024 * 1024,
         }, (error, stdout, stderr) => {
           if (error) {
             // opencode / localBin が直接見つからなかった場合は npx で自動実行
             if (error.code === 'ENOENT' && bin !== 'npx') {
-              return runWithCommand('npx', ['--yes', 'opencode-ai', ...opencodeArgs]);
+              return runWithCommand('npx', ['--yes', 'opencode-ai', ...opencodeArgs], attempt);
+            }
+            if (attempt < maxAttempts && isTransientFailure(error, stderr)) {
+              return setTimeout(() => runWithCommand(bin, args, attempt + 1), retryDelayMs);
             }
             return reject(error);
           }

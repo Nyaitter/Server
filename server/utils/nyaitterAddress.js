@@ -86,6 +86,12 @@ function getApiPublicUrl(req = null) {
 }
 
 function getPostShareUrl(req = null) {
+  const configuredShareUrl = config.postShareUrl || process.env.POST_SHARE_URL;
+  if (configuredShareUrl) {
+    const normalized = normalizePublicUrl(configuredShareUrl);
+    if (normalized) return normalized;
+  }
+
   const portSetting = process.env.POST_SHARE_PORT || config.postSharePort;
   if (portSetting) {
     const port = Number(portSetting);
