@@ -33,11 +33,25 @@ function serializeReportBrief(report) {
     id: Number(report.id),
     status: report.status,
     assignment_type: report.assignmentType,
-    reporter_id: report.reporterId ?? null,
+    reporter_id: report.reporterUserId ?? report.reporterId ?? null,
     target_kind: report.targetKind ?? null,
     target_id: report.targetId ?? null,
     assigned_at: report.assignedAt || null,
     created_at: report.createdAt || null,
+  };
+}
+
+function serializeReport(report) {
+  if (!report) return null;
+  return {
+    ...serializeReportBrief(report),
+    reporter_id: report.reporterUserId ?? report.reporter_id ?? null,
+    description: report.description || '',
+    target_snapshot: report.targetSnapshot || report.target_snapshot || {},
+    assigned_admin_id: report.assignedAdminId ?? report.assigned_admin_id ?? null,
+    excluded_admin_ids: report.excludedAdminIds || report.excluded_admin_ids || [],
+    resolution: report.resolution || null,
+    resolved_at: report.resolvedAt || report.resolved_at || null,
   };
 }
 
@@ -86,7 +100,7 @@ router.get({
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
     const offset = parseInt(req.query.offset, 10) || 0;
     const reports = await service.listReports({ status, limit, offset, adminId: req.user.id });
-    res.json({ reports });
+    res.json({ reports: reports.map(serializeReport) });
   } catch (error) {
     console.error('[reports] list error:', error);
     res.status(500).json({ error: '通報一覧の取得に失敗しました' });
@@ -105,7 +119,7 @@ router.get({
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
     const offset = parseInt(req.query.offset, 10) || 0;
     const reports = await service.listReports({ status, limit, offset, adminId: req.user.id });
-    res.json({ reports });
+    res.json({ reports: reports.map(serializeReport) });
   } catch (error) {
     console.error('[reports] list assigned error:', error);
     res.status(500).json({ error: '割り当てられた通報一覧の取得に失敗しました' });
@@ -126,7 +140,7 @@ router.get({
     }
     const report = await service.getReportById(reportId);
     if (!report) return res.status(404).json({ error: '通報が見つかりません' });
-    res.json({ report });
+    res.json({ report: serializeReport(report) });
   } catch (error) {
     console.error('[reports] get error:', error);
     res.status(500).json({ error: '通報詳細の取得に失敗しました' });
