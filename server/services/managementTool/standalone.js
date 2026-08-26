@@ -9,7 +9,32 @@ const ManagementToolServer = require('./ManagementToolServer');
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const PID_FILE = path.join(DATA_DIR, 'nmt.pid');
 
+function killExistingNmtProcess() {
+  if (!fs.existsSync(PID_FILE)) return;
+  try {
+    const rawPid = fs.readFileSync(PID_FILE, 'utf8').trim();
+    const pid = parseInt(rawPid, 10);
+    if (Number.isInteger(pid) && pid !== process.pid) {
+      try {
+        process.kill(pid, 0);
+        console.log(`[NMT-Standalone] Stopping previous NMT process (PID: ${pid})...`);
+        process.kill(pid, 'SIGTERM');
+        const start = Date.now();
+        while (Date.now() - start < 1000) {
+          try {
+            process.kill(pid, 0);
+          } catch (_) {
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
 async function main() {
+  killExistingNmtProcess();
+
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(PID_FILE, String(process.pid), 'utf8');
 

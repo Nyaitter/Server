@@ -603,49 +603,6 @@ app.locals.postActionQueue = postActionQueue;
 app.locals.postKeywordBackfillQueue = postKeywordBackfillQueue;
 app.locals.postKeywordBackfillService = postKeywordBackfillService;
 
-// ── NMT プロセス分離＆二重起動防止 ──────────────────────────────────────────
-async function initIsolatedNMT() {
-    if (!config.nmt?.enabled) return;
-    const net = require('net');
-    const { spawn } = require('child_process');
-    const nmtPort = config.nmt.port || 4040;
-    const nmtHost = config.nmt.host || '127.0.0.1';
-
-    // 1. 既にポートが開いているか確認
-    const isPortOpen = await new Promise((resolve) => {
-        const tester = net.createConnection({ port: nmtPort, host: nmtHost === '0.0.0.0' ? '127.0.0.1' : nmtHost }, () => {
-            tester.end();
-            resolve(true);
-        });
-        tester.on('error', () => resolve(false));
-        tester.setTimeout(1000, () => {
-            tester.destroy();
-            resolve(false);
-        });
-    });
-
-    if (isPortOpen) {
-        console.log(`[management-tool] NMT is already running on port ${nmtPort}. Skipping spawn (Process separation active).`);
-        return;
-    }
-
-    // 2. 独立した子プロセスとして分離起動（NyaitterServer が死んでも生き残る）
-    try {
-        const standaloneScript = path.resolve(__dirname, 'services/managementTool/standalone.js');
-        const child = spawn(process.execPath, [standaloneScript], {
-            detached: true,
-            stdio: 'ignore',
-            env: { ...process.env },
-        });
-        child.unref();
-        console.log(`[management-tool] Spawned isolated NMT process (PID: ${child.pid}) on port ${nmtPort}`);
-    } catch (err) {
-        console.error('[management-tool] Failed to spawn isolated NMT process:', err);
-    }
-}
-
-void initIsolatedNMT();
-
 async function startServer() {
     await dbAdapter.connect();
     app.locals.dbAdapter = dbAdapter;
