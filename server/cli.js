@@ -12,6 +12,7 @@ const {
 } = require('./utils/operatorControl');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
+const ENV_FILE = path.join(__dirname, '.env');
 const STARTUP_TIMEOUT_MS = 5000;
 const POLL_INTERVAL_MS = 100;
 
@@ -26,6 +27,9 @@ Nyaitter ローカル管理CLI
   npm run cli -- server stop
   npm run cli -- server restart
   npm run cli -- server status
+    npm run cli -- maintenance enable
+    npm run cli -- maintenance disable
+    npm run cli -- maintenance status
   npm run cli -- nmt start
   npm run cli -- nmt stop
   npm run cli -- nmt restart
@@ -45,6 +49,42 @@ function formatStatus(status) {
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readMaintenanceMode() {
+    if (process.env.NYAITTER_MAINTENANCE_MODE !== undefined) {
+        return /^(true|1|yes|on)$/i.test(process.env.NYAITTER_MAINTENANCE_MODE);
+    }
+    try {
+        const content = fs.readFileSync(ENV_FILE, 'utf8');
+        const match = content.match(/^NYAITTER_MAINTENANCE_MODE\s*=\s*(.*?)\s*$/m);
+        return match ? /^(true|1|yes|on)$/i.test(match[1]) : false;
+    } catch (_) {
+        return false;
+    }
+}
+
+function writeMaintenanceMode(enabled) {
+    let content = '';
+    try {
+        content = fs.readFileSync(ENV_FILE, 'utf8');
+    } catch (_) {}
+    const line = `NYAITTER_MAINTENANCE_MODE=${enabled ? 'true' : 'false'}`;
+    if (/^NYAITTER_MAINTENANCE_MODE\s*=.*$/m.test(content)) {
+        content = content.replace(/^NYAITTER_MAINTENANCE_MODE\s*=.*$/m, line);
+    } else {
+        content = `${content.replace(/\s*$/, '')}\n${line}\n`;
+    }
+    fs.writeFileSync(ENV_FILE, content, 'utf8');
+}
+
+async function enableMaintenanceMode() {
+    writeMaintenanceMode(true);
+    const status = await getRunningStatus();
+    if (status) {
+        await stopServer();
+    }
+    console.warn('メンテナンスモードを有効にしました。解除するまでサーバーの起動を拒否します。');
 }
 
 async function getRunningStatus() {
@@ -87,6 +127,11 @@ async function startServer() {
     });
     child.unref();
     fs.closeSync(logFd);
+
+    if (readMaintenanceMode()) {
+        console.warn('メンテナンスモードが有効なため、サーバーは起動しませんでした。');
+        return;
+    }
 
     const started = await waitForServer(true);
     if (!started.matched || !started.status) {
@@ -257,6 +302,22 @@ async function main(argv) {
         }
         if (command === 'revoke' || command === 'remove') {
             await setAdministrator(argument, false);
+            return;
+        }
+    }
+
+    if (group === 'maintenance') {
+        if (command === 'enable' || command === 'on') {
+            await enableMaintenanceMode();
+            return;
+        }
+        if (command === 'disable' || command === 'off') {
+            writeMaintenanceMode(false);
+            console.log('メンテナンスモードを解除しました。');
+            return;
+        }
+        if (command === 'status') {
+            console.log(`メンテナンスモード: ${readMaintenanceMode() ? '有効' : '無効'}`);
             return;
         }
     }

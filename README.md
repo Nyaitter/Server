@@ -25,6 +25,25 @@ npm start
 
 ブラウザで <http://localhost:3000/> を開くと利用できます。
 
+サーバーの状態確認や起動・停止は、プロジェクト外からも次のCLIで実行できます。
+
+```bash
+/path/to/Server/NyaitterServerCLI server status
+/path/to/Server/NyaitterServerCLI nmt status
+```
+
+このCLIは内部で`npm run cli`を実行します。
+
+緊急メンテナンス中は、サーバーの起動を拒否できます。拒否中もエラー終了せず、警告だけを表示します。
+
+```bash
+/path/to/Server/NyaitterServerCLI maintenance enable
+/path/to/Server/NyaitterServerCLI maintenance status
+/path/to/Server/NyaitterServerCLI maintenance disable
+```
+
+解除後にサーバーを起動する場合は、`server start`またはPM2の再起動を実行してください。
+
 初期状態ではデータが一時保存（メモリ）のため、サーバーを再起動するとデータが消えます。データを保存して本格的に運用する手順は `server/README.md` を確認してください。
 
 ## ライセンス

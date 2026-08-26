@@ -24,6 +24,15 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerDocument = require('./swagger-output.json');
 
 const config = require('./config');
+
+if (config.server.maintenanceMode) {
+    console.warn('[server] メンテナンスモードが有効です。サーバーの起動を拒否しています。解除するまでアクセスを受け付けません。');
+    if (process.env.pm_id !== undefined) {
+        setInterval(() => {}, 60 * 60 * 1000);
+    }
+    return;
+}
+
 const { createDatabaseAdapter, createStorageAdapter } = require('./adapters');
 const {
     csrfProtection,

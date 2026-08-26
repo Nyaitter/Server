@@ -2,6 +2,7 @@ const api = require('../utils/ApiRegistry');
 const config = require('../config');
 const {
 	getPublicUrl,
+	getApiPublicUrl,
 	getPostShareUrl,
 } = require('../utils/nyaitterAddress');
 const { defaultRegistry: authProviderRegistry } = require('../services/auth/AuthProviderRegistry');
@@ -90,8 +91,20 @@ router.get({
 		database: dbStatus,
 		identity: {
 			public_url: publicUrl,
+			api_url: getApiPublicUrl(req),
 			post_share_url: getPostShareUrl(req),
 			nyaitter_id_format: '#{localId}',
+		},
+		client_config: {
+			user_file_endpoint: config.userFiles.endpoint,
+			post_share_url: getPostShareUrl(req),
+			turnstile_site_key: config.turnstile?.siteKey || '',
+			push: {
+				enabled: Boolean(config.push?.vapidPublicKey && config.push?.vapidPrivateKey),
+				vapid_public_key: config.push?.vapidPublicKey || '',
+			},
+			resource_links: config.client?.resourceLinks || [],
+			widget_links: config.client?.widgetLinks || [],
 		},
 		auth_methods: authProviderRegistry.listEnabledProviderNames(config, req),
 		turnstile: {

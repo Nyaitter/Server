@@ -221,6 +221,7 @@ const config = {
       ['server.publicUrl', 'server.publicApiUrl'],
       '',
     ),
+    maintenanceMode: envBoolean('NYAITTER_MAINTENANCE_MODE', get('server.maintenanceMode', false)),
   },
 
   userFiles: {
@@ -247,6 +248,18 @@ const config = {
       ['client.publicUrl', 'federation.publicUrl'],
       '',
     ),
+    resourceLinks: get('client.resourceLinks', [
+      { name: 'ドキュメント', url: '#docs' },
+      { name: 'Nyaitter(Github)', url: 'https://github.com/Nyaitter' },
+      { name: 'サーバー(Github)', url: 'https://github.com/Nyaitter/Server' },
+      { name: 'クライアント(Github)', url: 'https://github.com/Nyaitter/Client' },
+      { name: 'Nyaitter.js(Github)', url: 'https://github.com/Nyaitter/Nyaitter.js' },
+    ]),
+    widgetLinks: get('client.widgetLinks', [
+      { name: 'ルール', url: '#rule' },
+      { name: 'ドキュメント', url: '#docs' },
+      { name: 'GitHub', url: 'https://github.com/Nyaitter' },
+    ]),
   },
 
   nmt: {
