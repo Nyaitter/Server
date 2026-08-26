@@ -324,7 +324,7 @@ class ErrorManager {
       }
     } catch (_) {}
 
-    setInterval(() => this.checkNewErrors(), 150);
+    setInterval(() => this.checkNewErrors(), 2000);
   }
 
   updateConfig(config = {}) {

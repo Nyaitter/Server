@@ -219,7 +219,7 @@ class LogHubManager {
       } catch (_) {}
     };
 
-    setInterval(checkFile, 300);
+    setInterval(checkFile, 1000);
   }
 
   _load() {
