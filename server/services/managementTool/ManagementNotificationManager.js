@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { requestOperatorCommand } = require('../../utils/operatorControl');
 
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const NOTIFICATIONS_FILE = path.join(DATA_DIR, 'nmt-notifications.json');
@@ -10,7 +11,7 @@ class ManagementNotificationManager {
   constructor({ mainPushService = null, realtimeService = null } = {}) {
     this.mainPushService = mainPushService;
     this.realtimeService = realtimeService;
-    this.clients = new Set(); // SSE response connections
+    this.clients = new Map(); // response -> userId
     this.notifications = [];
     this.subscribedUserIds = new Set(); // ユーザーID -> 通知受信許可
     this._load();
@@ -22,7 +23,14 @@ class ManagementNotificationManager {
       if (fs.existsSync(NOTIFICATIONS_FILE)) {
         const raw = fs.readFileSync(NOTIFICATIONS_FILE, 'utf8');
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) this.notifications = parsed.slice(-200);
+        if (Array.isArray(parsed)) {
+          this.notifications = parsed.slice(-200).map((notification) => ({
+            ...notification,
+            readBy: notification.readBy && typeof notification.readBy === 'object'
+              ? notification.readBy
+              : {},
+          }));
+        }
       }
     } catch (_) {
       this.notifications = [];
@@ -51,13 +59,32 @@ class ManagementNotificationManager {
   /**
    * SSE クライアント登録
    */
-  addClient(res, userId = null) {
+  addClient(res, userId = null, lastEventId = '') {
     if (userId) this.subscribeUser(userId);
-    this.clients.add(res);
+    this.clients.set(res, userId);
+    this.replaySince(res, lastEventId, userId);
 
     res.on('close', () => {
       this.clients.delete(res);
     });
+  }
+
+  _sendSse(res, item) {
+    res.write(`id: ${item.id}\ndata: ${JSON.stringify(item)}\n\n`);
+  }
+
+  replaySince(res, lastEventId, userId) {
+    if (!lastEventId) return;
+    const index = this.notifications.findIndex((notification) => notification.id === lastEventId);
+    if (index < 0) return;
+    for (const notification of this.notifications.slice(0, index).reverse()) {
+      this._sendSse(res, this._formatForUser(notification, userId));
+    }
+  }
+
+  _formatForUser(notification, userId) {
+    const readBy = notification.readBy || {};
+    return { ...notification, read: Boolean(readBy[String(userId)] || notification.read) };
   }
 
   /**
@@ -75,6 +102,7 @@ class ManagementNotificationManager {
       data,
       timestamp: new Date().toISOString(),
       read: false,
+      readBy: {},
     };
 
     this.notifications.unshift(item);
@@ -82,10 +110,9 @@ class ManagementNotificationManager {
     this._save();
 
     // SSE 送信
-    const sseData = `data: ${JSON.stringify(item)}\n\n`;
-    for (const client of this.clients) {
+    for (const [client, userId] of this.clients) {
       try {
-        client.write(sseData);
+        this._sendSse(client, this._formatForUser(item, userId));
       } catch (_) {
         this.clients.delete(client);
       }
@@ -96,17 +123,29 @@ class ManagementNotificationManager {
       try {
         this.mainPushService.sendPushToAdmins({ title: item.title, body: item.message });
       } catch (_) {}
+    } else {
+      void requestOperatorCommand({
+        action: 'push-admin-notification',
+        notification: { title: item.title, body: item.message },
+      }, { timeoutMs: 1000 }).catch(() => {});
     }
 
     return item;
   }
 
-  getNotifications(limit = 50) {
-    return this.notifications.slice(0, limit);
+  getNotifications(limit = 50, userId = null) {
+    return this.notifications.slice(0, limit).map((notification) => (
+      userId == null ? notification : this._formatForUser(notification, userId)
+    ));
   }
 
-  markAllAsRead() {
-    for (const n of this.notifications) n.read = true;
+  markAllAsRead(userId) {
+    if (userId == null) return;
+    const key = String(userId);
+    for (const notification of this.notifications) {
+      if (!notification.readBy || typeof notification.readBy !== 'object') notification.readBy = {};
+      notification.readBy[key] = true;
+    }
     this._save();
   }
 }

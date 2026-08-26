@@ -1068,6 +1068,7 @@ document.getElementById('clear-unified-logs-btn')?.addEventListener('click', asy
 
 // ── 6. Real-time Notifications & Approvals ──────────────────────────────
 let notificationEventSource = null;
+const receivedNotificationIds = new Set();
 
 function initNotificationsSSE() {
   const token = localStorage.getItem('nmt_token');
@@ -1083,6 +1084,13 @@ function initNotificationsSSE() {
     notificationEventSource.onmessage = (event) => {
       try {
         const item = JSON.parse(event.data);
+        if (item.id && receivedNotificationIds.has(item.id)) return;
+        if (item.id) {
+          receivedNotificationIds.add(item.id);
+          if (receivedNotificationIds.size > 500) {
+            receivedNotificationIds.delete(receivedNotificationIds.values().next().value);
+          }
+        }
         handleIncomingNotification(item);
       } catch (_) {}
     };

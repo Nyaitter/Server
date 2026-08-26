@@ -286,6 +286,26 @@ class ServerControlManager {
   // ── NMT 自身の安全なホットリスタート ───────────────────────────────────
   async restartNMT(nmtServerInstance = null) {
     console.log('[NMT] Self-restart requested via Management Tool.');
+
+    if (process.env.pm_id !== undefined) {
+      return new Promise((resolve) => {
+        const pm2Id = process.env.pm_id;
+        setTimeout(() => {
+          execFile('pm2', ['restart', pm2Id], (error) => {
+            if (error) {
+              console.error('[NMT] PM2 restart error:', error.message);
+              return;
+            }
+          });
+        }, 200);
+        resolve({
+          success: true,
+          mode: 'pm2',
+          message: 'PM2へNMT再起動を依頼しました。',
+        });
+      });
+    }
+
     const { fork } = require('child_process');
     const standaloneScript = path.resolve(__dirname, 'standalone.js');
 

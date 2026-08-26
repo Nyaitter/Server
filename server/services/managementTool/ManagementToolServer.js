@@ -617,7 +617,7 @@ class ManagementToolServer {
         if (r?.ok) return res.json({ notifications: r.notifications, isSubscribed: false });
       } catch (_) {}
       res.json({
-        notifications: this.notificationManager.getNotifications(50),
+        notifications: this.notificationManager.getNotifications(50, req.adminUser.id),
         isSubscribed: this.notificationManager.isUserSubscribed(req.adminUser.id),
       });
     });
@@ -636,7 +636,7 @@ class ManagementToolServer {
       });
       res.write(': connected\n\n');
 
-      this.notificationManager.addClient(res, session.userId);
+      this.notificationManager.addClient(res, session.userId, req.headers['last-event-id'] || '');
     });
 
     this.app.post('/api/notifications/subscribe', authMiddleware, (req, res) => {
@@ -650,7 +650,7 @@ class ManagementToolServer {
     });
 
     this.app.post('/api/notifications/read-all', authMiddleware, (req, res) => {
-      this.notificationManager.markAllAsRead();
+      this.notificationManager.markAllAsRead(req.adminUser.id);
       res.json({ success: true });
     });
 

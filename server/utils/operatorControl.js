@@ -222,6 +222,22 @@ function createCommandHandler({ dbAdapter, shutdown, getStatus, managers = {} })
       }
     }
 
+    if (command.action === 'push-admin-notification') {
+      if (!managers.pushNotificationService) return { ok: false, error: 'Push service not available' };
+      const notification = command.notification || {};
+      try {
+        const users = typeof dbAdapter.getAllUsers === 'function' ? await dbAdapter.getAllUsers() : [];
+        const admins = users.filter((user) => user.admin === true || user.is_admin === true);
+        await Promise.all(admins.map((user) => managers.pushNotificationService.sendNotificationToUser(
+          user.id,
+          notification,
+        )));
+        return { ok: true, count: admins.length };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
     // ── データ操作 ─────────────────────────────────────────────────────────
     if (command.action === 'export-data') {
       const filePath = typeof command.filePath === 'string' ? command.filePath : '';

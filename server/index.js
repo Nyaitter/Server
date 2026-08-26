@@ -635,6 +635,7 @@ async function startServer() {
             securityManager:     managementToolServer?.securityManager     || null,
             notificationManager: managementToolServer?.notificationManager || null,
             approvalManager:     managementToolServer?.approvalManager     || null,
+            pushNotificationService,
             adminAuditFn:        () => managementToolServer?.adminManager?.getAuditLogs?.() || [],
             logHub:              managementToolServer?.logHub              || null,
         },
