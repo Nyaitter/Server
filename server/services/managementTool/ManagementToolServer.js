@@ -557,6 +557,17 @@ class ManagementToolServer {
       if (allowBash !== undefined) envMap.NMT_ALLOW_BASH = String(allowBash);
       if (requireApprovalForEdit !== undefined) envMap.NMT_REQUIRE_APPROVAL_EDIT = String(requireApprovalForEdit);
       if (requireApprovalForBash !== undefined) envMap.NMT_REQUIRE_APPROVAL_BASH = String(requireApprovalForBash);
+      if (guardrails && typeof guardrails === 'object') {
+        const guardrailEnvNames = {
+          restrictToGitTracked: 'NMT_GUARD_GIT_TRACKED',
+          syntaxValidation: 'NMT_GUARD_SYNTAX',
+          blockEnvModification: 'NMT_GUARD_BLOCK_ENV',
+          blockSuspiciousCommands: 'NMT_GUARD_BLOCK_COMMANDS',
+        };
+        for (const [key, envName] of Object.entries(guardrailEnvNames)) {
+          if (guardrails[key] !== undefined) envMap[envName] = String(Boolean(guardrails[key]));
+        }
+      }
       if (aiModel !== undefined) {
         envMap.NMT_AI_MODEL = aiModel;
       }

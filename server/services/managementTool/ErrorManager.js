@@ -68,6 +68,14 @@ class ErrorManager {
     return /(?:^|\n)\s*NMT_PROBLEM_DETECTED\s*:\s*true\s*(?:\n|$)/i.test(String(analysis?.content || ''));
   }
 
+  static hasActionRequired(analysis) {
+    return /NMT_ACTION_REQUIRED\s*:\s*true/i.test(String(analysis?.content || ''));
+  }
+
+  static hasNoActionRequired(analysis) {
+    return /NMT_ACTION_REQUIRED\s*:\s*false/i.test(String(analysis?.content || ''));
+  }
+
   async escalateToSecurity(errorId) {
     const record = this.errors.find((error) => error.id === errorId);
     if (!record || !this.securityManager) return null;
@@ -394,6 +402,7 @@ class ErrorManager {
       },
       status: 'open',
       analysis: null,
+      actionRequired: null,
       issueUrl: null,
       prUrl: null,
       fixed: false,
@@ -444,7 +453,13 @@ class ErrorManager {
         provider: result?.provider || 'unknown',
         analyzedAt: new Date().toISOString(),
       };
+      record.actionRequired = ErrorManager.hasActionRequired(record.analysis)
+        ? true
+        : ErrorManager.hasNoActionRequired(record.analysis) ? false : null;
       record.problemDetected = ErrorManager.hasDetectedProblem(record.analysis);
+      if (record.actionRequired === false) {
+        this.dismissError(errorId, 'AI marked as not requiring action');
+      }
       this._save();
 
       if (ErrorManager.shouldEscalateToSecurity(record.analysis)) {
@@ -498,6 +513,9 @@ class ErrorManager {
         provider: result.provider,
         analyzedAt: new Date().toISOString(),
       };
+      record.actionRequired = ErrorManager.hasActionRequired(record.analysis)
+        ? true
+        : ErrorManager.hasNoActionRequired(record.analysis) ? false : null;
       record.problemDetected = ErrorManager.hasDetectedProblem(record.analysis);
 
       const afterDiff = await execGit(['diff', '--name-only']).catch(() => '');
@@ -527,14 +545,18 @@ class ErrorManager {
           record.modifiedFiles = modifiedFiles;
           record.status = 'resolved';
 
-          if (this.autoPr && record.problemDetected && this.githubToken && !record.prUrl) {
+          if (record.actionRequired !== false && this.autoPr && record.problemDetected && this.githubToken && !record.prUrl) {
             this.createGitHubPullRequest(errorId).catch((e) => console.warn('[NMT-Errors] Auto PR creation error:', e.message));
           }
         }
       }
 
-      if (this.autoIssue && record.problemDetected && this.githubToken && !record.issueUrl) {
+      if (record.actionRequired !== false && this.autoIssue && record.problemDetected && this.githubToken && !record.issueUrl) {
         this.createGitHubIssue(errorId).catch((e) => console.warn('[NMT-Errors] Auto issue creation error:', e.message));
+      }
+
+      if (record.actionRequired === false) {
+        this.dismissError(errorId, 'AI marked as not requiring action');
       }
 
       this._save();

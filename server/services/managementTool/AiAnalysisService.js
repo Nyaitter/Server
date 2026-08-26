@@ -15,6 +15,7 @@ class AiAnalysisService {
     this.allowBash = config.allowBash ?? false;
     this.requireApprovalForEdit = config.requireApprovalForEdit ?? false;
     this.requireApprovalForBash = config.requireApprovalForBash ?? true;
+    this.guardrails = { ...(config.guardrails || {}) };
     this.approvalManager = null;
     this.zenModelsCache = null;
     this.zenModelsLastFetched = 0;
@@ -36,6 +37,7 @@ class AiAnalysisService {
     if (config.allowBash !== undefined) this.allowBash = Boolean(config.allowBash);
     if (config.requireApprovalForEdit !== undefined) this.requireApprovalForEdit = Boolean(config.requireApprovalForEdit);
     if (config.requireApprovalForBash !== undefined) this.requireApprovalForBash = Boolean(config.requireApprovalForBash);
+    if (config.guardrails !== undefined) this.guardrails = { ...this.guardrails, ...config.guardrails };
   }
 
   // ── Gemini 公式 API 提供の実在モデル一覧を動的取得 ───────────────────
@@ -142,6 +144,10 @@ class AiAnalysisService {
 - 根本原因がコード変更を必要としない場合や、修正による副作用が大きい場合は変更を行わず、調査結果と推奨対応だけを報告してください。
 - 修正完了後、何を変更したのかのサマリーを報告してください。
 
+【Safety Guardrails設定】
+以下の設定は起動時にserver/.envから読み込まれた現在値です。必ず従ってください。
+${JSON.stringify(this.guardrails)}
+
 【エラー情報】
 - エラー種別/メッセージ: ${errorRecord.message || '不明'}
 - 発生日時: ${errorRecord.timestamp || new Date().toISOString()}
@@ -154,8 +160,10 @@ ${errorRecord.stack || '(スタックトレースなし)'}
 
 【出力形式】
 Markdown形式で回答してください:
-次の行を必ず最初に出力してください。実際に対応が必要な問題を確認した場合だけtrue、問題がないまたは報告だけの場合はfalseにしてください。
+次の行を必ず最初に出力してください。実際に対応が必要な問題を確認した場合だけtrueにしてください。問題がない、誤検知、情報提供や推奨対応だけで済む、またはコード変更が不要な場合は必ずfalseにしてください。
 NMT_PROBLEM_DETECTED: true または false
+対応が必要な場合だけtrue、対応不要・誤検知・情報提供だけで済む場合はfalseにしてください。
+NMT_ACTION_REQUIRED: true または false
 次の行を必ず最初に出力してください。実際にコードを変更した場合だけtrue、修正不要または報告のみの場合はfalseにしてください。
 NMT_AUTOFIX_APPLIED: true または false
 最初に、セキュリティインシデントへの昇格が必要かを次の形式で必ず1行出力してください。コード変更を行った場合でも、脆弱性・不正アクセス・認証情報漏えいなどの観点で判断してください。
@@ -188,8 +196,10 @@ ${errorRecord.stack || '(スタックトレースなし)'}
 
 【出力形式】
 以下の見出しを含んだMarkdown形式で回答してください:
-最初に、実際に対応が必要な問題があるかを次の形式で必ず1行出力してください。誤検知や通常の情報であればfalseにしてください。
+最初に、実際に対応が必要な問題があるかを次の形式で必ず1行出力してください。誤検知、通常の情報、推奨や説明だけで済む場合は必ずfalseにしてください。
 NMT_PROBLEM_DETECTED: true または false
+対応が必要な場合だけtrue、対応不要・誤検知・情報提供だけで済む場合はfalseにしてください。
+NMT_ACTION_REQUIRED: true または false
 最初に、セキュリティインシデントへの昇格が必要かを次の形式で必ず1行出力してください。一般的なバグや構文エラーだけの場合はfalseにしてください。
 NMT_SECURITY_ESCALATE: true または false
 ### 1. 原因の分析
@@ -278,7 +288,10 @@ NMT_SECURITY_ESCALATE: true または false
         if (err.code === 'ENOENT') {
           this.opencodeAvailable = false;
         } else {
-          console.warn('[NMT-AI] Opencode agent execution failed, falling back to API:', err.message);
+          const reason = err.code === 'ETIMEDOUT'
+            ? 'timeout'
+            : err.code || 'command_failed';
+          console.warn(`[NMT-AI] Opencode agent execution failed (${reason}), falling back to API.`);
         }
       }
     }
@@ -326,7 +339,7 @@ NMT_SECURITY_ESCALATE: true または false
 
   async _resolveOpencodeModelName() {
     if (this.preferredModel && this.preferredModel !== 'auto') {
-      return this.preferredModel;
+      return this.preferredModel.includes('/') ? this.preferredModel : `opencode/${this.preferredModel}`;
     }
     if (this.geminiApiKey) return 'google/gemini-3.5-flash-lite';
     if (this.openaiApiKey) return 'openai/gpt-4o';
@@ -365,6 +378,15 @@ NMT_SECURITY_ESCALATE: true または false
       GOOGLE_GENERATIVE_AI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.AUTOMOD_API_KEY || '',
       OPENAI_API_KEY: this.openaiApiKey || process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '',
     };
+    const guardrailEnvNames = {
+      restrictToGitTracked: 'NMT_GUARD_GIT_TRACKED',
+      syntaxValidation: 'NMT_GUARD_SYNTAX',
+      blockEnvModification: 'NMT_GUARD_BLOCK_ENV',
+      blockSuspiciousCommands: 'NMT_GUARD_BLOCK_COMMANDS',
+    };
+    for (const [key, envName] of Object.entries(guardrailEnvNames)) {
+      if (this.guardrails[key] !== undefined) env[envName] = String(Boolean(this.guardrails[key]));
+    }
 
     const localBin = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'opencode');
     const initialBin = fs.existsSync(localBin) ? localBin : 'opencode';
@@ -486,7 +508,7 @@ NMT_SECURITY_ESCALATE: true または false
     }
     if (candidates.length === 0) candidates.push('nemotron-3.5-lightning-free', 'hy3-free', 'mimo-v2.5-free');
 
-    const maxAttemptsPerModel = 2;
+    const maxAttemptsPerModel = 5;
     let lastError = null;
 
     for (const modelName of candidates) {
@@ -498,7 +520,7 @@ NMT_SECURITY_ESCALATE: true または false
           lastError = err;
           console.warn(`[NMT-AI] Zen model ${modelName} (attempt ${attempt}) failed: ${err.message}`);
           if (err.code === 'MODEL_UNAVAILABLE' || !this._isTransientZenError(err)) break;
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 2000));
         }
       }
     }

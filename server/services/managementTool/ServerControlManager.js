@@ -7,7 +7,6 @@ const { execFile } = require('child_process');
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const SERVER_DIR = path.resolve(__dirname, '../../');
 const ENV_FILE = path.join(SERVER_DIR, '.env');
-const ROOT_ENV_FILE = path.join(PROJECT_ROOT, '.env');
 const CONFIG_FILE = path.join(SERVER_DIR, 'config.json');
 const ROOT_CONFIG_FILE = path.join(PROJECT_ROOT, 'config.json');
 
@@ -407,8 +406,6 @@ class ServerControlManager {
 
   // ── .env ファイル操作 ──────────────────────────────────────────────────
   _resolveEnvPath() {
-    if (fs.existsSync(ENV_FILE)) return ENV_FILE;
-    if (fs.existsSync(ROOT_ENV_FILE)) return ROOT_ENV_FILE;
     return ENV_FILE;
   }
 
