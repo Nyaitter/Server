@@ -617,7 +617,13 @@ async function startServer() {
     app.locals.dbAdapter = dbAdapter;
     app.locals.storageAdapter = storageAdapter;
     managementToolServer?.setDbAdapter(dbAdapter);
-    managementToolServer?.setServerControls({
+    const userFileEndpoint = config.userFiles?.endpoint || null;
+const postShareUrl = config.postSharePort
+    ? `${config.server.publicUrl || ''}`.replace(/\/+$/, '') + `:${config.postSharePort}`.replace(/^:+/, '')
+    : null;
+const turnstileSiteKey = config.turnstile?.siteKey || '';
+
+managementToolServer?.setServerControls({
         shutdownFn: shutdown,
         getStatusFn: () => ({
             pid: process.pid,
@@ -625,6 +631,13 @@ async function startServer() {
             databaseAdapter: config.database.adapter,
             storageAdapter: config.storage?.adapter || 'local',
             startedAt: new Date().toISOString(),
+            client_config: {
+                user_file_endpoint: userFileEndpoint,
+                post_share_url: postShareUrl,
+                turnstile_site_key: turnstileSiteKey,
+                resource_links: config.client?.resourceLinks || [],
+                widget_links: config.client?.widgetLinks || [],
+            },
         }),
     });
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
@@ -638,6 +651,13 @@ async function startServer() {
             databaseAdapter: config.database.adapter,
             storageAdapter: config.storage?.adapter || 'local',
             startedAt: new Date().toISOString(),
+            client_config: {
+                user_file_endpoint: userFileEndpoint,
+                post_share_url: postShareUrl,
+                turnstile_site_key: turnstileSiteKey,
+                resource_links: config.client?.resourceLinks || [],
+                widget_links: config.client?.widgetLinks || [],
+            },
         }),
         managers: {
             errorManager:        managementToolServer?.errorManager        || null,
