@@ -29,6 +29,7 @@ class ErrorManager {
     this.aiService = aiService;
     this.notificationManager = notificationManager;
     this.approvalManager = approvalManager;
+    this.securityManager = null;
     this.autoAnalysis = process.env.NMT_AUTO_ANALYSIS !== undefined ? process.env.NMT_AUTO_ANALYSIS === 'true' : (config.autoAnalysis ?? false);
     this.autoFix = process.env.NMT_AUTO_FIX !== undefined ? process.env.NMT_AUTO_FIX === 'true' : (config.autoFix ?? false);
     this.autoIssue = process.env.NMT_AUTO_ISSUE !== undefined ? process.env.NMT_AUTO_ISSUE === 'true' : (config.autoIssue ?? false);
@@ -53,6 +54,30 @@ class ErrorManager {
 
   setApprovalManager(approvalManager) {
     this.approvalManager = approvalManager;
+  }
+
+  setSecurityManager(securityManager) {
+    this.securityManager = securityManager;
+  }
+
+  static shouldEscalateToSecurity(analysis) {
+    return /(?:^|\n)\s*NMT_SECURITY_ESCALATE\s*:\s*true\s*(?:\n|$)/i.test(String(analysis?.content || ''));
+  }
+
+  static hasDetectedProblem(analysis) {
+    return /(?:^|\n)\s*NMT_PROBLEM_DETECTED\s*:\s*true\s*(?:\n|$)/i.test(String(analysis?.content || ''));
+  }
+
+  async escalateToSecurity(errorId) {
+    const record = this.errors.find((error) => error.id === errorId);
+    if (!record || !this.securityManager) return null;
+    if (record.securityIncidentId) return record.securityIncidentId;
+    const incident = await this.securityManager.recordIncidentFromError(record);
+    if (!incident) return null;
+    record.securityIncidentId = incident.id;
+    this._save();
+    this._broadcast(record, 'error_updated');
+    return incident.id;
   }
 
   setLogHub(logHub) {
@@ -260,11 +285,10 @@ class ErrorManager {
       if ((shouldAutoFix || shouldAutoAnalysis) && this.aiService) {
         const unanalyzed = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing && !e.dismissed);
         for (const record of unanalyzed) {
-          this.triggerAnalysis(record.id).then(() => {
-            if (shouldAutoFix && !record.fixing && !record.fixed) {
-              return this.triggerAutoFix(record.id);
-            }
-          }).catch((e) => console.warn('[NMT-Errors] Auto analysis/fix error:', e.message));
+          const task = shouldAutoFix
+            ? this.triggerAutoFix(record.id)
+            : this.triggerAnalysis(record.id);
+          task.catch((e) => console.warn('[NMT-Errors] Auto analysis/fix error:', e.message));
         }
       }
     } catch (_) {}
@@ -420,9 +444,14 @@ class ErrorManager {
         provider: result?.provider || 'unknown',
         analyzedAt: new Date().toISOString(),
       };
+      record.problemDetected = ErrorManager.hasDetectedProblem(record.analysis);
       this._save();
 
-      if (this.autoIssue && this.githubToken && !record.issueUrl) {
+      if (ErrorManager.shouldEscalateToSecurity(record.analysis)) {
+        await this.escalateToSecurity(errorId);
+      }
+
+      if (this.autoIssue && record.problemDetected && this.githubToken && !record.issueUrl) {
         this.createGitHubIssue(errorId).catch((e) => console.warn('[NMT-Errors] Auto issue creation error:', e.message));
       }
 
@@ -435,6 +464,11 @@ class ErrorManager {
         provider: 'error',
         analyzedAt: new Date().toISOString(),
       };
+      record.problemDetected = false;
+
+      if (ErrorManager.shouldEscalateToSecurity(record.analysis)) {
+        await this.escalateToSecurity(errorId);
+      }
       this._save();
       return record.analysis;
     } finally {
@@ -464,6 +498,7 @@ class ErrorManager {
         provider: result.provider,
         analyzedAt: new Date().toISOString(),
       };
+      record.problemDetected = ErrorManager.hasDetectedProblem(record.analysis);
 
       const afterDiff = await execGit(['diff', '--name-only']).catch(() => '');
       const modifiedFiles = afterDiff.split('\n').map((s) => s.trim()).filter(Boolean);
@@ -492,10 +527,14 @@ class ErrorManager {
           record.modifiedFiles = modifiedFiles;
           record.status = 'resolved';
 
-          if (this.autoPr && this.githubToken && !record.prUrl) {
+          if (this.autoPr && record.problemDetected && this.githubToken && !record.prUrl) {
             this.createGitHubPullRequest(errorId).catch((e) => console.warn('[NMT-Errors] Auto PR creation error:', e.message));
           }
         }
+      }
+
+      if (this.autoIssue && record.problemDetected && this.githubToken && !record.issueUrl) {
+        this.createGitHubIssue(errorId).catch((e) => console.warn('[NMT-Errors] Auto issue creation error:', e.message));
       }
 
       this._save();

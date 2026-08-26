@@ -41,6 +41,47 @@ class SecurityLogManager {
     if (config.autoAnalysis !== undefined) this.autoAnalysis = Boolean(config.autoAnalysis);
   }
 
+  async recordIncidentFromError(error) {
+    if (!error) return null;
+    return this._recordSecurityEvent({
+      reason: `エラーからセキュリティインシデントへ昇格: ${String(error.message || '').slice(0, 180)}`,
+      severity: 'high',
+      ip: error.context?.ip || null,
+      method: error.context?.method || null,
+      url: error.context?.url || null,
+      userAgent: error.context?.userAgent || null,
+      details: {
+        source: 'error-escalation',
+        errorId: error.id,
+        stack: error.stack || '',
+        classification: error.classification || null,
+      },
+      error,
+    });
+  }
+
+  _startSecurityResponse(eventRecord, errorRecord) {
+    if (eventRecord.responseStatus) return;
+    if (!this.aiService || typeof this.aiService.respondToSecurityIncident !== 'function') return;
+
+    eventRecord.responseStatus = 'running';
+    this._save();
+    this.aiService.respondToSecurityIncident(errorRecord, eventRecord)
+      .then((result) => {
+        eventRecord.responseStatus = 'completed';
+        eventRecord.response = {
+          content: result?.content || String(result || ''),
+          completedAt: new Date().toISOString(),
+        };
+        this._save();
+      })
+      .catch((error) => {
+        eventRecord.responseStatus = 'failed';
+        eventRecord.responseError = error.message;
+        this._save();
+      });
+  }
+
   _load() {
     try {
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -161,6 +202,27 @@ class SecurityLogManager {
     if (this.securityEvents.length > MAX_SECURITY_EVENTS) this.securityEvents.pop();
     this._save();
 
+    if (eventData.error) {
+      this._startSecurityResponse(eventRecord, eventData.error);
+    } else if (eventRecord.severity === 'high') {
+      this._startSecurityResponse(eventRecord, {
+        id: `access_${eventRecord.id}`,
+        message: eventRecord.reason,
+        stack: '',
+        context: {
+          source: 'security-access-detection',
+          method: eventRecord.method,
+          url: eventRecord.url,
+          ip: eventRecord.ip,
+          userAgent: eventRecord.userAgent,
+        },
+        classification: {
+          category: 'security',
+          severity: eventRecord.severity,
+        },
+      });
+    }
+
     if (this.notificationManager) {
       this.notificationManager.broadcast({
         type: 'security_alert',
@@ -173,6 +235,8 @@ class SecurityLogManager {
     if (this.autoAnalysis && this.aiService) {
       this.triggerAnalysis(id).catch((e) => console.warn('[NMT-Security] Auto AI analysis error:', e.message));
     }
+
+    return eventRecord;
   }
 
   async triggerAnalysis(eventId) {
@@ -189,6 +253,21 @@ class SecurityLogManager {
         analyzedAt: new Date().toISOString(),
       };
       this._save();
+      if (/(?:^|\n)\s*NMT_SECURITY_ESCALATE\s*:\s*true\s*(?:\n|$)/i.test(record.analysis.content || '')) {
+        this._startSecurityResponse(record, {
+          id: `access_${record.id}`,
+          message: record.reason,
+          stack: '',
+          context: {
+            source: 'security-analysis-escalation',
+            method: record.method,
+            url: record.url,
+            ip: record.ip,
+            userAgent: record.userAgent,
+          },
+          classification: { category: 'security', severity: record.severity },
+        });
+      }
       return record.analysis;
     } finally {
       record.analyzing = false;

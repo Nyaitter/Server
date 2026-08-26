@@ -209,6 +209,7 @@ async function openErrorDetail(errorId, showOverlay = true) {
         IP: ${escapeHTML(err.context?.ip || 'N/A')} | UA: ${escapeHTML(err.context?.userAgent || 'N/A')}
       </div>
       ${err.fixed ? `<div style="margin-top:0.4rem; color:#3fb950; font-size:12px;"><strong>Status:</strong> Fixed${err.modifiedFiles?.length ? ` (${err.modifiedFiles.join(', ')})` : ''}</div>` : ''}
+      ${err.securityIncidentId ? `<div style="margin-top:0.4rem; color:#da3633; font-size:12px;"><strong>Security incident:</strong> ${escapeHTML(err.securityIncidentId)}</div>` : ''}
       ${err.prUrl ? `<div style="margin-top:0.3rem;"><a href="${escapeHTML(err.prUrl)}" target="_blank" style="color:#58a6ff;">Pull Request: #${err.prUrl.split('/').pop()}</a></div>` : ''}
     </div>
     ${err.stack ? `<div><div class="code-box">${escapeHTML(err.stack)}</div></div>` : ''}
@@ -236,6 +237,7 @@ async function openErrorDetail(errorId, showOverlay = true) {
   modalFooter.innerHTML = `
     <button class="btn btn-secondary btn-sm" id="modal-fix-btn" ${err.fixing ? 'disabled' : ''}>${err.fixing ? 'Fixing...' : 'Auto Fix'}</button>
     <button class="btn btn-secondary btn-sm" id="modal-analyze-btn" ${err.analyzing ? 'disabled' : ''}>${err.analyzing ? 'Analyzing...' : 'Analyze'}</button>
+    ${!err.securityIncidentId ? '<button class="btn btn-secondary btn-sm" id="modal-escalate-security-btn">Escalate Security</button>' : ''}
     ${err.fixed && !err.prUrl ? '<button class="btn btn-secondary btn-sm" id="modal-pr-btn">Create PR</button>' : ''}
     ${!err.issueUrl ? '<button class="btn btn-secondary btn-sm" id="modal-issue-btn">Create Issue</button>' : ''}
     ${err.status !== 'resolved' ? '<button class="btn btn-primary btn-sm" id="modal-resolve-btn">Resolve</button>' : '<button class="btn btn-secondary btn-sm" id="modal-reopen-btn">Reopen</button>'}
@@ -284,6 +286,21 @@ async function openErrorDetail(errorId, showOverlay = true) {
       alert(`AI error: ${e.message}`);
       btn.disabled = false;
       btn.textContent = 'Analyze';
+    }
+  });
+
+  document.getElementById('modal-escalate-security-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('modal-escalate-security-btn');
+    btn.disabled = true;
+    btn.textContent = 'Escalating...';
+    try {
+      await api(`/errors/${encodeURIComponent(errorId)}/escalate-security`, { method: 'POST' });
+      openErrorDetail(errorId, false);
+      loadErrors();
+    } catch (e) {
+      alert(`Security escalation error: ${e.message}`);
+      btn.disabled = false;
+      btn.textContent = 'Escalate Security';
     }
   });
 

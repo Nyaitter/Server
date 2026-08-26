@@ -47,6 +47,7 @@ class ManagementToolServer {
       config: this.config,
       notificationManager: this.notificationManager,
     });
+    this.errorManager.setSecurityManager(this.securityManager);
     this.adminManager = new AdminManager({ dbAdapter });
     this.serverControl = new ServerControlManager({ shutdownFn, getStatusFn });
     this.authManager = new NyaitterAuthManager({ dbAdapter });
@@ -387,6 +388,16 @@ class ManagementToolServer {
         res.json({ success: true, analysis });
       } catch (e) {
         res.status(500).json({ error: e.message });
+      }
+    });
+
+    this.app.post('/api/errors/:id/escalate-security', authMiddleware, async (req, res) => {
+      try {
+        const incidentId = await this.errorManager.escalateToSecurity(req.params.id);
+        if (!incidentId) return res.status(404).json({ error: 'エラーが見つからないか、昇格できません。' });
+        res.json({ success: true, incidentId });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
       }
     });
 

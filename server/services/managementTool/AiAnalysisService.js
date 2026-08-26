@@ -139,6 +139,7 @@ class AiAnalysisService {
 【厳格な安全規則】
 - 修正対象はGit追跡対象の既存ファイルのみです。.envやnode_modules、未追跡の機密ファイルは変更禁止です。
 - 不要なファイルの新規作成や削除は行わず、エラー解消に必要な最小限かつクリーンなコード修正を行ってください。
+- 根本原因がコード変更を必要としない場合や、修正による副作用が大きい場合は変更を行わず、調査結果と推奨対応だけを報告してください。
 - 修正完了後、何を変更したのかのサマリーを報告してください。
 
 【エラー情報】
@@ -153,6 +154,12 @@ ${errorRecord.stack || '(スタックトレースなし)'}
 
 【出力形式】
 Markdown形式で回答してください:
+次の行を必ず最初に出力してください。実際に対応が必要な問題を確認した場合だけtrue、問題がないまたは報告だけの場合はfalseにしてください。
+NMT_PROBLEM_DETECTED: true または false
+次の行を必ず最初に出力してください。実際にコードを変更した場合だけtrue、修正不要または報告のみの場合はfalseにしてください。
+NMT_AUTOFIX_APPLIED: true または false
+最初に、セキュリティインシデントへの昇格が必要かを次の形式で必ず1行出力してください。コード変更を行った場合でも、脆弱性・不正アクセス・認証情報漏えいなどの観点で判断してください。
+NMT_SECURITY_ESCALATE: true または false
 ### 1. 原因の分析
 ### 2. 実施した修正内容
 ### 3. 修正したファイル一覧`
@@ -181,12 +188,44 @@ ${errorRecord.stack || '(スタックトレースなし)'}
 
 【出力形式】
 以下の見出しを含んだMarkdown形式で回答してください:
+最初に、実際に対応が必要な問題があるかを次の形式で必ず1行出力してください。誤検知や通常の情報であればfalseにしてください。
+NMT_PROBLEM_DETECTED: true または false
+最初に、セキュリティインシデントへの昇格が必要かを次の形式で必ず1行出力してください。一般的なバグや構文エラーだけの場合はfalseにしてください。
+NMT_SECURITY_ESCALATE: true または false
 ### 1. 原因の分析
 ### 2. 影響範囲
 ### 3. 具体的な対応・修正手順
 ### 4. 修正コード例（該当する場合）`;
 
     return this._callAi(prompt, 'error_analysis', { allowEdit: isAutoFix });
+  }
+
+  async respondToSecurityIncident(errorRecord, incident) {
+    const prompt = `【緊急セキュリティ対応エージェント】
+あなたはNyaitterサーバーの緊急セキュリティ対応担当です。以下のインシデントを調査し、必要な防御措置を実行してください。
+
+【許可された対応】
+- 脆弱性の根本修正と構文確認
+- 攻撃元IP、範囲、経路に基づくアクセス遮断
+- 影響拡大を防ぐための設定変更
+- 緊急性が高く他の対応では不十分な場合のサーバー一時停止
+
+【判断規則】
+- 破壊的な操作は、影響範囲と復旧手順を確認してから実行してください。
+- IP遮断は攻撃元と判断できる値だけを対象にし、広範囲の遮断を避けてください。
+- サーバー停止は、継続中の侵害やデータ保護が必要な場合だけ実行してください。
+- 実行できない対応は無理に行わず、理由と管理者が行う手順を報告してください。
+- 対応後に変更内容、対象、検証結果、残るリスクを報告してください。
+
+【エラー情報】
+${JSON.stringify({ id: errorRecord.id, message: errorRecord.message, stack: errorRecord.stack, context: errorRecord.context, classification: errorRecord.classification }, null, 2)}
+
+【インシデント情報】
+${JSON.stringify({ id: incident.id, severity: incident.severity, reason: incident.reason, details: incident.details }, null, 2)}
+
+Git追跡対象と既存の運用設定を確認し、必要な操作を自律的に実行してください。対応結果はMarkdownで報告してください。`;
+
+    return this._callOpencodeAgent(prompt, { allowEdit: true, allowBash: true, securityMode: true });
   }
 
   async analyzeSecurityLog(securityEvent) {
@@ -211,6 +250,8 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
 
 【出力形式】
 以下の見出しを含んだMarkdown形式で簡潔かつ具体的に回答してください:
+最初に、緊急対応エージェントへの昇格が必要かを次の形式で必ず1行出力してください。通常のスキャンや誤検知ならfalseにしてください。
+NMT_SECURITY_ESCALATE: true または false
 ### 1. 攻撃/アクセスの意図と手法
 ### 2. 危険度評価（高/中/低）
 ### 3. 推奨される防御・対処手順（Cloudflare WAFルールやIPブロック等）`;
@@ -299,12 +340,14 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     return 'opencode/nemotron-3.5-lightning-free';
   }
 
-  async _callOpencodeAgent(prompt, { allowEdit = false, allowBash = this.allowBash } = {}) {
+  async _callOpencodeAgent(prompt, { allowEdit = false, allowBash = this.allowBash, securityMode = false } = {}) {
     const model = await this._resolveOpencodeModelName();
     
     // パーミッション構成の決定
     let configName = 'opencode-readonly-config.json';
-    if (allowEdit && allowBash) {
+    if (securityMode) {
+      configName = 'opencode-security-config.json';
+    } else if (allowEdit && allowBash) {
       configName = 'opencode-full-config.json';
     } else if (allowEdit) {
       configName = 'opencode-autofix-config.json';
@@ -332,7 +375,7 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
         execFile(bin, args, {
           cwd: PROJECT_ROOT,
           env,
-          timeout: 90000,
+          ...(securityMode ? {} : { timeout: 90000 }),
           maxBuffer: 20 * 1024 * 1024,
         }, (error, stdout, stderr) => {
           if (error) {
