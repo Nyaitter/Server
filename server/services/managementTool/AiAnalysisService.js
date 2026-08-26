@@ -443,27 +443,20 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
     }
     if (candidates.length === 0) candidates.push('nemotron-3.5-lightning-free', 'hy3-free', 'mimo-v2.5-free');
 
-    const maxRounds = 3; // 全モデル候補を最大3周巡回
-    const maxRetriesPerModel = 2; // 各モデルごとに最大2回試行
+    const maxAttemptsPerModel = 2;
     let lastError = null;
 
-    for (let round = 1; round <= maxRounds; round++) {
-      for (const modelName of candidates) {
-        for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
-          try {
-            const result = await this._callSingleZenModel(modelName, prompt);
-            if (result?.content) return result;
-          } catch (err) {
-            lastError = err;
-            console.warn(`[NMT-AI] Zen model ${modelName} (round ${round}, attempt ${attempt}) failed: ${err.message}`);
-            // 指数バックオフ待機
-            await new Promise((r) => setTimeout(r, Math.min(1000 * Math.pow(1.5, attempt), 4000)));
-          }
+    for (const modelName of candidates) {
+      for (let attempt = 1; attempt <= maxAttemptsPerModel; attempt++) {
+        try {
+          const result = await this._callSingleZenModel(modelName, prompt);
+          if (result?.content) return result;
+        } catch (err) {
+          lastError = err;
+          console.warn(`[NMT-AI] Zen model ${modelName} (attempt ${attempt}) failed: ${err.message}`);
+          if (err.code === 'MODEL_UNAVAILABLE' || !this._isTransientZenError(err)) break;
+          await new Promise((r) => setTimeout(r, 1000));
         }
-      }
-      // ラウンド間に少し待機
-      if (round < maxRounds) {
-        await new Promise((r) => setTimeout(r, 1500));
       }
     }
 
@@ -485,7 +478,6 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
           'User-Agent': 'NyaitterManagementTool/1.0',
           'Content-Length': Buffer.byteLength(payload),
         },
-        timeout: 15000,
       }, (res) => {
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
@@ -500,15 +492,23 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
               if (content) return resolve({ model: modelName, content });
             } catch (_) {}
           }
-          reject(new Error(`OpenCode Zen HTTP ${res.statusCode}: ${data.slice(0, 150)}`));
+          const error = new Error(`OpenCode Zen HTTP ${res.statusCode}: ${data.slice(0, 150)}`);
+          error.statusCode = res.statusCode;
+          if (res.statusCode === 400 && /model is unavailable/i.test(data)) {
+            error.code = 'MODEL_UNAVAILABLE';
+          }
+          reject(error);
         });
       });
 
       req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('OpenCode Zen timeout')); });
       req.write(payload);
       req.end();
     });
+  }
+
+  _isTransientZenError(error) {
+    return !error.statusCode || error.statusCode === 408 || error.statusCode === 429 || error.statusCode >= 500;
   }
 
   _httpGetJson(url) {
