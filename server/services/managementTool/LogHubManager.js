@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
+const { sendNmtEvent } = require('../../utils/nmtEventBridge');
 
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const UNIFIED_LOG_FILE = path.join(DATA_DIR, 'nmt-unified.log');
@@ -17,7 +18,6 @@ class LogHubManager {
     this.lastReadOffset = 0;
     this._load();
     this._hookConsole();
-    this._startFileWatcher();
   }
 
   setSessionsMap(sessions) {
@@ -44,7 +44,7 @@ class LogHubManager {
         source: entry.source || 'server',
         details: entry.details || null,
       };
-      fs.appendFileSync(UNIFIED_LOG_FILE, JSON.stringify(logItem) + '\n', 'utf8');
+      sendNmtEvent({ type: 'log', log: logItem });
       return logItem;
     } catch (_) {
       return null;
@@ -170,56 +170,6 @@ class LogHubManager {
         throw err;
       }
     };
-  }
-
-  _startFileWatcher() {
-    // 外部プロセス（NyaitterServer 本体）からのログ追記をリアルタイム監視
-    let lastSize = 0;
-    try {
-      if (fs.existsSync(UNIFIED_LOG_FILE)) {
-        lastSize = fs.statSync(UNIFIED_LOG_FILE).size;
-      }
-    } catch (_) {}
-
-    const checkFile = () => {
-      try {
-        if (!fs.existsSync(UNIFIED_LOG_FILE)) return;
-        const currentSize = fs.statSync(UNIFIED_LOG_FILE).size;
-        if (currentSize <= lastSize) {
-          if (currentSize < lastSize) lastSize = currentSize; // ローテーション時
-          return;
-        }
-
-        const stream = fs.createReadStream(UNIFIED_LOG_FILE, {
-          start: lastSize,
-          end: currentSize,
-          encoding: 'utf8',
-        });
-
-        let chunkData = '';
-        stream.on('data', (c) => { chunkData += c; });
-        stream.on('end', () => {
-          lastSize = currentSize;
-          const lines = chunkData.split('\n').filter(Boolean);
-          for (const line of lines) {
-            try {
-              const item = JSON.parse(line);
-              if (!this.logs.some((l) => l.id === item.id)) {
-                this.logs.push(item);
-                if (this.logs.length > MAX_LOG_LINES) this.logs.shift();
-                if (this.wss) this._broadcast(item);
-
-                if (item.type === 'error' && this.errorManager && typeof this.errorManager.checkNewErrors === 'function') {
-                  this.errorManager.checkNewErrors();
-                }
-              }
-            } catch (_) {}
-          }
-        });
-      } catch (_) {}
-    };
-
-    setInterval(checkFile, 1000);
   }
 
   _load() {

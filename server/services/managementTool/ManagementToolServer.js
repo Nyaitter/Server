@@ -66,6 +66,17 @@ class ManagementToolServer {
     if (getStatusFn) this.serverControl.setStatusProvider(getStatusFn);
   }
 
+  handleExternalEvent(event) {
+    if (!event || typeof event !== 'object') return;
+    if (event.type === 'log' && event.log) {
+      this.logHub.addLog(event.log);
+      return;
+    }
+    if (event.type === 'error' && event.error) {
+      return this.errorManager.recordError(event.error, event.error.context || {});
+    }
+  }
+
   // IPC 優先データ取得ヘルパー（NyaitterServer 本体の operatorControl 経由）
   async _ipc(action, params = {}, { timeoutMs = 1500 } = {}) {
     const { requestOperatorCommand } = require('../../utils/operatorControl');

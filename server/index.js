@@ -641,43 +641,6 @@ async function startServer() {
     });
     console.log(`[operator-control] Listening on ${operatorControl.socketPath}`);
 
-    // ── NyaitterServer のコンソールログを NMT へリアルタイム転送（IPC経由） ──────────
-    if (config.nmt?.enabled) {
-        const { requestOperatorCommand } = require('./utils/operatorControl');
-        const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-        const originalStderrWrite = process.stderr.write.bind(process.stderr);
-
-        const pushLogToNMT = (chunk, isError = false) => {
-            const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-            const lines = text.split('\n');
-            const now = new Date().toISOString();
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                const logEntry = {
-                    id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-                    timestamp: now,
-                    type: isError ? 'error' : 'system',
-                    level: isError ? 'error' : 'info',
-                    message: line,
-                    source: 'nyaitter-server',
-                };
-                // 非同期で送信（ブロッキングしない）
-                requestOperatorCommand({ action: 'push-log', log: logEntry }, { timeoutMs: 500 }).catch(() => {});
-            }
-        };
-
-        process.stdout.write = (chunk, encoding, cb) => {
-            pushLogToNMT(chunk, false);
-            return originalStdoutWrite(chunk, encoding, cb);
-        };
-
-        process.stderr.write = (chunk, encoding, cb) => {
-            pushLogToNMT(chunk, true);
-            return originalStderrWrite(chunk, encoding, cb);
-        };
-    }
-
     httpServer.listen(PORT, async () => {
         console.log(`
 ╔══════════════════════════════════════════════════════════════

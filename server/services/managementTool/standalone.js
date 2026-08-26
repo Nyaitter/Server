@@ -7,6 +7,7 @@ const fs = require('fs');
 const config = require('../../config');
 const { createDatabaseAdapter } = require('../../adapters');
 const ManagementToolServer = require('./ManagementToolServer');
+const { startNmtEventServer, closeNmtEventServer } = require('../../utils/nmtEventBridge');
 
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const PID_FILE = path.join(DATA_DIR, 'nmt.pid');
@@ -62,6 +63,8 @@ async function main() {
     dbAdapter,
   });
 
+  const eventServer = startNmtEventServer((event) => server.handleExternalEvent(event));
+
   server.start();
 
   // IPC 親プロセスへの起動完了シグナル通知
@@ -72,12 +75,14 @@ async function main() {
   process.on('SIGTERM', () => {
     console.log('[NMT-Standalone] SIGTERM received. Shutting down NMT gracefully.');
     server.stop();
+    closeNmtEventServer(eventServer);
     process.exit(0);
   });
 
   process.on('SIGINT', () => {
     console.log('[NMT-Standalone] SIGINT received. Shutting down NMT gracefully.');
     server.stop();
+    closeNmtEventServer(eventServer);
     process.exit(0);
   });
 }

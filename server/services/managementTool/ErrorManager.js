@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { execFile } = require('child_process');
+const { sendNmtEvent } = require('../../utils/nmtEventBridge');
 
 const MAX_ERROR_RECORDS = 500;
 const DATA_DIR = path.resolve(__dirname, '../../data');
@@ -40,7 +41,6 @@ class ErrorManager {
     this._lastFileMtime = 0;
     this._load();
     this._loadDismissed();
-    this._startFileWatcher();
   }
 
   setNotificationManager(notificationManager) {
@@ -196,61 +196,19 @@ class ErrorManager {
 
   static recordExternalError(err, context = {}) {
     if (!err) return null;
-    try {
-      const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
-      if (ErrorManager.isNoiseError(message, err.stack, context)) return null;
+    const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
+    const stack = typeof err === 'string' ? '' : err.stack || '';
+    if (ErrorManager.isNoiseError(message, stack, context)) return null;
 
-      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-      let list = [];
-      if (fs.existsSync(ERRORS_FILE)) {
-        try {
-          const raw = fs.readFileSync(ERRORS_FILE, 'utf8').trim();
-          if (raw) list = JSON.parse(raw) || [];
-        } catch (_) {}
-      }
-
-      const stack = err.stack || (typeof err === 'object' ? JSON.stringify(err) : '');
-      const existing = list.find((e) => e.message === message && e.status === 'open');
-      if (existing) {
-        existing.occurrences = (existing.occurrences || 1) + 1;
-        existing.lastSeen = new Date().toISOString();
-        existing.context = { ...existing.context, ...context };
-        ErrorManager._saveAtomic(ERRORS_FILE, list.slice(-MAX_ERROR_RECORDS));
-        return existing;
-      }
-      const id = `err_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const classification = ErrorManager.classifyError(message, stack, context);
-      const errorRecord = {
-        id,
-        timestamp: new Date().toISOString(),
-        lastSeen: new Date().toISOString(),
+    sendNmtEvent({
+      type: 'error',
+      error: {
         message,
         stack,
-        occurrences: 1,
-        context: {
-          method: context.method || null,
-          url: context.url || context.path || null,
-          userId: context.userId || null,
-          ip: context.ip || null,
-          userAgent: context.userAgent || null,
-          requestId: context.requestId || null,
-        },
-        status: 'open',
-        analysis: null,
-        issueUrl: null,
-        prUrl: null,
-        fixed: false,
-        modifiedFiles: [],
-        classification,
-        dismissed: false,
-        dismissReason: null,
-      };
-      list.unshift(errorRecord);
-      ErrorManager._saveAtomic(ERRORS_FILE, list.slice(-MAX_ERROR_RECORDS));
-      return errorRecord;
-    } catch (e) {
-      return null;
-    }
+        context,
+      },
+    });
+    return true;
   }
 
   _loadDismissed() {
@@ -310,21 +268,6 @@ class ErrorManager {
         }
       }
     } catch (_) {}
-  }
-
-  _startFileWatcher() {
-    try {
-      if (fs.existsSync(DATA_DIR)) {
-        fs.watch(DATA_DIR, (eventType, filename) => {
-          if (filename && (filename.includes('nmt-errors') || filename.includes('nmt-errors-dismissed'))) {
-            this._loadDismissed();
-            this.checkNewErrors();
-          }
-        });
-      }
-    } catch (_) {}
-
-    setInterval(() => this.checkNewErrors(), 2000);
   }
 
   updateConfig(config = {}) {
