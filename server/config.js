@@ -933,6 +933,7 @@ const config = {
   },
 
   postSharePort: envNonNegativeInteger('POST_SHARE_PORT', get('postSharePort', get('posts.sharePort', 0))) || null,
+  postShareUrl: process.env.POST_SHARE_URL || get('postShareUrl', get('posts.shareUrl', '')) || null,
   frontendUrl: process.env.FRONTEND_URL || get('frontendUrl', get('client.url', '')),
 
   raw: rawConfig,

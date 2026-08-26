@@ -618,9 +618,11 @@ async function startServer() {
     app.locals.storageAdapter = storageAdapter;
     managementToolServer?.setDbAdapter(dbAdapter);
     const userFileEndpoint = config.userFiles?.endpoint || null;
-const postShareUrl = config.postSharePort
-    ? `${config.server.publicUrl || ''}`.replace(/\/+$/, '') + `:${config.postSharePort}`.replace(/^:+/, '')
-    : null;
+const postShareUrl = config.postShareUrl
+    ? config.postShareUrl
+    : (config.postSharePort
+        ? `${config.server.publicUrl || ''}`.replace(/\/+$/, '') + `:${config.postSharePort}`.replace(/^:+/, '')
+        : null);
 const turnstileSiteKey = config.turnstile?.siteKey || '';
 
 managementToolServer?.setServerControls({
