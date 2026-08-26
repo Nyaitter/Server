@@ -8,6 +8,7 @@ const { execFile } = require('child_process');
 const MAX_ERROR_RECORDS = 500;
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const ERRORS_FILE = path.join(DATA_DIR, 'nmt-errors.json');
+const DISMISSED_ERRORS_FILE = path.join(DATA_DIR, 'nmt-errors-dismissed.json');
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 
 function execGit(args, cwd = PROJECT_ROOT) {
@@ -35,8 +36,10 @@ class ErrorManager {
     this.githubToken = process.env.GITHUB_TOKEN || config.githubToken || '';
     this.githubRepo = process.env.GITHUB_REPO || config.githubRepo || 'Nyaitter/Server';
     this.errors = [];
+    this.dismissedPatterns = new Set();
     this._lastFileMtime = 0;
     this._load();
+    this._loadDismissed();
     this._startFileWatcher();
   }
 
@@ -56,22 +59,37 @@ class ErrorManager {
     this.logHub = logHub;
   }
 
-  static isNmtInternal(msg, context = {}) {
-    const text = String(msg || '');
-    const stack = String(context.stack || '');
+  static isNoiseError(message, stack = '', context = {}) {
+    const text = String(message || '');
+    const stackStr = String(stack || '');
     const source = String(context.source || '');
 
+    const noisePatterns = [
+      { pattern: /Warning:/i, context: 'node' },
+      { pattern: /DeprecationWarning/i, context: 'node' },
+      { pattern: /ExperimentalWarning/i, context: 'node' },
+      { pattern: /NodeVersionSupportWarning/i },
+      { pattern: /The AWS SDK for JavaScript/i },
+      { pattern: /a\.co\//i },
+      { pattern: /More information can be found at/i },
+      { pattern: /will require node/i },
+      { pattern: /punycode.*deprecated/i },
+      { pattern: /require\(\) of .* is deprecated/i },
+      { pattern: /process\.binding.*deprecated/i },
+      { pattern: /crypto.*timingSafeEqual.*deprecated/i },
+    ];
+
+    for (const { pattern, context: noiseContext } of noisePatterns) {
+      if (pattern.test(text) || pattern.test(stackStr)) {
+        if (!noiseContext || source.includes(noiseContext) || text.includes(noiseContext) || stackStr.includes(noiseContext)) {
+          return true;
+        }
+      }
+    }
+
     if (
-      source.includes('nmt') ||
       source === 'nmt-console' ||
-      text.includes('managementTool') ||
-      text.includes('services/managementTool') ||
-      stack.includes('managementTool') ||
-      stack.includes('services/managementTool') ||
-      stack.includes('AiAnalysisService') ||
-      stack.includes('ErrorManager') ||
-      stack.includes('LogHubManager') ||
-      stack.includes('standalone.js') ||
+      source.includes('managementTool') ||
       text.includes('[NMT') ||
       text.includes('[NyaitterManagementTool') ||
       text.includes('opencode') ||
@@ -88,15 +106,84 @@ class ErrorManager {
       text.includes('thoughtSignature') ||
       text.includes('"candidates"') ||
       text.includes('"parts"') ||
-      text.includes('candidates') ||
-      text.includes('Warning:') ||
-      text.includes('NodeVersionSupportWarning') ||
-      text.includes('The AWS SDK for JavaScript') ||
-      text.includes('a.co/') ||
-      text.includes('More information can be found at') ||
-      text.includes('will require node')
+      text.includes('candidates')
     ) {
       return true;
+    }
+
+    if (stackStr.includes('services/managementTool') ||
+        stackStr.includes('AiAnalysisService') ||
+        stackStr.includes('ErrorManager') ||
+        stackStr.includes('LogHubManager') ||
+        stackStr.includes('standalone.js')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  static classifyError(message, stack = '', context = {}) {
+    const text = String(message || '').toLowerCase();
+    const stackStr = String(stack || '').toLowerCase();
+    const source = String(context.source || '').toLowerCase();
+
+    if (text.includes('syntaxerror') || text.includes('syntax error') ||
+        text.includes('unexpected token') || text.includes('unexpected end of input') ||
+        text.includes('unexpected identifier') || text.includes('illegal character') ||
+        text.includes('unterminated') || text.includes('invalid or unexpected token')) {
+      return { category: 'syntax', severity: 'high', isStartup: false };
+    }
+
+    if (text.includes('cannot find module') || text.includes('module not found') ||
+        text.includes('require.*failed') || text.includes('error: cannot find module')) {
+      return { category: 'config', severity: 'high', isStartup: true };
+    }
+
+    if (text.includes('config') && (text.includes('invalid') || text.includes('parse') || text.includes('json'))) {
+      return { category: 'config', severity: 'high', isStartup: true };
+    }
+
+    if (text.includes('eaddrinuse') || text.includes('address already in use') ||
+        text.includes('eacces') || text.includes('permission denied') ||
+        text.includes('enotfound') || text.includes('getaddrinfo') ||
+        text.includes('econnrefused') || text.includes('connection refused')) {
+      return { category: 'startup', severity: 'high', isStartup: true };
+    }
+
+    if (source.includes('error-handler') ||
+        text.includes('unhandled') ||
+        text.includes('uncaught') ||
+        text.includes('internal server error')) {
+      return { category: 'runtime', severity: 'high', isStartup: false };
+    }
+
+    if (text.includes('timeout') || text.includes('etimedout') ||
+        text.includes('socket hang up') || text.includes('econnreset')) {
+      return { category: 'runtime', severity: 'medium', isStartup: false };
+    }
+
+    if (text.includes('validation') || text.includes('invalid input') ||
+        text.includes('bad request') || text.includes('400')) {
+      return { category: 'runtime', severity: 'low', isStartup: false };
+    }
+
+    return { category: 'unknown', severity: 'medium', isStartup: false };
+  }
+
+  static isDismissedByPattern(message, stack = '', dismissedPatterns) {
+    const text = String(message || '');
+    const stackStr = String(stack || '');
+    for (const pattern of dismissedPatterns) {
+      try {
+        const regex = new RegExp(pattern, 'i');
+        if (regex.test(text) || regex.test(stackStr)) {
+          return true;
+        }
+      } catch (_) {
+        if (text.includes(pattern) || stackStr.includes(pattern)) {
+          return true;
+        }
+      }
     }
     return false;
   }
@@ -111,7 +198,7 @@ class ErrorManager {
     if (!err) return null;
     try {
       const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
-      if (ErrorManager.isNmtInternal(message, context)) return null;
+      if (ErrorManager.isNoiseError(message, err.stack, context)) return null;
 
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
       let list = [];
@@ -132,9 +219,11 @@ class ErrorManager {
         return existing;
       }
       const id = `err_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const classification = ErrorManager.classifyError(message, stack, context);
       const errorRecord = {
         id,
         timestamp: new Date().toISOString(),
+        lastSeen: new Date().toISOString(),
         message,
         stack,
         occurrences: 1,
@@ -152,6 +241,9 @@ class ErrorManager {
         prUrl: null,
         fixed: false,
         modifiedFiles: [],
+        classification,
+        dismissed: false,
+        dismissReason: null,
       };
       list.unshift(errorRecord);
       ErrorManager._saveAtomic(ERRORS_FILE, list.slice(-MAX_ERROR_RECORDS));
@@ -159,6 +251,30 @@ class ErrorManager {
     } catch (e) {
       return null;
     }
+  }
+
+  _loadDismissed() {
+    try {
+      if (fs.existsSync(DISMISSED_ERRORS_FILE)) {
+        const raw = fs.readFileSync(DISMISSED_ERRORS_FILE, 'utf8').trim();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            for (const pattern of parsed) {
+              this.dismissedPatterns.add(pattern);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  _saveDismissed() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      const patterns = Array.from(this.dismissedPatterns);
+      ErrorManager._saveAtomic(DISMISSED_ERRORS_FILE, patterns);
+    } catch (_) {}
   }
 
   _broadcast(record, eventType = 'error_updated') {
@@ -180,12 +296,11 @@ class ErrorManager {
         this._broadcast(newRecord, 'error_created');
       }
 
-      // 未解析のオープンエラーをすべて自動解析/自動修正
       const shouldAutoFix = process.env.NMT_AUTO_FIX === 'true' || this.autoFix;
       const shouldAutoAnalysis = process.env.NMT_AUTO_ANALYSIS === 'true' || this.autoAnalysis;
 
       if ((shouldAutoFix || shouldAutoAnalysis) && this.aiService) {
-        const unanalyzed = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing);
+        const unanalyzed = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing && !e.dismissed);
         for (const record of unanalyzed) {
           this.triggerAnalysis(record.id).then(() => {
             if (shouldAutoFix && !record.fixing && !record.fixed) {
@@ -201,7 +316,10 @@ class ErrorManager {
     try {
       if (fs.existsSync(DATA_DIR)) {
         fs.watch(DATA_DIR, (eventType, filename) => {
-          if (filename && filename.includes('nmt-errors')) this.checkNewErrors();
+          if (filename && (filename.includes('nmt-errors') || filename.includes('nmt-errors-dismissed'))) {
+            this._loadDismissed();
+            this.checkNewErrors();
+          }
         });
       }
     } catch (_) {}
@@ -231,6 +349,9 @@ class ErrorManager {
           this.errors = parsed.slice(-MAX_ERROR_RECORDS).map((e) => {
             if (e.analyzing && !e.analysis) e.analyzing = false;
             if (e.fixing && !e.analysis) e.fixing = false;
+            if (!e.classification) {
+              e.classification = ErrorManager.classifyError(e.message, e.stack, e.context);
+            }
             return e;
           });
         }
@@ -254,14 +375,17 @@ class ErrorManager {
     if (!err) return null;
 
     const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
-    if (ErrorManager.isNmtInternal(message, context)) return null;
+    if (ErrorManager.isNoiseError(message, typeof err === 'string' ? '' : err.stack, context)) return null;
+
+    if (ErrorManager.isDismissedByPattern(message, typeof err === 'string' ? '' : err.stack, this.dismissedPatterns)) {
+      return null;
+    }
 
     const stack = typeof err === 'string' ? '' : err.stack || '';
 
-    // 重複エラー（直近5分以内の同一メッセージ）は発生回数をインクリメント
     const now = Date.now();
     const existing = this.errors.find(
-      (e) => e.message === message && e.status === 'open' && (now - new Date(e.timestamp).getTime()) < 5 * 60 * 1000
+      (e) => e.message === message && e.status === 'open' && !e.dismissed && (now - new Date(e.timestamp).getTime()) < 5 * 60 * 1000
     );
 
     if (existing) {
@@ -271,8 +395,7 @@ class ErrorManager {
       this._save();
       this._broadcast(existing, 'error_updated');
 
-      // 未解析の場合は解析を実行
-      if (!existing.analysis && !existing.analyzing) {
+      if (!existing.analysis && !existing.analyzing && !existing.dismissed) {
         const shouldAutoFix = process.env.NMT_AUTO_FIX === 'true' || this.autoFix;
         const shouldAutoAnalysis = process.env.NMT_AUTO_ANALYSIS === 'true' || this.autoAnalysis;
         if (shouldAutoFix) {
@@ -286,6 +409,7 @@ class ErrorManager {
     }
 
     const id = `err_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const classification = ErrorManager.classifyError(message, stack, context);
     const errorRecord = {
       id,
       timestamp: new Date().toISOString(),
@@ -301,12 +425,15 @@ class ErrorManager {
         userAgent: context.userAgent || null,
         requestId: context.requestId || null,
       },
-      status: 'open', // 'open' | 'resolved' | 'ignored'
+      status: 'open',
       analysis: null,
       issueUrl: null,
       prUrl: null,
       fixed: false,
       modifiedFiles: [],
+      classification,
+      dismissed: false,
+      dismissReason: null,
     };
 
     this.errors.unshift(errorRecord);
@@ -314,18 +441,16 @@ class ErrorManager {
     this._save();
     this._broadcast(errorRecord, 'error_created');
 
-    // 通知マネージャー経由で管理者にエラー通知
     if (this.notificationManager) {
       this.notificationManager.broadcast({
         type: 'error',
         title: `🚨 新規エラー検知: ${message.slice(0, 60)}`,
         message: `${context.method || 'GET'} ${context.url || ''} でエラーが発生しました。`,
         errorId: id,
-        data: { id, message, timestamp: errorRecord.timestamp },
+        data: { id, message, timestamp: errorRecord.timestamp, classification },
       });
     }
 
-    // 自動修正または自動AI解析が有効な場合
     if (this.autoFix) {
       this.triggerAutoFix(id).catch((e) => console.warn('[NMT-Errors] Auto fix error:', e.message));
     } else if (this.autoAnalysis && this.aiService) {
@@ -338,12 +463,12 @@ class ErrorManager {
   async triggerAnalysis(errorId) {
     const record = this.errors.find((e) => e.id === errorId);
     if (!record || !this.aiService) return null;
-    if (record.analyzing) return null;
+    if (record.analyzing || record.dismissed) return null;
 
     try {
       record.analyzing = true;
       this._save();
-      this._broadcast(record, 'error_updated'); // 解析開始の瞬間をリアルタイム通知
+      this._broadcast(record, 'error_updated');
 
       const result = await this.aiService.analyzeError(record, { autoFix: false });
       record.analysis = {
@@ -354,7 +479,6 @@ class ErrorManager {
       };
       this._save();
 
-      // 自動Issue作成が有効な場合
       if (this.autoIssue && this.githubToken && !record.issueUrl) {
         this.createGitHubIssue(errorId).catch((e) => console.warn('[NMT-Errors] Auto issue creation error:', e.message));
       }
@@ -380,17 +504,15 @@ class ErrorManager {
   async triggerAutoFix(errorId) {
     const record = this.errors.find((e) => e.id === errorId);
     if (!record || !this.aiService) return null;
-    if (record.fixing) return null;
+    if (record.fixing || record.dismissed) return null;
 
     try {
       record.fixing = true;
       this._save();
-      this._broadcast(record, 'error_updated'); // 修正開始の瞬間をリアルタイム通知
+      this._broadcast(record, 'error_updated');
 
-      // 修正前の変更ファイルを記録
       const beforeDiff = await execGit(['diff', '--name-only']).catch(() => '');
 
-      // Opencode エージェントに Git 追跡ファイルの直接修正を実行させる
       const result = await this.aiService.analyzeError(record, { autoFix: true });
 
       record.analysis = {
@@ -400,12 +522,10 @@ class ErrorManager {
         analyzedAt: new Date().toISOString(),
       };
 
-      // 修正後の変更ファイル一覧を取得
       const afterDiff = await execGit(['diff', '--name-only']).catch(() => '');
       const modifiedFiles = afterDiff.split('\n').map((s) => s.trim()).filter(Boolean);
 
       if (modifiedFiles.length > 0) {
-        // 構文チェック（Syntax Validation）
         let syntaxOk = true;
         for (const file of modifiedFiles) {
           if (file.endsWith('.js') || file.endsWith('.mjs')) {
@@ -422,7 +542,6 @@ class ErrorManager {
         }
 
         if (!syntaxOk) {
-          // 構文エラー発生時は変更をロールバック
           await execGit(['checkout', '--', ...modifiedFiles]).catch(() => {});
           record.fixError = '自動修正コードに構文エラーが検出されたためロールバックしました。';
         } else {
@@ -430,7 +549,6 @@ class ErrorManager {
           record.modifiedFiles = modifiedFiles;
           record.status = 'resolved';
 
-          // 自動 PR 作成が有効な場合
           if (this.autoPr && this.githubToken && !record.prUrl) {
             this.createGitHubPullRequest(errorId).catch((e) => console.warn('[NMT-Errors] Auto PR creation error:', e.message));
           }
@@ -464,20 +582,14 @@ class ErrorManager {
     const currentBranch = await execGit(['branch', '--show-current']).catch(() => 'main');
 
     try {
-      // 1. 新しいブランチを作成してチェックアウト
       await execGit(['checkout', '-B', branchName]);
-
-      // 2. 変更ファイルをステージング
       await execGit(['add', ...record.modifiedFiles]);
 
-      // 3. コミット
       const commitMsg = `Fix(autofix): ${record.message.slice(0, 70)}\n\nAuto-fixed by NyaitterManagementTool for error ID ${record.id}`;
       await execGit(['commit', '--author=nyantorusabu <nyantorusabu@outlook.jp>', '-m', commitMsg]);
 
-      // 4. リモートへ Push
       await execGit(['push', '-u', 'origin', branchName, '--force']);
 
-      // 5. GitHub REST API で Pull Request 作成
       const prTitle = `[AutoFix] ${record.message.slice(0, 80)}`;
       const prBody = `## 🤖 NyaitterManagementTool 自動修復 Pull Request
 
@@ -504,7 +616,6 @@ ${record.analysis?.content || '(詳細なし)'}
 
       return prUrl;
     } finally {
-      // 元のブランチに戻る
       await execGit(['checkout', currentBranch]).catch(() => {});
     }
   }
@@ -515,12 +626,7 @@ ${record.analysis?.content || '(詳細なし)'}
       const [owner, repoName] = repo.split('/');
       if (!owner || !repoName) return reject(new Error('Invalid github repo format (owner/repo)'));
 
-      const postData = JSON.stringify({
-        title,
-        body,
-        head,
-        base,
-      });
+      const postData = JSON.stringify({ title, body, head, base });
 
       const options = {
         hostname: 'api.github.com',
@@ -569,6 +675,7 @@ ${record.analysis?.content || '(詳細なし)'}
 - **発生日時**: ${record.timestamp}
 - **リクエスト**: \`${record.context?.method || 'N/A'} ${record.context?.url || 'N/A'}\`
 - **発生回数**: ${record.occurrences || 1}
+- **分類**: ${record.classification?.category || 'unknown'} (${record.classification?.severity || 'medium'})
 
 ### スタックトレース
 \`\`\`
@@ -648,14 +755,54 @@ ${record.analysis.content}` : ''}
     return record;
   }
 
-  getErrors({ status, search, limit = 50, offset = 0 } = {}) {
+  dismissError(errorId, reason = 'AI marked as non-issue') {
+    const record = this.errors.find((e) => e.id === errorId);
+    if (!record) return null;
+
+    record.dismissed = true;
+    record.dismissReason = reason;
+    record.dismissedAt = new Date().toISOString();
+    record.status = 'ignored';
+
+    const pattern = record.message.slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    this.dismissedPatterns.add(pattern);
+    this._saveDismissed();
+
+    this._save();
+    this._broadcast(record, 'error_updated');
+
+    return record;
+  }
+
+  undismissError(errorId) {
+    const record = this.errors.find((e) => e.id === errorId);
+    if (!record) return null;
+
+    record.dismissed = false;
+    record.dismissReason = null;
+    record.status = 'open';
+
+    this._save();
+    this._broadcast(record, 'error_updated');
+
+    return record;
+  }
+
+  getErrors({ status, search, limit = 50, offset = 0, includeDismissed = false } = {}) {
     let list = this.errors;
+    if (!includeDismissed) {
+      list = list.filter((e) => !e.dismissed);
+    }
     if (status && status !== 'all') {
       list = list.filter((e) => e.status === status);
     }
     if (search) {
       const q = search.toLowerCase();
-      list = list.filter((e) => (e.message || '').toLowerCase().includes(q) || (e.context?.url || '').toLowerCase().includes(q));
+      list = list.filter((e) =>
+        (e.message || '').toLowerCase().includes(q) ||
+        (e.context?.url || '').toLowerCase().includes(q) ||
+        (e.classification?.category || '').toLowerCase().includes(q)
+      );
     }
     const total = list.length;
     const paginated = list.slice(offset, offset + limit);
