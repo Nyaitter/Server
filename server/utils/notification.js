@@ -66,9 +66,9 @@ function getNotificationActorLabel(notification) {
   return Number.isInteger(Number(actorId)) ? `@#${String(actorId).padStart(4, '0')}` : '誰か';
 }
 
-function getNotificationText(notification) {
+function getNotificationActionText(notification) {
   if (typeof notification?.message === 'string' && notification.message.trim()) {
-    return notification.message.trim();
+    return notification.message.trim().split('\n')[0];
   }
   const actor = getNotificationActorLabel(notification);
   switch (notification?.type) {
@@ -89,14 +89,33 @@ function getNotificationText(notification) {
     case 'auto_moderation': return '自動モデレーションによりポストの公開範囲が変更されました。';
     case 'login_approval': return '不明な場所からのログイン承認が必要です。';
     case 'moderation_assignment': return '新しい報告があなたに割り当てられました。';
-    case 'moderation_action_taken': return 'あなたが報告したコンテンツは、審査により不適切であると判定されました。コミュニティの健全化へのご協力に感謝します。';
+    case 'moderation_action_taken': return 'あなたが報告したコンテンツは、審査により不適切であると判定されました。';
     case 'moderation_no_action': return 'あなたが報告したコンテンツは、審査により適切だと判定されたため対応されません。';
     case 'appeal_approved': return '異議申し立てが承認され、アカウントの凍結が解除されました。';
     case 'appeal_rejected': return '異議申し立ては審査の結果、承認されませんでした。';
     case 'verification_approved': return '認証申請が承認されました。プロフィールに認証バッジが表示されます。';
     case 'verification_rejected': return '認証申請は審査の結果、承認されませんでした。';
+    case 'poll_ended': return '投票が終了しました。';
     default: return '新しい通知があります。';
   }
+}
+
+function getNotificationBodyText(notification) {
+  const targetContent = notification?.target_post?.content;
+  if (typeof targetContent === 'string' && targetContent.trim()) {
+    const snippet = targetContent.trim().slice(0, 60);
+    return `${snippet}${targetContent.trim().length > 60 ? '…' : ''}`;
+  }
+  return '';
+}
+
+function getNotificationText(notification) {
+  const actionText = getNotificationActionText(notification);
+  const bodyText = getNotificationBodyText(notification);
+  if (bodyText) {
+    return `${actionText}\n${bodyText}`;
+  }
+  return actionText;
 }
 
 function normalizeNotificationRecord(notification) {
@@ -124,5 +143,7 @@ module.exports = {
   normalizeTarget,
   getNotificationTargetHash,
   getNotificationText,
+  getNotificationActionText,
+  getNotificationBodyText,
   normalizeNotificationRecord,
 };

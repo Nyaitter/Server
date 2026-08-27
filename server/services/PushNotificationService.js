@@ -1,7 +1,7 @@
 const webpush = require('web-push');
 const config = require('../config');
 const { getPublicUrl, normalizePublicUrl } = require('../utils/nyaitterAddress');
-const { getNotificationText, getNotificationTargetHash } = require('../utils/notification');
+const { getNotificationText, getNotificationActionText, getNotificationBodyText, getNotificationTargetHash } = require('../utils/notification');
 
 function getPushIconUrl(notification, publicUrl = null) {
   const fromUserId = Number(notification?.from?.id);
@@ -59,14 +59,22 @@ class PushNotificationService {
       return { attempted: 0, delivered: 0, removed: 0 };
     }
 
+    const actionText = getNotificationActionText(notification);
+    const bodyText = getNotificationBodyText(notification);
     const payload = JSON.stringify({
-      title: 'Nyaitter',
-      body: getNotificationText(notification).slice(0, 240),
+      title: actionText.slice(0, 100),
+      body: bodyText.slice(0, 200),
       tag: notification?.id ? `notification-${notification.id}` : 'notification',
       url: getNotificationTargetHash(notification?.target, notification?.from?.id),
       user_id: userId,
       notification_id: notification?.id || null,
       icon: getPushIconUrl(notification, publicUrl),
+      target_post: notification?.target_post ? {
+        id: notification.target_post.id,
+        content: typeof notification.target_post.content === 'string'
+          ? notification.target_post.content.slice(0, 200)
+          : null,
+      } : null,
     });
 
     const result = { attempted: subscriptions.length, delivered: 0, removed: 0, skipped: 0 };
