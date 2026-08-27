@@ -298,7 +298,7 @@ async function fetchPostsByIds(db, postIds) {
 }
 
 const userGroupBadgesCache = new Map();
-const BADGES_CACHE_TTL_MS = 300000; // 5 minutes TTL
+const BADGES_CACHE_TTL_MS = 1800000;
 const MAX_BADGES_CACHE_ENTRIES = 5000;
 
 function pruneUserGroupBadgesCache(now = Date.now()) {

@@ -2370,7 +2370,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!this._postMetricsCache) {
 			this._postMetricsCache = new MemoryBoundedCache({
 				maxSize: 4000,
-				ttlMs: 30000,
+				ttlMs: 3600000,
 				maxHeapMb: appConfig.cache?.memoryCacheMaxHeapMb || 0,
 			});
 		}
@@ -3010,7 +3010,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			hasMore = rows.length >= candidateLimit;
 			candidateRows = rows.slice(0, candidateLimit - 1);
 			if (normalizedBeforeId == null && normalizedOffset === 0) {
-				this._candidatePostsCache = { posts: candidateRows, expiresAt: now + 15000 };
+				this._candidatePostsCache = { posts: candidateRows, expiresAt: now + 300000 };
 			}
 		}
 

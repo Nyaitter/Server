@@ -8,7 +8,7 @@ const MAX_HTML_BYTES = 128 * 1024;
 const MAX_OEMBED_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 5;
 const REQUEST_TIMEOUT_MS = 8000;
-const CACHE_TTL_MS = 15 * 60 * 1000;
+const CACHE_TTL_MS = 60 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 1000;
 const cardCache = new Map();
 

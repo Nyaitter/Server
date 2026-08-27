@@ -13,7 +13,7 @@
 
 class TimelineCacheManager {
 	constructor(options = {}) {
-		this.ttlMs = options.ttlMs ?? 15000; // 15s TTL
+		this.ttlMs = options.ttlMs ?? 600000;
 		this.maxEntries = options.maxEntries ?? 300;
 		this.maxTimelineSize = options.maxTimelineSize ?? 60;
 		// Map<string, { idsAsc: number[], postsById: Map, has_more: boolean, expiresAt: number }>
@@ -228,7 +228,7 @@ class TimelineCacheManager {
 }
 
 const timelineCacheManager = new TimelineCacheManager({
-	ttlMs: 15000,
+	ttlMs: 600000,
 	maxEntries: 500,
 	maxTimelineSize: 100,
 });

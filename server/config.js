@@ -501,7 +501,7 @@ const config = {
       'user cache TTL',
       ['USER_CACHE_TTL_MS'],
       ['cache.userCacheTtlMs'],
-      '5min',
+      '60min',
     ),
     postCacheMaxSize: exactIntegerSetting(
       'post cache max size',
@@ -514,7 +514,7 @@ const config = {
       'post cache TTL',
       ['POST_CACHE_TTL_MS'],
       ['cache.postCacheTtlMs'],
-      '60min',
+      '24h',
     ),
     memoryCacheMaxHeapMb: envNonNegativeInteger(
       'MEMORY_CACHE_MAX_HEAP_MB',
