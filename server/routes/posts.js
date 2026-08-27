@@ -1041,7 +1041,10 @@ router.post({
 			return res.status(404).json({ error: 'Post not found' });
 		}
 		const result = await postService.toggleLike(userId, postId);
-		timelineCacheManager.invalidatePost(postId);
+		timelineCacheManager.updatePostMetrics(postId, {
+			like_count: result.count,
+			likeCount: result.count,
+		});
 
 		if (result.liked) {
 			if (post.userId !== userId) {
@@ -1091,7 +1094,10 @@ router.post({
 			return res.status(404).json({ error: 'Post not found' });
 		}
 		const result = await postService.toggleStar(userId, postId);
-		timelineCacheManager.invalidatePost(postId);
+		timelineCacheManager.updatePostMetrics(postId, {
+			star_count: result.count,
+			starCount: result.count,
+		});
 
 		const updatedStars = await db.getStarIds(userId);
 

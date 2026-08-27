@@ -82,6 +82,25 @@ class TimelineCacheManager {
 		});
 	}
 
+	updatePost(post) {
+		if (!post || post.id == null) return;
+		const postId = Number(post.id);
+		if (!Number.isInteger(postId) || postId <= 0) return;
+		for (const entry of this.cache.values()) {
+			const cached = entry.postsById?.get(postId);
+			if (cached) entry.postsById.set(postId, { ...cached, ...post });
+		}
+	}
+
+	updatePostMetrics(postId, metrics = {}) {
+		const normalizedId = Number(postId);
+		if (!Number.isInteger(normalizedId) || normalizedId <= 0) return;
+		for (const entry of this.cache.values()) {
+			const cached = entry.postsById?.get(normalizedId);
+			if (cached) entry.postsById.set(normalizedId, { ...cached, ...metrics });
+		}
+	}
+
 	/**
 	 * Appends new post ID to top-page timeline caches using push() - O(1) complexity.
 	 */

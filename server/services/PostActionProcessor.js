@@ -630,7 +630,7 @@ async function processEditPostAction(context, { postId, userId, content, attachm
   }
 
   const moderatedPost = updated || post;
-  timelineCacheManager.invalidatePost(postId);
+  timelineCacheManager.updatePost(moderatedPost);
   enqueueGeminiModeration(context, moderatedPost);
   return moderatedPost;
 }

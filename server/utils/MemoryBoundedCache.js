@@ -57,6 +57,24 @@ class MemoryBoundedCache {
     return this.cache.delete(key);
   }
 
+  updateWhere(predicate, updater) {
+    if (typeof predicate !== 'function' || typeof updater !== 'function') return 0;
+    const updates = [];
+    for (const [key, entry] of this.cache) {
+      if (this.ttlMs > 0 && entry.expiresAt <= Date.now()) {
+        this.cache.delete(key);
+        continue;
+      }
+      if (!predicate(entry.value, key)) continue;
+      const value = updater(entry.value, key);
+      if (value !== undefined && value !== null) {
+        updates.push([key, value]);
+      }
+    }
+    for (const [key, value] of updates) this.set(key, value);
+    return updates.length;
+  }
+
   clear() {
     this.cache.clear();
   }

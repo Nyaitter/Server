@@ -23,6 +23,8 @@ const { scoreRecommendedPosts } = require('../../../utils/recommendation');
 const { extractViewContent } = require('../../../utils/viewContent');
 const { isFuzzyMatch, calculateStringSimilarity } = require('../../../utils/fuzzySearch');
 
+const MAX_CACHED_REACTION_USERS = 1000;
+
 function parseJsonSafe(value, fallback = null) {
 	if (value === null || value === undefined) return fallback;
 	if (typeof value === 'object') return value;
@@ -549,8 +551,16 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	_setCachedUser(user) {
-		if (!user) return;
-		this._getUserCache().set(user.id, user);
+		const cache = this._getUserCache();
+		if (!cache || !user) return;
+		cache.set(user.id, user);
+	}
+
+	_updateCachedUser(userId, patch) {
+		const cache = this._getUserCache();
+		const current = cache?.get(Number(userId));
+		if (!cache || !current) return;
+		cache.set(Number(userId), { ...current, ...patch, id: Number(userId) });
 	}
 
 	_getUserCache() {
@@ -754,7 +764,7 @@ class PostgresAdapter extends DatabaseAdapter {
 				[normUserId, targetId],
 			);
 		}
-		this._invalidateUserCache(targetId);
+		if (normProvider === 'scratch') this._updateCachedUser(targetId, { scid: normUserId });
 
 		const r = rows[0];
 		return {
@@ -797,7 +807,7 @@ class PostgresAdapter extends DatabaseAdapter {
 				[targetId],
 			);
 		}
-		this._invalidateUserCache(targetId);
+		if (normProvider === 'scratch') this._updateCachedUser(targetId, { scid: null });
 
 		return { success: true };
 	}
@@ -918,18 +928,17 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async setUserStatus(userId, status) {
-		this._invalidateUserCache(userId);
 		const shadow = Boolean(status && status.shadow);
 		const { rows } = await this.pool.query(
 			'UPDATE users SET shadow = $2 WHERE id = $1 RETURNING shadow',
 			[Number(userId), shadow],
 		);
 		if (!rows[0]) return null;
+		this._updateCachedUser(userId, { shadow });
 		return { shadow: Boolean(rows[0].shadow) };
 	}
 
 	async updateUserProfile(userId, profileData) {
-		this._invalidateUserCache(userId);
 		const fields = [];
 		const values = [];
 		let idx = 1;
@@ -984,12 +993,13 @@ class PostgresAdapter extends DatabaseAdapter {
 			`UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
 			values,
 		);
-		return normalizeUserRow(rows[0]);
+		const user = normalizeUserRow(rows[0]);
+		this._setCachedUser(user);
+		return user;
 	}
 
 	async beginAccountOperation(userId, operation) {
 		if (!['reassigning', 'deleting'].includes(operation)) throw new Error('Invalid account operation');
-		this._invalidateUserCache(userId);
 		const { rows } = await this.pool.query(
 			`UPDATE users
 			 SET account_operation = $2
@@ -999,18 +1009,21 @@ class PostgresAdapter extends DatabaseAdapter {
 			 RETURNING *`,
 			[Number(userId), operation],
 		);
-		return normalizeUserRow(rows[0] || null);
+		const user = normalizeUserRow(rows[0] || null);
+		this._setCachedUser(user);
+		return user;
 	}
 
 	async finishAccountOperation(userId, operation) {
-		this._invalidateUserCache(userId);
 		const { rows } = await this.pool.query(
 			`UPDATE users SET account_operation = NULL
 			 WHERE id = $1 AND account_operation = $2
 			 RETURNING *`,
 			[Number(userId), operation],
 		);
-		return normalizeUserRow(rows[0] || null);
+		const user = normalizeUserRow(rows[0] || null);
+		this._setCachedUser(user);
+		return user;
 	}
 
 	async reassignUserId(userId) {
@@ -2310,7 +2323,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			values.push(Number(postData.id));
 		}
 
-		return this._withTransaction(async (client) => {
+		const createdPost = await this._withTransaction(async (client) => {
 			const { rows } = await client.query(insertQuery, values);
 			const post = normalizePostRow(rows[0] || null);
 			if (post) {
@@ -2336,6 +2349,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 			return post;
 		});
+		return createdPost;
 	}
 
 	_getPostCache() {
@@ -2350,6 +2364,40 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 		}
 		return this._postCache;
+	}
+
+	_getPostMetricsCache() {
+		if (!this._postMetricsCache) {
+			this._postMetricsCache = new MemoryBoundedCache({
+				maxSize: 4000,
+				ttlMs: 30000,
+				maxHeapMb: appConfig.cache?.memoryCacheMaxHeapMb || 0,
+			});
+		}
+		return this._postMetricsCache;
+	}
+
+	_updateCachedPostMetrics(postId, metrics) {
+		const cache = this._getPostMetricsCache();
+		const normalizedPostId = Number(postId);
+		if (!Number.isSafeInteger(normalizedPostId) || !cache) return;
+		cache.updateWhere(
+			(_value, key) => Number(key) === normalizedPostId,
+			(value) => ({ ...value, ...metrics, post_id: normalizedPostId }),
+		);
+	}
+
+	_updateCachedPostReaction(postId, userId, type, active) {
+		const cache = this._getPostMetricsCache();
+		const normalizedPostId = Number(postId);
+		const normalizedUserId = Number(userId);
+		const cached = cache?.get(normalizedPostId);
+		if (!cached || !cached.reactionStateReady || !Number.isSafeInteger(normalizedUserId)) return;
+		const key = type === 'star' ? 'starredBy' : 'likedBy';
+		const users = new Set(cached[key] || []);
+		if (active) users.add(normalizedUserId);
+		else users.delete(normalizedUserId);
+		cache.set(normalizedPostId, { ...cached, [key]: [...users] });
 	}
 
 	async getPostById(id) {
@@ -2550,44 +2598,62 @@ class PostgresAdapter extends DatabaseAdapter {
 			? parsedViewerId
 			: null;
 
-		const query = viewerId != null
-			? `SELECT
+		const metricsCache = this._getPostMetricsCache();
+		const metricsByPostId = new Map();
+		const missingIds = [];
+		for (const id of ids) {
+			const cached = metricsCache?.get(id);
+			if (cached && (viewerId == null || cached.reactionStateReady)) {
+				metricsByPostId.set(id, {
+					...cached,
+					liked_by_me: viewerId != null ? cached.likedBy?.includes(viewerId) : false,
+					starred_by_me: viewerId != null ? cached.starredBy?.includes(viewerId) : false,
+				});
+			} else {
+				missingIds.push(id);
+			}
+		}
+		if (missingIds.length === 0) return ids.map((id) => metricsByPostId.get(id));
+
+		const query = `SELECT
 				p.id AS post_id,
 				COALESCE(p.like_count, 0)::int AS like_count,
 				COALESCE(p.star_count, 0)::int AS star_count,
 				COALESCE(p.repost_count, 0)::int AS repost_count,
 				COALESCE(p.reply_count, 0)::int AS reply_count,
-				(l.post_id IS NOT NULL) AS liked_by_me,
-				(s.post_id IS NOT NULL) AS starred_by_me
-			   FROM posts p
-			   LEFT JOIN likes l ON l.post_id = p.id AND l.user_id = $2
-			   LEFT JOIN stars s ON s.post_id = p.id AND s.user_id = $2
-			   WHERE p.id = ANY($1::int[])`
-			: `SELECT
-				p.id AS post_id,
-				COALESCE(p.like_count, 0)::int AS like_count,
-				COALESCE(p.star_count, 0)::int AS star_count,
-				COALESCE(p.repost_count, 0)::int AS repost_count,
-				COALESCE(p.reply_count, 0)::int AS reply_count,
-				FALSE AS liked_by_me,
-				FALSE AS starred_by_me
+				COALESCE((SELECT array_agg(user_id) FROM likes WHERE post_id = p.id), ARRAY[]::int[]) AS liked_user_ids,
+				COALESCE((SELECT array_agg(user_id) FROM stars WHERE post_id = p.id), ARRAY[]::int[]) AS starred_user_ids
 			   FROM posts p
 			   WHERE p.id = ANY($1::int[])`;
 
-		const params = viewerId != null ? [ids, viewerId] : [ids];
+		const params = [missingIds];
 		const { rows } = await this.pool.query(query, params);
 		const rowMap = new Map(rows.map((r) => [Number(r.post_id), r]));
-		return ids.map((id) => {
+		for (const id of missingIds) {
 			const row = rowMap.get(id);
-			return {
+			const likedBy = (row?.liked_user_ids || []).map(Number);
+			const starredBy = (row?.starred_user_ids || []).map(Number);
+			const reactionStateReady = likedBy.length <= MAX_CACHED_REACTION_USERS
+				&& starredBy.length <= MAX_CACHED_REACTION_USERS;
+			const value = {
 				post_id: id,
 				like_count: Math.max(0, Number(row?.like_count) || 0),
 				star_count: Math.max(0, Number(row?.star_count) || 0),
 				repost_count: Math.max(0, Number(row?.repost_count) || 0),
 				reply_count: Math.max(0, Number(row?.reply_count) || 0),
-				liked_by_me: Boolean(row?.liked_by_me),
-				starred_by_me: Boolean(row?.starred_by_me),
+				likedBy: reactionStateReady ? likedBy : [],
+				starredBy: reactionStateReady ? starredBy : [],
+				reactionStateReady,
 			};
+			metricsByPostId.set(id, {
+				...value,
+				liked_by_me: viewerId != null ? value.likedBy.includes(viewerId) : false,
+				starred_by_me: viewerId != null ? value.starredBy.includes(viewerId) : false,
+			});
+			metricsCache?.set(id, value);
+		}
+		return ids.map((id) => {
+			return metricsByPostId.get(id);
 		});
 	}
 
@@ -3525,7 +3591,16 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			return { liked, count };
 		});
-		this._getPostCache()?.delete(pId);
+		const cachedPost = this._getPostCache()?.get(pId);
+		if (cachedPost) {
+			this._getPostCache()?.set(pId, {
+				...cachedPost,
+				like_count: result.count,
+				likeCount: result.count,
+			});
+		}
+		this._updateCachedPostMetrics(pId, { like_count: result.count });
+		this._updateCachedPostReaction(pId, uId, 'like', result.liked);
 		return result;
 	}
 
@@ -3596,7 +3671,16 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			return { starred, count };
 		});
-		this._getPostCache()?.delete(pId);
+		const cachedPost = this._getPostCache()?.get(pId);
+		if (cachedPost) {
+			this._getPostCache()?.set(pId, {
+				...cachedPost,
+				star_count: result.count,
+				starCount: result.count,
+			});
+		}
+		this._updateCachedPostMetrics(pId, { star_count: result.count });
+		this._updateCachedPostReaction(pId, uId, 'star', result.starred);
 		return result;
 	}
 
@@ -3625,7 +3709,7 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async togglePin(userId, postId) {
-		return this._withTransaction(async (client) => {
+		const result = await this._withTransaction(async (client) => {
 			const post = await client.query(
 				'SELECT user_id FROM posts WHERE id = $1',
 				[Number(postId)],
@@ -3652,6 +3736,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 			return { pinned: true };
 		});
+		return result;
 	}
 
 	async getPinnedPosts(userId) {
@@ -4180,8 +4265,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		}
 
 		const now = new Date().toISOString();
-		return this._withTransaction(async (client) => {
-			this._followCache?.delete(u1);
+		const result = await this._withTransaction(async (client) => {
 			const delResult = await client.query(
 				'DELETE FROM follows WHERE follower_id = $1 AND following_id = $2 RETURNING 1',
 				[u1, u2],
@@ -4195,6 +4279,13 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 			return { following: true };
 		});
+		const followCache = this._followCache?.get(u1);
+		if (followCache?.follows instanceof Set) {
+			if (result.following) followCache.follows.add(u2);
+			else followCache.follows.delete(u2);
+			this._followCache.set(u1, followCache);
+		}
+		return result;
 	}
 
 	async isFollowing(followerId, followingId) {
@@ -4249,7 +4340,6 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!Number.isSafeInteger(normalizedUserId) || ids.length === 0) {
 			return { followingIds: [], followerIds: [] };
 		}
-
 		const { rows } = await this.pool.query(
 			`SELECT following_id AS user_id, 'following' AS direction
 			 FROM follows
@@ -4701,7 +4791,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			.map(Number)
 			.filter((id) => Number.isSafeInteger(id) && id > 0);
 		const state = rows[0] || {};
-		return {
+		const result = {
 			follow: normalizeIds(state.follow_ids),
 			like: normalizeIds(state.like_ids),
 			star: normalizeIds(state.star_ids),
@@ -4709,6 +4799,7 @@ class PostgresAdapter extends DatabaseAdapter {
 				? Number(state.pinned_post_id)
 				: null,
 		};
+		return result;
 	}
 
 	async getUserBootstrapData(userId, notificationLimit = 200) {
@@ -4828,13 +4919,14 @@ class PostgresAdapter extends DatabaseAdapter {
 			[Number(userId)],
 		);
 		const stats = rows[0] || {};
-		return {
+		const result = {
 			followingCount: Math.max(0, Number(stats.following_count) || 0),
 			followerCount: Math.max(0, Number(stats.follower_count) || 0),
 			postCount: Math.max(0, Number(stats.post_count) || 0),
 			mediaCount: Math.max(0, Number(stats.media_count) || 0),
 			pinnedPostId: stats.pinned_post_id == null ? null : Number(stats.pinned_post_id),
 		};
+		return result;
 	}
 
 	// ==================== Rankings ====================
