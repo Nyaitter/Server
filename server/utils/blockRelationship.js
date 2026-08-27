@@ -25,10 +25,20 @@ async function hasBlockRelationship(db, firstUserId, secondUserId) {
     if (firstId == null || secondId == null || firstId === secondId) return false;
     if (typeof db?.getUserById !== 'function') return false;
 
-    const [firstUser, secondUser] = await Promise.all([
-        db.getUserById(firstId),
-        db.getUserById(secondId),
-    ]);
+    let users = [];
+    if (typeof db.getUsersByIds === 'function') {
+        try {
+            users = await db.getUsersByIds([firstId, secondId]);
+        } catch (_) {}
+    }
+    const usersById = new Map((users || []).map((user) => [Number(user.id), user]));
+    const missingIds = [firstId, secondId].filter((id) => !usersById.has(id));
+    if (missingIds.length > 0) {
+        const fetched = await Promise.all(missingIds.map((id) => db.getUserById(id)));
+        for (const user of fetched.filter(Boolean)) usersById.set(Number(user.id), user);
+    }
+    const firstUser = usersById.get(firstId);
+    const secondUser = usersById.get(secondId);
     return blocksUser(firstUser, secondId) || blocksUser(secondUser, firstId);
 }
 

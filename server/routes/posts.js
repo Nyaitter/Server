@@ -565,8 +565,10 @@ router.get({
 	const offset = beforeId == null ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
 	const currentUserId = req.user ? req.user.id : null;
 	const knownViewer = req.user?.visibilityUser || null;
+	const ngWords = getViewerNgWords(req);
 
-	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${currentUserId || 0}:${limit}:${offset}:${beforeId || 0}`;
+	const ngWordsKey = ngWords ? [...ngWords].sort().join(',') : '';
+	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}`;
 	const cachedResult = timelineCacheManager.getIds(cacheKey);
 
 	try {
@@ -583,7 +585,7 @@ router.get({
 				limit,
 				offset,
 				beforeId,
-				ngWords: getViewerNgWords(req),
+					ngWords,
 			});
 			if (result?.ids) {
 				timelineCacheManager.setIds(cacheKey, result);
@@ -1039,6 +1041,7 @@ router.post({
 			return res.status(404).json({ error: 'Post not found' });
 		}
 		const result = await postService.toggleLike(userId, postId);
+		timelineCacheManager.invalidatePost(postId);
 
 		if (result.liked) {
 			if (post.userId !== userId) {
@@ -1088,6 +1091,7 @@ router.post({
 			return res.status(404).json({ error: 'Post not found' });
 		}
 		const result = await postService.toggleStar(userId, postId);
+		timelineCacheManager.invalidatePost(postId);
 
 		const updatedStars = await db.getStarIds(userId);
 

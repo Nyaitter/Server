@@ -309,6 +309,10 @@ const config = {
     // NYAITTER_CORS_ALLOWED_ORIGINS takes a comma-separated list of origins.
     // `*` を含めると全オリジンを許可する。config.json uses an array at cors.allowedOrigins.
     allowedOrigins: normalizeCorsAllowedOrigins(corsAllowedOriginsSetting()),
+    allowUnknownClient: envBoolean(
+      'ARROW_UNKNOWN_CLIENT',
+      get('cors.allowUnknownClient', get('ARROW_UNKNOWN_CLIENT', get('arrowUnknownClient', false))),
+    ),
     credentials: envBoolean(
       'NYAITTER_CORS_CREDENTIALS',
       get('cors.credentials', false),
@@ -485,6 +489,20 @@ const config = {
 
   cache: {
     postCacheEnabled: envBoolean('POST_CACHE_ENABLED', get('cache.postCacheEnabled', true)),
+    userCacheEnabled: envBoolean('USER_CACHE_ENABLED', get('cache.userCacheEnabled', true)),
+    userCacheMaxSize: exactIntegerSetting(
+      'user cache max size',
+      ['USER_CACHE_MAX_SIZE'],
+      ['cache.userCacheMaxSize'],
+      3000,
+      1,
+    ),
+    userCacheTtlMs: durationSetting(
+      'user cache TTL',
+      ['USER_CACHE_TTL_MS'],
+      ['cache.userCacheTtlMs'],
+      '5min',
+    ),
     postCacheMaxSize: exactIntegerSetting(
       'post cache max size',
       ['POST_CACHE_MAX_SIZE'],
@@ -807,6 +825,7 @@ const config = {
 			...get('storage.r2', {}),
 			cacheControl: process.env.R2_CACHE_CONTROL || get('storage.r2.cacheControl', 'public, max-age=31536000, immutable'),
 			signedUrlCacheSeconds: Math.max(0, Number(process.env.R2_SIGNED_URL_CACHE_SECONDS || get('storage.r2.signedUrlCacheSeconds', 300)) || 0),
+			signedUrlCacheMaxEntries: Math.min(10000, Math.max(1, Math.floor(Number(process.env.R2_SIGNED_URL_CACHE_MAX_ENTRIES || get('storage.r2.signedUrlCacheMaxEntries', 2000)) || 2000))),
 			retryAttempts: Math.max(0, Number(process.env.R2_RETRY_ATTEMPTS || get('storage.r2.retryAttempts', 2)) || 0),
 				retryBaseDelayMs: Math.max(0, Number(process.env.R2_RETRY_BASE_DELAY_MS || get('storage.r2.retryBaseDelayMs', 120)) || 0),
 				deleteConcurrency: Math.min(32, Math.max(1, Math.floor(Number(process.env.R2_DELETE_CONCURRENCY || get('storage.r2.deleteConcurrency', 8)) || 8))),

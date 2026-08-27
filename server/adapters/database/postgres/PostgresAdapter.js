@@ -548,20 +548,23 @@ class PostgresAdapter extends DatabaseAdapter {
 		return normalizeUserRow(rows[0]);
 	}
 
-	_setCachedUser(user, now = Date.now()) {
+	_setCachedUser(user) {
 		if (!user) return;
-		if (!this._userCache) this._userCache = new Map();
-		if (this._userCache.size >= 2000) {
-			for (const [key, entry] of this._userCache) {
-				if (!entry || entry.expiresAt <= now) this._userCache.delete(key);
-			}
-			while (this._userCache.size >= 2000) {
-				const oldestKey = this._userCache.keys().next().value;
-				if (oldestKey === undefined) break;
-				this._userCache.delete(oldestKey);
+		this._getUserCache().set(user.id, user);
+	}
+
+	_getUserCache() {
+		if (!this._userCache) {
+			const cacheCfg = appConfig.cache || {};
+			if (cacheCfg.userCacheEnabled !== false) {
+				this._userCache = new MemoryBoundedCache({
+					maxSize: cacheCfg.userCacheMaxSize || 3000,
+					ttlMs: cacheCfg.userCacheTtlMs || 300000,
+					maxHeapMb: cacheCfg.memoryCacheMaxHeapMb || 0,
+				});
 			}
 		}
-		this._userCache.set(user.id, { user, expiresAt: now + 10000 });
+		return this._userCache;
 	}
 
 	async getUserById(id) {
@@ -569,12 +572,9 @@ class PostgresAdapter extends DatabaseAdapter {
 		const userId = Number(id);
 		if (!Number.isSafeInteger(userId) || userId <= 0) return null;
 
-		if (!this._userCache) this._userCache = new Map();
-		const now = Date.now();
-		const cached = this._userCache.get(userId);
-		if (cached && cached.expiresAt > now) {
-			return cached.user;
-		}
+		const cache = this._getUserCache();
+		const cached = cache?.get(userId);
+		if (cached) return cached;
 
 		const { rows } = await this.pool.query(
 			'SELECT * FROM users WHERE id = $1 LIMIT 1',
@@ -582,7 +582,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		);
 		const user = normalizeUserRow(rows[0]);
 		if (user) {
-			this._setCachedUser(user, now);
+			this._setCachedUser(user);
 		}
 		return user;
 	}
@@ -592,15 +592,14 @@ class PostgresAdapter extends DatabaseAdapter {
 			.filter((id) => Number.isSafeInteger(id) && id > 0))];
 		if (ids.length === 0) return [];
 
-		if (!this._userCache) this._userCache = new Map();
-		const now = Date.now();
+		const cache = this._getUserCache();
 		const userMap = new Map();
 		const missingIds = [];
 
 		for (const id of ids) {
-			const cached = this._userCache.get(id);
-			if (cached && cached.expiresAt > now) {
-				userMap.set(id, cached.user);
+			const cached = cache?.get(id);
+			if (cached) {
+				userMap.set(id, cached);
 			} else {
 				missingIds.push(id);
 			}
@@ -614,7 +613,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			for (const row of rows) {
 				const user = normalizeUserRow(row);
 				if (user) {
-					this._setCachedUser(user, now);
+					this._setCachedUser(user);
 					userMap.set(user.id, user);
 				}
 			}
@@ -3488,7 +3487,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const pId = Number(postId);
 		const now = new Date().toISOString();
 
-		return this._withTransaction(async (client) => {
+		const result = await this._withTransaction(async (client) => {
 			const delResult = await client.query(
 				'DELETE FROM likes WHERE user_id = $1 AND post_id = $2 RETURNING 1',
 				[uId, pId],
@@ -3526,6 +3525,8 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			return { liked, count };
 		});
+		this._getPostCache()?.delete(pId);
+		return result;
 	}
 
 	async getLikeCount(postId) {
@@ -3557,7 +3558,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const pId = Number(postId);
 		const now = new Date().toISOString();
 
-		return this._withTransaction(async (client) => {
+		const result = await this._withTransaction(async (client) => {
 			const delResult = await client.query(
 				'DELETE FROM stars WHERE user_id = $1 AND post_id = $2 RETURNING 1',
 				[uId, pId],
@@ -3595,6 +3596,8 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			return { starred, count };
 		});
+		this._getPostCache()?.delete(pId);
+		return result;
 	}
 
 	async getStarCount(postId) {

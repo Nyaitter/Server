@@ -140,6 +140,7 @@ async function createPostVisibilityContext(
 	const existingPostsById = new Map(values.map((p) => [Number(p.id), p]));
 	const missingParentIds = replyToPostIds.filter((id) => !existingPostsById.has(id));
 
+	const hasGroupPosts = values.some((post) => Boolean(getPostGroupId(post)));
 	const [viewer, followSnapshot, fetchedParents, activeGroupIds] = await Promise.all([
 		canReuseKnownViewer
 			? knownViewer
@@ -153,7 +154,7 @@ async function createPostVisibilityContext(
 				return [];
 			})
 			: [],
-		normalizedViewerId != null && typeof db.getUserGroups === 'function'
+		hasGroupPosts && normalizedViewerId != null && typeof db.getUserGroups === 'function'
 			? db.getUserGroups(normalizedViewerId, { status: 'active', limit: 200, offset: 0 })
 				.then((groups) => new Set((groups || []).map((group) => String(group.id))))
 				.catch((err) => {

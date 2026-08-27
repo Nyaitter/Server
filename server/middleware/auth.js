@@ -291,6 +291,7 @@ function isCorsOriginAllowed(origin) {
   const allowedOrigins = config.cors?.allowedOrigins || [];
   return (
     isDevelopmentCorsMode() ||
+    config.cors?.allowUnknownClient === true ||
     allowedOrigins.includes('*') ||
     allowedOrigins.includes(origin)
   );

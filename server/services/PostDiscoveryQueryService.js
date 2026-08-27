@@ -37,10 +37,7 @@ async function getDiscoverablePostPage({
 		? Number(beforeId)
 		: null;
 	const normalizedOffset = normalizedBeforeId == null ? Math.max(Number(offset) || 0, 0) : 0;
-	const candidateLimit = Math.min(
-		100,
-		Math.max(normalizedLimit + 1, normalizedLimit * 2),
-	);
+	const candidateLimit = 100;
 	let candidateOffset = 0;
 	let candidateBeforeId = normalizedBeforeId;
 	let visibleOffset = 0;

@@ -143,7 +143,7 @@ app.use(
 );
 app.use(API_ENDPOINT, requestId);
 app.use(securityHeaders);
-app.use(API_ENDPOINT, flexibleCors);
+app.use(flexibleCors);
 app.use(API_ENDPOINT, csrfProtection);
 app.use(API_ENDPOINT, generalLimiter);
 app.use(apiPath('/auth'), authLimiter);
@@ -171,7 +171,7 @@ function isAllowedRealtimeOrigin(request) {
         ? (forwardedProto === 'https' ? 'https' : 'http')
         : (request.socket.encrypted ? 'https' : 'http');
     const sameOrigin = request.headers.host && origin === `${protocol}://${request.headers.host}`;
-    return sameOrigin || allowedOriginsSet.has(origin);
+    return sameOrigin || config.cors?.allowUnknownClient === true || allowedOriginsSet.has(origin);
 }
 
 function rejectRealtimeUpgrade(socket, status, message) {

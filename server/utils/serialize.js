@@ -189,6 +189,7 @@ async function serializePublicProfile(
 	viewerId = null,
 	publicUrl = null,
 	viewerUser = null,
+	knownGroups = null,
 ) {
 	if (!user) return null;
 	const isSelf = viewerId != null && Number(viewerId) === Number(user.id);
@@ -232,6 +233,16 @@ async function serializePublicProfile(
 	const pinnedPostId = stats?.pinnedPostId || null;
 
 	let groupBadges = Array.isArray(user.group_badges) ? user.group_badges.slice(0, 3) : null;
+	if (!groupBadges && Array.isArray(knownGroups)) {
+		groupBadges = knownGroups
+			.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
+			.slice(0, 3)
+			.map((g) => ({
+				id: String(g.id),
+				name: String(g.name || ''),
+				icon_data: g.icon_data || g.iconData,
+			}));
+	}
 	if (!groupBadges && typeof db.getUserGroups === 'function') {
 		try {
 			const groups = await db.getUserGroups(user.id, { status: 'active', limit: 20 });
@@ -610,14 +621,26 @@ async function serializePostsBatch(
 			.filter((id) => Number.isInteger(id) && id > 0 && id !== normalizedViewerId))]
 		: [];
 	const authorsFollowingViewer = new Set();
-	if (followingCheckAuthorIds.length > 0 && typeof db.isFollowing === 'function') {
-		await Promise.all(followingCheckAuthorIds.map(async (authorId) => {
+	if (followingCheckAuthorIds.length > 0) {
+		if (typeof db.getFollowRelationshipSnapshot === 'function') {
 			try {
-				if (await db.isFollowing(authorId, normalizedViewerId)) {
-					authorsFollowingViewer.add(authorId);
+				const snapshot = await db.getFollowRelationshipSnapshot(
+					normalizedViewerId,
+					followingCheckAuthorIds,
+				);
+				for (const authorId of snapshot?.followerIds || []) {
+					authorsFollowingViewer.add(Number(authorId));
 				}
 			} catch (_) {}
-		}));
+		} else if (typeof db.isFollowing === 'function') {
+			await Promise.all(followingCheckAuthorIds.map(async (authorId) => {
+				try {
+					if (await db.isFollowing(authorId, normalizedViewerId)) {
+						authorsFollowingViewer.add(authorId);
+					}
+				} catch (_) {}
+			}));
+		}
 	}
 
 	const allPostIds = allPosts.map((p) => Number(p.id)).filter((id) => Number.isInteger(id) && id > 0);

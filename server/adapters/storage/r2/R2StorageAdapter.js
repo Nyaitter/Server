@@ -42,6 +42,7 @@ class R2StorageAdapter extends StorageAdapter {
       ? r2Config.cacheControl.trim()
       : 'public, max-age=31536000, immutable';
     this.signedUrlCacheSeconds = Math.max(0, Number(r2Config.signedUrlCacheSeconds) || 0);
+    this.signedUrlCacheMaxEntries = Math.min(10000, Math.max(1, Math.floor(Number(r2Config.signedUrlCacheMaxEntries) || 2000)));
     this.retryAttempts = Math.max(0, Number(r2Config.retryAttempts) || 0);
     this.retryBaseDelayMs = Math.max(0, Number(r2Config.retryBaseDelayMs) || 0);
     // R2のS3 APIはDeleteObjectsを実装していないため、単体削除の並行数を抑える。
@@ -100,6 +101,8 @@ class R2StorageAdapter extends StorageAdapter {
       this.signedUrlCache.delete(cacheKey);
       return null;
     }
+    this.signedUrlCache.delete(cacheKey);
+    this.signedUrlCache.set(cacheKey, cached);
     return cached.url;
   }
 
@@ -113,6 +116,15 @@ class R2StorageAdapter extends StorageAdapter {
       Math.max(0, Number(expiresIn) - 30),
     );
     if (cacheSeconds > 0) {
+      const now = Date.now();
+      for (const [key, entry] of this.signedUrlCache) {
+        if (!entry || entry.expiresAt <= now) this.signedUrlCache.delete(key);
+      }
+      while (this.signedUrlCache.size >= this.signedUrlCacheMaxEntries) {
+        const oldestKey = this.signedUrlCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        this.signedUrlCache.delete(oldestKey);
+      }
       this.signedUrlCache.set(cacheKey, {
         url,
         expiresAt: Date.now() + cacheSeconds * 1000,

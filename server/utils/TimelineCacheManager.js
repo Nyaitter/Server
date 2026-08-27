@@ -16,7 +16,7 @@ class TimelineCacheManager {
 		this.ttlMs = options.ttlMs ?? 15000; // 15s TTL
 		this.maxEntries = options.maxEntries ?? 300;
 		this.maxTimelineSize = options.maxTimelineSize ?? 60;
-		// Map<string, { idsAsc: number[], has_more: boolean, expiresAt: number }>
+		// Map<string, { idsAsc: number[], postsById: Map, has_more: boolean, expiresAt: number }>
 		this.cache = new Map();
 	}
 
@@ -28,6 +28,8 @@ class TimelineCacheManager {
 			this.cache.delete(key);
 			return null;
 		}
+		this.cache.delete(key);
+		this.cache.set(key, entry);
 
 		// Return copy of IDs in descending order (newest first)
 		const idsDesc = [];
@@ -38,6 +40,9 @@ class TimelineCacheManager {
 
 		return {
 			ids: idsDesc,
+			posts: entry.postsById
+				? idsDesc.map((id) => entry.postsById.get(id)).filter(Boolean)
+				: undefined,
 			has_more: entry.has_more,
 		};
 	}
@@ -46,7 +51,7 @@ class TimelineCacheManager {
 	 * Stores timeline IDs in internal ascending order (chronological) to allow
 	 * efficient push() for new incoming posts.
 	 */
-	setIds(key, { ids = [], has_more = false }, customTtlMs = null) {
+	setIds(key, { ids = [], posts = [], has_more = false }, customTtlMs = null) {
 		if (!Array.isArray(ids)) return;
 
 		// Input IDs from DB are in descending order (newest first).
@@ -58,6 +63,9 @@ class TimelineCacheManager {
 				idsAsc.push(id);
 			}
 		}
+		const postsById = new Map((Array.isArray(posts) ? posts : [])
+			.filter((post) => post && Number.isInteger(Number(post.id)))
+			.map((post) => [Number(post.id), post]));
 
 		// Enforce LRU cap
 		if (this.cache.size >= this.maxEntries) {
@@ -68,6 +76,7 @@ class TimelineCacheManager {
 		const ttl = customTtlMs ?? this.ttlMs;
 		this.cache.set(key, {
 			idsAsc,
+			postsById,
 			has_more: Boolean(has_more),
 			expiresAt: Date.now() + ttl,
 		});
@@ -116,6 +125,7 @@ class TimelineCacheManager {
 					if (tab === `group:${groupId}`) {
 						if (!entry.idsAsc.includes(postId)) {
 							entry.idsAsc.push(postId);
+							entry.postsById?.set(postId, post);
 							if (entry.idsAsc.length > this.maxTimelineSize) {
 								entry.idsAsc.splice(0, entry.idsAsc.length - this.maxTimelineSize);
 							}
@@ -128,6 +138,7 @@ class TimelineCacheManager {
 				if (tab === 'all' || tab === 'foryou') {
 					if (!entry.idsAsc.includes(postId)) {
 						entry.idsAsc.push(postId);
+						entry.postsById?.set(postId, post);
 						if (entry.idsAsc.length > this.maxTimelineSize) {
 							entry.idsAsc.splice(0, entry.idsAsc.length - this.maxTimelineSize);
 						}
@@ -137,6 +148,7 @@ class TimelineCacheManager {
 					if (viewerId === postAuthorId) {
 						if (!entry.idsAsc.includes(postId)) {
 							entry.idsAsc.push(postId);
+							entry.postsById?.set(postId, post);
 							if (entry.idsAsc.length > this.maxTimelineSize) {
 								entry.idsAsc.splice(0, entry.idsAsc.length - this.maxTimelineSize);
 							}
@@ -150,6 +162,7 @@ class TimelineCacheManager {
 				if (!isReply && !groupId) {
 					if (!entry.idsAsc.includes(postId)) {
 						entry.idsAsc.push(postId);
+						entry.postsById?.set(postId, post);
 						if (entry.idsAsc.length > this.maxTimelineSize) {
 							entry.idsAsc.splice(0, entry.idsAsc.length - this.maxTimelineSize);
 						}
@@ -175,6 +188,15 @@ class TimelineCacheManager {
 			if (idx !== -1) {
 				entry.idsAsc.splice(idx, 1);
 			}
+			entry.postsById?.delete(pId);
+		}
+	}
+
+	invalidatePost(postId) {
+		const pId = Number(postId);
+		if (!Number.isInteger(pId) || pId <= 0) return;
+		for (const [key, entry] of this.cache) {
+			if (entry.idsAsc.includes(pId)) this.cache.delete(key);
 		}
 	}
 
@@ -187,8 +209,8 @@ class TimelineCacheManager {
 }
 
 const timelineCacheManager = new TimelineCacheManager({
-	ttlMs: 900000, // 900s (15 minutes) durable TTL
-	maxEntries: 5000,
+	ttlMs: 15000,
+	maxEntries: 500,
 	maxTimelineSize: 100,
 });
 

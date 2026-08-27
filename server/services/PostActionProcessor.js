@@ -256,8 +256,19 @@ async function processCreatePostAction(context, payload) {
 
   validateAttachmentReferences(attachments, userId);
   const relatedPosts = new Map();
-  for (const targetId of [replyTo, repostTo].filter(Boolean)) {
-    const target = await context.db.getPostById(targetId);
+  const targetIds = [...new Set([replyTo, repostTo].filter(Boolean))];
+  let targetPosts = [];
+  if (typeof context.db.getPostsByIds === 'function') {
+    try {
+      targetPosts = await context.db.getPostsByIds(targetIds);
+    } catch (_) {}
+  }
+  if (targetPosts.length === 0 && targetIds.length > 0 && typeof context.db.getPostById === 'function') {
+    targetPosts = await Promise.all(targetIds.map((targetId) => context.db.getPostById(targetId)));
+  }
+  const targetPostsById = new Map((targetPosts || []).filter(Boolean).map((post) => [Number(post.id), post]));
+  for (const targetId of targetIds) {
+    const target = targetPostsById.get(Number(targetId));
     if (!target || !(await canViewPost(
       context.db,
       target,
@@ -325,12 +336,23 @@ async function processCreatePostAction(context, payload) {
           const isMentioned = isMentionedInRoot || isMentionedInParent;
           let permitted = false;
           if (rootReplyControl === 'following' || rootReplyControl === 'following_or_mentioned') {
-            const isFollowedByRoot = typeof context.db.isFollowing === 'function'
-              ? await context.db.isFollowing(Number(rootPost.userId), Number(userId))
-              : false;
-            const isFollowedByParent = typeof context.db.isFollowing === 'function'
-              ? await context.db.isFollowing(Number(replyTarget.userId), Number(userId))
-              : false;
+            const relationshipUserIds = [Number(rootPost.userId), Number(replyTarget.userId)]
+              .filter((id, index, ids) => Number.isInteger(id) && ids.indexOf(id) === index);
+            let followedBy = new Set();
+            let relationshipSnapshotLoaded = false;
+            if (typeof context.db.getFollowRelationshipSnapshot === 'function') {
+              try {
+                const snapshot = await context.db.getFollowRelationshipSnapshot(userId, relationshipUserIds);
+                followedBy = new Set((snapshot?.followerIds || []).map(Number));
+                relationshipSnapshotLoaded = true;
+              } catch (_) {}
+            }
+            const isFollowedByRoot = followedBy.has(Number(rootPost.userId))
+              || (!relationshipSnapshotLoaded && typeof context.db.isFollowing === 'function'
+                && await context.db.isFollowing(Number(rootPost.userId), Number(userId)));
+            const isFollowedByParent = followedBy.has(Number(replyTarget.userId))
+              || (!relationshipSnapshotLoaded && typeof context.db.isFollowing === 'function'
+                && await context.db.isFollowing(Number(replyTarget.userId), Number(userId)));
             permitted = isMentioned || isFollowedByRoot || isFollowedByParent;
           } else if (rootReplyControl === 'mentioned' || rootReplyControl === 'mentioned_only') {
             permitted = isMentioned;
@@ -608,6 +630,7 @@ async function processEditPostAction(context, { postId, userId, content, attachm
   }
 
   const moderatedPost = updated || post;
+  timelineCacheManager.invalidatePost(postId);
   enqueueGeminiModeration(context, moderatedPost);
   return moderatedPost;
 }

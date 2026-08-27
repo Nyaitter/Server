@@ -489,19 +489,14 @@ router.get({
 		}
 
 			const viewerId = req.user ? req.user.id : null;
-			const profile = await serializePublicProfile(
-				db,
-				user,
-				viewerId,
-				getPublicUrl(req),
-				req.user?.visibilityUser || null,
-			);
 			let groups = [];
+			let targetGroups = null;
 			if (viewerId != null) {
-				const [viewerGroups, targetGroups] = await Promise.all([
+				const [viewerGroups, fetchedTargetGroups] = await Promise.all([
 					db.getUserGroups(viewerId, { status: 'active', limit: 200, offset: 0 }),
 					db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 }),
 				]);
+				targetGroups = fetchedTargetGroups;
 				const targetGroupIds = new Set(targetGroups.map((group) => String(group.id)));
 				groups = viewerGroups
 					.filter((group) => targetGroupIds.has(String(group.id)))
@@ -515,6 +510,17 @@ router.get({
 						member_count: Math.max(0, Number(group.memberCount ?? group.member_count) || 0),
 					}));
 			}
+			if (targetGroups === null && typeof db.getUserGroups === 'function') {
+				targetGroups = await db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 });
+			}
+			const profile = await serializePublicProfile(
+				db,
+				user,
+				viewerId,
+				getPublicUrl(req),
+				req.user?.visibilityUser || null,
+				targetGroups,
+			);
 			res.json({ user: { ...profile, groups } });
 	} catch (err) {
 		console.error('[users] profile error:', err);
