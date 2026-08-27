@@ -275,6 +275,14 @@ const config = {
       ['nmt.publicUrl'],
       '',
     ),
+    mode: (() => {
+      const explicit = process.env.NMT_MODE || get('nmt.mode', '');
+      if (['record_only', 'analysis_only', 'auto'].includes(explicit)) return explicit;
+      if (envBoolean('NMT_AUTO_FIX', get('nmt.autoFix', false))) return 'auto';
+      if (envBoolean('NMT_AUTO_ANALYSIS', get('nmt.autoAnalysis', false))) return 'analysis_only';
+      return 'record_only';
+    })(),
+    guidelines: process.env.NMT_GUIDELINES || process.env.NMT_AUTO_GUIDELINES || get('nmt.guidelines', ''),
     autoAnalysis: envBoolean('NMT_AUTO_ANALYSIS', get('nmt.autoAnalysis', false)),
     autoFix: envBoolean('NMT_AUTO_FIX', get('nmt.autoFix', false)),
     autoIssue: envBoolean('NMT_AUTO_ISSUE', get('nmt.autoIssue', false)),

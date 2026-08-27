@@ -50,6 +50,7 @@ class ManagementToolServer {
     this.errorManager.setSecurityManager(this.securityManager);
     this.adminManager = new AdminManager({ dbAdapter });
     this.serverControl = new ServerControlManager({ shutdownFn, getStatusFn });
+    this.errorManager.setServerControl(this.serverControl);
     this.authManager = new NyaitterAuthManager({ dbAdapter });
 
     this.app = null;
@@ -511,6 +512,8 @@ class ManagementToolServer {
       };
 
       res.json({
+        mode: process.env.NMT_MODE || this.errorManager.mode || 'record_only',
+        guidelines: process.env.NMT_GUIDELINES || this.errorManager.guidelines || '',
         autoAnalysis: getEnvBool('NMT_AUTO_ANALYSIS', this.errorManager.autoAnalysis),
         autoFix: getEnvBool('NMT_AUTO_FIX', this.errorManager.autoFix),
         autoIssue: getEnvBool('NMT_AUTO_ISSUE', this.errorManager.autoIssue),
@@ -534,6 +537,8 @@ class ManagementToolServer {
 
     this.app.post('/api/settings', authMiddleware, (req, res) => {
       const {
+        mode,
+        guidelines,
         autoAnalysis,
         autoFix,
         autoIssue,
@@ -550,6 +555,20 @@ class ManagementToolServer {
       } = req.body;
       
       const envMap = {};
+      if (mode !== undefined) {
+        envMap.NMT_MODE = mode;
+        if (mode === 'auto') {
+          envMap.NMT_AUTO_FIX = 'true';
+          envMap.NMT_AUTO_ANALYSIS = 'true';
+        } else if (mode === 'analysis_only') {
+          envMap.NMT_AUTO_FIX = 'false';
+          envMap.NMT_AUTO_ANALYSIS = 'true';
+        } else {
+          envMap.NMT_AUTO_FIX = 'false';
+          envMap.NMT_AUTO_ANALYSIS = 'false';
+        }
+      }
+      if (guidelines !== undefined) envMap.NMT_GUIDELINES = guidelines;
       if (autoAnalysis !== undefined) envMap.NMT_AUTO_ANALYSIS = String(autoAnalysis);
       if (autoFix !== undefined) envMap.NMT_AUTO_FIX = String(autoFix);
       if (autoIssue !== undefined) envMap.NMT_AUTO_ISSUE = String(autoIssue);
@@ -586,6 +605,8 @@ class ManagementToolServer {
       this.serverControl.updateEnvVariables(envMap);
 
       const newSettings = {};
+      if (mode !== undefined) newSettings.mode = mode;
+      if (guidelines !== undefined) newSettings.guidelines = guidelines;
       if (autoAnalysis !== undefined) newSettings.autoAnalysis = autoAnalysis;
       if (autoFix !== undefined) newSettings.autoFix = autoFix;
       if (autoIssue !== undefined) newSettings.autoIssue = autoIssue;

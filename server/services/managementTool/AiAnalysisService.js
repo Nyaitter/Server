@@ -16,6 +16,7 @@ class AiAnalysisService {
     this.requireApprovalForEdit = config.requireApprovalForEdit ?? false;
     this.requireApprovalForBash = config.requireApprovalForBash ?? true;
     this.guardrails = { ...(config.guardrails || {}) };
+    this.guidelines = config.guidelines || process.env.NMT_GUIDELINES || process.env.NMT_AUTO_GUIDELINES || '';
     this.approvalManager = null;
     this.zenModelsCache = null;
     this.zenModelsLastFetched = 0;
@@ -38,6 +39,7 @@ class AiAnalysisService {
     if (config.requireApprovalForEdit !== undefined) this.requireApprovalForEdit = Boolean(config.requireApprovalForEdit);
     if (config.requireApprovalForBash !== undefined) this.requireApprovalForBash = Boolean(config.requireApprovalForBash);
     if (config.guardrails !== undefined) this.guardrails = { ...this.guardrails, ...config.guardrails };
+    if (config.guidelines !== undefined) this.guidelines = String(config.guidelines);
   }
 
   // ── Gemini 公式 API 提供の実在モデル一覧を動的取得 ───────────────────
@@ -131,23 +133,37 @@ class AiAnalysisService {
     return list;
   }
 
-  async analyzeError(errorRecord, { autoFix = false } = {}) {
+  async analyzeError(errorRecord, { autoFix = false, guidelines = this.guidelines } = {}) {
     const isAutoFix = autoFix === true;
+    const activeGuidelines = (guidelines || this.guidelines || '').trim();
+
     const prompt = isAutoFix
-      ? `【重要：自動修正（Auto-Fix）エージェント】
-あなたはNyaitterサーバーの開発者向け自動修復専門エージェントです。
-スタックトレースおよびプロジェクト内のコードを確認し、エラーの根本原因を特定した上で、**Git追跡対象の関連ファイルを直接編集・修正してください**。
+      ? `【重要：自律対応・自動修正（Autonomous Action Agent）】
+あなたはNyaitterサーバー（Node.js / Express / PostgreSQL / D1 / SPA）の開発者向け自律対応専門エージェントです。
+システム的な固定自動実行を避け、スタックトレースおよびプロジェクト内のコード、環境を調査した上で、**あなた自身の判断で必要な対応をすべて自律的に実行してください**。
+
+【自律実行可能な対応アクション】
+1. 問題のあるファイルの直接修正:
+   - 根本原因を特定し、Git追跡対象のファイルを直接編集・修正してください。
+   - 修正後は \`node --check <ファイルパス>\` 等で構文エラーがないか自己検証を行ってください。
+2. GitHub Issue / Pull Request の作成（自律判断）:
+   - バグ追跡やコードレビューが必要と判断した場合、\`gh\` CLI（\`gh issue create\`, \`gh pr create\`）や Git コマンドを自律実行して作成してください。
+3. サーバー再起動（自律判断）:
+   - コード修正をサーバーに反映させるために再起動が必要と判断した場合、\`npm run cli -- server restart\` を実行してサーバーを再起動してください。
+4. セキュリティインシデントへの昇格（自律判断）:
+   - 脆弱性や不正アクセス、機密情報漏えいリスクを検知した場合は \`NMT_SECURITY_ESCALATE: true\` を出力してください。
+5. 報告書の作成:
+   - 自律的に判断・実施したすべてのアクション（原因、修正内容、修正ファイル一覧、PR/Issue作成状況、サーバー再起動状況、セキュリティ評価）をまとめた報告書を作成してください。
 
 【厳格な安全規則】
 - 修正対象はGit追跡対象の既存ファイルのみです。.envやnode_modules、未追跡の機密ファイルは変更禁止です。
 - 不要なファイルの新規作成や削除は行わず、エラー解消に必要な最小限かつクリーンなコード修正を行ってください。
-- 根本原因がコード変更を必要としない場合や、修正による副作用が大きい場合は変更を行わず、調査結果と推奨対応だけを報告してください。
-- 修正完了後、何を変更したのかのサマリーを報告してください。
+- 根本原因がコード変更を必要としない場合や、修正による副作用が大きい場合は無理に変更を行わず、調査結果と推奨対応を報告してください。
 
 【Safety Guardrails設定】
 以下の設定は起動時にserver/.envから読み込まれた現在値です。必ず従ってください。
 ${JSON.stringify(this.guardrails)}
-
+${activeGuidelines ? `\n【開発ガイドライン（ユーザー設定指示）】\n${activeGuidelines}\n` : ''}
 【エラー情報】
 - エラー種別/メッセージ: ${errorRecord.message || '不明'}
 - 発生日時: ${errorRecord.timestamp || new Date().toISOString()}
@@ -159,18 +175,21 @@ ${errorRecord.stack || '(スタックトレースなし)'}
 \`\`\`
 
 【出力形式】
-Markdown形式で回答してください:
-次の行を必ず最初に出力してください。実際に対応が必要な問題を確認した場合だけtrueにしてください。問題がない、誤検知、情報提供や推奨対応だけで済む、またはコード変更が不要な場合は必ずfalseにしてください。
+Markdown形式で報告書を作成してください:
+次の行を必ず最初に出力してください。実際に対応が必要な問題を確認した場合だけtrueにしてください。
 NMT_PROBLEM_DETECTED: true または false
 対応が必要な場合だけtrue、対応不要・誤検知・情報提供だけで済む場合はfalseにしてください。
 NMT_ACTION_REQUIRED: true または false
 次の行を必ず最初に出力してください。実際にコードを変更した場合だけtrue、修正不要または報告のみの場合はfalseにしてください。
 NMT_AUTOFIX_APPLIED: true または false
-最初に、セキュリティインシデントへの昇格が必要かを次の形式で必ず1行出力してください。コード変更を行った場合でも、脆弱性・不正アクセス・認証情報漏えいなどの観点で判断してください。
+セキュリティインシデントへの昇格が必要かを次の形式で必ず1行出力してください。
 NMT_SECURITY_ESCALATE: true または false
+
 ### 1. 原因の分析
-### 2. 実施した修正内容
-### 3. 修正したファイル一覧`
+### 2. 自律的に実施した対応（ファイル修正、PR/Issue作成、サーバー再起動など）
+### 3. 修正したファイル一覧
+### 4. セキュリティ評価
+### 5. 今後の推奨事項・残課題`
       : `【重要：調査・解析専用エージェント（編集・変更禁止）】
 あなたはNyaitterサーバー（Node.js / Express / PostgreSQL / D1 / SPA）の開発者向けエラー解析専門エージェントです。
 現在のプロジェクト内のコードや設定ファイル、関連モジュールを自律的に確認・読み取り・調査してください。
@@ -178,7 +197,7 @@ NMT_SECURITY_ESCALATE: true または false
 【厳格な制限事項】
 - ファイルの編集、書き換え、作成、削除などの変更操作は一切禁止されています。
 - リードオンリーでコードを検索・確認するのみに留めてください。
-
+${activeGuidelines ? `\n【開発ガイドライン（ユーザー設定指示）】\n${activeGuidelines}\n` : ''}
 【エラー情報】
 - エラー種別/メッセージ: ${errorRecord.message || '不明'}
 - 発生日時: ${errorRecord.timestamp || new Date().toISOString()}
@@ -272,32 +291,32 @@ NMT_SECURITY_ESCALATE: true または false
   async _callAi(prompt, taskType, options = {}) {
     const { allowEdit = false } = options;
 
-    // 自動修正（allowEdit = true）の場合は Opencode CLI エージェントを優先実行
-    if (allowEdit) {
-      if (this._isOpencodeAvailable()) {
-        try {
-          const cliResult = await this._callOpencodeAgent(prompt, { allowEdit: true });
-          if (cliResult) {
-            const resolvedName = await this._resolveOpencodeModelName();
-            return {
-              model: `Opencode Agent (${resolvedName})`,
-              content: cliResult,
-              provider: 'opencode-agent',
-            };
-          }
-        } catch (err) {
-          if (err.code === 'ENOENT') {
-            this.opencodeAvailable = false;
-          } else {
-            const reason = err.code === 'ETIMEDOUT'
-              ? 'timeout'
-              : err.code || 'command_failed';
-            console.warn(`[NMT-AI] Opencode agent execution failed (${reason}); auto-fix aborted.`);
-          }
+    if (this._isOpencodeAvailable()) {
+      try {
+        const cliResult = await this._callOpencodeAgent(prompt, { allowEdit });
+        if (cliResult) {
+          const resolvedName = await this._resolveOpencodeModelName();
+          return {
+            model: `Opencode Agent (${resolvedName})`,
+            content: cliResult,
+            provider: 'opencode-agent',
+          };
+        }
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          this.opencodeAvailable = false;
+        } else {
+          const reason = err.code === 'ETIMEDOUT'
+            ? 'timeout'
+            : err.code || 'command_failed';
+          console.warn(`[NMT-AI] Opencode agent execution failed (${reason}); fallback triggered.`);
+        }
+        if (allowEdit) {
+          throw new Error('OpenCode agent is required for auto-fix but could not complete the request');
         }
       }
-
-      throw new Error('OpenCode agent is required for auto-fix but could not complete the request');
+    } else if (allowEdit) {
+      throw new Error('OpenCode agent is required for auto-fix but is not available');
     }
 
     // エラー解析・セキュリティ調査（リードオンリー）は Direct API を優先して高速処理
@@ -360,14 +379,12 @@ NMT_SECURITY_ESCALATE: true または false
   async _callOpencodeAgent(prompt, { allowEdit = false, allowBash = this.allowBash, securityMode = false } = {}) {
     const model = await this._resolveOpencodeModelName();
     
-    // パーミッション構成の決定
+    // パーミッション構成の決定: allowEdit時は自律対応のため full 構成を使用
     let configName = 'opencode-readonly-config.json';
     if (securityMode) {
       configName = 'opencode-security-config.json';
-    } else if (allowEdit && allowBash) {
-      configName = 'opencode-full-config.json';
     } else if (allowEdit) {
-      configName = 'opencode-autofix-config.json';
+      configName = 'opencode-full-config.json';
     } else if (allowBash) {
       configName = 'opencode-bashonly-config.json';
     }
@@ -375,12 +392,15 @@ NMT_SECURITY_ESCALATE: true または false
 
     const opencodeArgs = ['run', '--pure', '-m', model, prompt];
 
+    const githubToken = process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
     const env = {
       ...process.env,
       OPENCODE_CONFIG: configPath,
       GEMINI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.AUTOMOD_API_KEY || '',
       GOOGLE_GENERATIVE_AI_API_KEY: this.geminiApiKey || process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.AUTOMOD_API_KEY || '',
       OPENAI_API_KEY: this.openaiApiKey || process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '',
+      GITHUB_TOKEN: githubToken,
+      GH_TOKEN: githubToken,
     };
     const guardrailEnvNames = {
       restrictToGitTracked: 'NMT_GUARD_GIT_TRACKED',

@@ -29,19 +29,31 @@ class ErrorManager {
     this.aiService = aiService;
     this.notificationManager = notificationManager;
     this.approvalManager = approvalManager;
-    this.securityManager = null;
-    this.autoAnalysis = process.env.NMT_AUTO_ANALYSIS !== undefined ? process.env.NMT_AUTO_ANALYSIS === 'true' : (config.autoAnalysis ?? false);
-    this.autoFix = process.env.NMT_AUTO_FIX !== undefined ? process.env.NMT_AUTO_FIX === 'true' : (config.autoFix ?? false);
-    this.autoIssue = process.env.NMT_AUTO_ISSUE !== undefined ? process.env.NMT_AUTO_ISSUE === 'true' : (config.autoIssue ?? false);
-    this.autoPr = process.env.NMT_AUTO_PR !== undefined ? process.env.NMT_AUTO_PR === 'true' : (config.autoPr ?? false);
+    this.serverControl = null;
+    this.guidelines = config.guidelines || process.env.NMT_GUIDELINES || process.env.NMT_AUTO_GUIDELINES || '';
+    this.mode = (() => {
+      const explicit = process.env.NMT_MODE || config.mode;
+      if (['record_only', 'analysis_only', 'auto'].includes(explicit)) return explicit;
+      if (process.env.NMT_AUTO_FIX === 'true' || config.autoFix) return 'auto';
+      if (process.env.NMT_AUTO_ANALYSIS === 'true' || config.autoAnalysis) return 'analysis_only';
+      return 'record_only';
+    })();
+    this.autoAnalysis = this.mode === 'analysis_only' || this.mode === 'auto';
+    this.autoFix = this.mode === 'auto';
+    this.autoIssue = process.env.NMT_AUTO_ISSUE !== undefined ? process.env.NMT_AUTO_ISSUE === 'true' : (config.autoIssue ?? true);
+    this.autoPr = process.env.NMT_AUTO_PR !== undefined ? process.env.NMT_AUTO_PR === 'true' : (config.autoPr ?? true);
     this.requireApprovalForEdit = process.env.NMT_REQUIRE_APPROVAL_EDIT !== undefined ? process.env.NMT_REQUIRE_APPROVAL_EDIT === 'true' : (config.requireApprovalForEdit ?? false);
-    this.githubToken = process.env.GITHUB_TOKEN || config.githubToken || '';
-    this.githubRepo = process.env.GITHUB_REPO || config.githubRepo || 'Nyaitter/Server';
+    this.githubToken = process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || config.githubToken || '';
+    this.githubRepo = process.env.NMT_GITHUB_REPO || process.env.GITHUB_REPO || config.githubRepo || 'Nyaitter/Server';
     this.errors = [];
     this.dismissedPatterns = new Set();
     this._lastFileMtime = 0;
     this._load();
     this._loadDismissed();
+  }
+
+  setServerControl(serverControl) {
+    this.serverControl = serverControl;
   }
 
   setNotificationManager(notificationManager) {
@@ -287,24 +299,36 @@ class ErrorManager {
         this._broadcast(newRecord, 'error_created');
       }
 
-      const shouldAutoFix = process.env.NMT_AUTO_FIX === 'true' || this.autoFix;
-      const shouldAutoAnalysis = process.env.NMT_AUTO_ANALYSIS === 'true' || this.autoAnalysis;
+      if (!this.aiService) return;
 
-      if ((shouldAutoFix || shouldAutoAnalysis) && this.aiService) {
+      const isAuto = this.mode === 'auto';
+      const isAnalysisOnly = this.mode === 'analysis_only';
+
+      if (isAuto) {
+        const unhandled = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing && !e.fixing && !e.dismissed);
+        for (const record of unhandled) {
+          this.triggerAuto(record.id).catch((e) => console.warn('[NMT-Errors] Auto mode error:', e.message));
+        }
+      } else if (isAnalysisOnly) {
         const unanalyzed = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing && !e.dismissed);
         for (const record of unanalyzed) {
-          const task = shouldAutoFix
-            ? this.triggerAutoFix(record.id)
-            : this.triggerAnalysis(record.id);
-          task.catch((e) => console.warn('[NMT-Errors] Auto analysis/fix error:', e.message));
+          this.triggerAnalysis(record.id).catch((e) => console.warn('[NMT-Errors] Auto analysis error:', e.message));
         }
       }
     } catch (_) {}
   }
 
   updateConfig(config = {}) {
-    if (config.autoAnalysis !== undefined) this.autoAnalysis = Boolean(config.autoAnalysis);
-    if (config.autoFix !== undefined) this.autoFix = Boolean(config.autoFix);
+    if (config.mode !== undefined) {
+      this.mode = config.mode;
+      this.autoFix = this.mode === 'auto';
+      this.autoAnalysis = this.mode === 'analysis_only' || this.mode === 'auto';
+    } else {
+      if (config.autoFix !== undefined) this.autoFix = Boolean(config.autoFix);
+      if (config.autoAnalysis !== undefined) this.autoAnalysis = Boolean(config.autoAnalysis);
+      this.mode = this.autoFix ? 'auto' : this.autoAnalysis ? 'analysis_only' : 'record_only';
+    }
+    if (config.guidelines !== undefined) this.guidelines = String(config.guidelines);
     if (config.autoIssue !== undefined) this.autoIssue = Boolean(config.autoIssue);
     if (config.autoPr !== undefined) this.autoPr = Boolean(config.autoPr);
     if (config.requireApprovalForEdit !== undefined) this.requireApprovalForEdit = Boolean(config.requireApprovalForEdit);
@@ -346,41 +370,34 @@ class ErrorManager {
     } catch (_) {}
   }
 
+  static isSameError(record, message, stack = '') {
+    if (!record) return false;
+    if (record.message === message) return true;
+    if (record.stack && stack && record.stack.trim() === stack.trim()) return true;
+    return false;
+  }
+
   async recordError(err, context = {}) {
     if (!err) return null;
 
     const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
-    if (ErrorManager.isNoiseError(message, typeof err === 'string' ? '' : err.stack, context)) return null;
+    const stack = typeof err === 'string' ? '' : err.stack || '';
 
-    if (ErrorManager.isDismissedByPattern(message, typeof err === 'string' ? '' : err.stack, this.dismissedPatterns)) {
+    if (ErrorManager.isNoiseError(message, stack, context)) return null;
+
+    if (ErrorManager.isDismissedByPattern(message, stack, this.dismissedPatterns)) {
       return null;
     }
 
-    const stack = typeof err === 'string' ? '' : err.stack || '';
-
-    const now = Date.now();
     const existing = this.errors.find(
-      (e) => e.message === message && e.status === 'open' && !e.dismissed && (now - new Date(e.timestamp).getTime()) < 5 * 60 * 1000
+      (e) => (e.status === 'open' || !e.dismissed) && ErrorManager.isSameError(e, message, stack)
     );
 
     if (existing) {
       existing.occurrences = (existing.occurrences || 1) + 1;
       existing.lastOccurredAt = new Date().toISOString();
-      existing.context = { ...existing.context, ...context };
       this._save();
-      this._broadcast(existing, 'error_updated');
-
-      if (!existing.analysis && !existing.analyzing && !existing.dismissed) {
-        const shouldAutoFix = process.env.NMT_AUTO_FIX === 'true' || this.autoFix;
-        const shouldAutoAnalysis = process.env.NMT_AUTO_ANALYSIS === 'true' || this.autoAnalysis;
-        if (shouldAutoFix) {
-          this.triggerAutoFix(existing.id).catch((e) => console.warn('[NMT-Errors] Auto fix error:', e.message));
-        } else if (shouldAutoAnalysis && this.aiService) {
-          this.triggerAnalysis(existing.id).catch((e) => console.warn('[NMT-Errors] Auto AI analysis error:', e.message));
-        }
-      }
-
-      return existing;
+      return null;
     }
 
     const id = `err_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -427,9 +444,9 @@ class ErrorManager {
       });
     }
 
-    if (this.autoFix) {
-      this.triggerAutoFix(id).catch((e) => console.warn('[NMT-Errors] Auto fix error:', e.message));
-    } else if (this.autoAnalysis && this.aiService) {
+    if (this.mode === 'auto') {
+      this.triggerAuto(id).catch((e) => console.warn('[NMT-Errors] Auto mode error:', e.message));
+    } else if (this.mode === 'analysis_only' && this.aiService) {
       this.triggerAnalysis(id).catch((e) => console.warn('[NMT-Errors] Auto AI analysis error:', e.message));
     }
 
@@ -446,7 +463,7 @@ class ErrorManager {
       this._save();
       this._broadcast(record, 'error_updated');
 
-      const result = await this.aiService.analyzeError(record, { autoFix: false });
+      const result = await this.aiService.analyzeError(record, { autoFix: false, guidelines: this.guidelines });
       record.analysis = {
         model: result?.model || 'AI Analyzer',
         content: result?.content || '解析結果を取得できませんでした。',
@@ -493,7 +510,7 @@ class ErrorManager {
     }
   }
 
-  async triggerAutoFix(errorId) {
+  async triggerAuto(errorId) {
     const record = this.errors.find((e) => e.id === errorId);
     if (!record || !this.aiService) return null;
     if (record.fixing || record.dismissed) return null;
@@ -505,7 +522,7 @@ class ErrorManager {
 
       const beforeDiff = await execGit(['diff', '--name-only']).catch(() => '');
 
-      const result = await this.aiService.analyzeError(record, { autoFix: true });
+      const result = await this.aiService.analyzeError(record, { autoFix: true, guidelines: this.guidelines });
 
       record.analysis = {
         model: result.model,
@@ -517,6 +534,10 @@ class ErrorManager {
         ? true
         : ErrorManager.hasNoActionRequired(record.analysis) ? false : null;
       record.problemDetected = ErrorManager.hasDetectedProblem(record.analysis);
+
+      if (ErrorManager.shouldEscalateToSecurity(record.analysis)) {
+        await this.escalateToSecurity(errorId);
+      }
 
       const afterDiff = await execGit(['diff', '--name-only']).catch(() => '');
       const modifiedFiles = afterDiff.split('\n').map((s) => s.trim()).filter(Boolean);
@@ -530,7 +551,7 @@ class ErrorManager {
                 execFile('node', ['--check', path.resolve(PROJECT_ROOT, file)], (err) => (err ? reject(err) : resolve()));
               });
             } catch (err) {
-              console.error(`[NMT-AutoFix] Syntax error in ${file}, rolling back:`, err.message);
+              console.error(`[NMT-Auto] Syntax error in ${file}, rolling back:`, err.message);
               syntaxOk = false;
               break;
             }
@@ -544,16 +565,15 @@ class ErrorManager {
           record.fixed = true;
           record.modifiedFiles = modifiedFiles;
           record.status = 'resolved';
-
-          if (record.actionRequired !== false && this.autoPr && record.problemDetected && this.githubToken && !record.prUrl) {
-            this.createGitHubPullRequest(errorId).catch((e) => console.warn('[NMT-Errors] Auto PR creation error:', e.message));
-          }
         }
       }
 
-      if (record.actionRequired !== false && this.autoIssue && record.problemDetected && this.githubToken && !record.issueUrl) {
-        this.createGitHubIssue(errorId).catch((e) => console.warn('[NMT-Errors] Auto issue creation error:', e.message));
-      }
+      // AIが自律的に作成したPRやIssueのURLがあれば記録に反映
+      const prUrlMatch = record.analysis?.content?.match(/https:\/\/github\.com\/[^\s\)]+\/pull\/\d+/);
+      if (prUrlMatch && !record.prUrl) record.prUrl = prUrlMatch[0];
+
+      const issueUrlMatch = record.analysis?.content?.match(/https:\/\/github\.com\/[^\s\)]+\/issues\/\d+/);
+      if (issueUrlMatch && !record.issueUrl) record.issueUrl = issueUrlMatch[0];
 
       if (record.actionRequired === false) {
         this.dismissError(errorId, 'AI marked as not requiring action');
@@ -563,7 +583,7 @@ class ErrorManager {
       this._broadcast(record, 'error_updated');
       return { analysis: record.analysis, fixed: record.fixed, modifiedFiles: record.modifiedFiles };
     } catch (err) {
-      console.error('[NMT-AutoFix] Failed to execute auto fix:', err);
+      console.error('[NMT-Auto] Failed to execute auto fix:', err);
       record.fixError = err.message;
       this._save();
       throw err;
@@ -572,6 +592,10 @@ class ErrorManager {
       this._save();
       this._broadcast(record, 'error_updated');
     }
+  }
+
+  async triggerAutoFix(errorId) {
+    return this.triggerAuto(errorId);
   }
 
   async createGitHubPullRequest(errorId) {
@@ -671,6 +695,13 @@ ${record.analysis?.content || '(詳細なし)'}
     const record = this.errors.find((e) => e.id === errorId);
     if (!record || !this.githubToken) throw new Error('GitHub token is missing or error not found');
     if (record.issueUrl) return record.issueUrl;
+
+    const existingWithIssue = this.errors.find((e) => e.id !== errorId && e.issueUrl && ErrorManager.isSameError(e, record.message, record.stack));
+    if (existingWithIssue) {
+      record.issueUrl = existingWithIssue.issueUrl;
+      this._save();
+      return record.issueUrl;
+    }
 
     const title = `[AutoError] ${record.message.slice(0, 100)}`;
     const body = `## 🚨 自動検知エラーレポート (NyaitterManagementTool)

@@ -591,13 +591,22 @@ async function loadSettings() {
       api('/settings/models').catch(() => ({ models: [] })),
     ]);
 
-    document.getElementById('setting-auto-analysis').checked = Boolean(s.autoAnalysis);
-    document.getElementById('setting-auto-fix').checked = Boolean(s.autoFix);
-    document.getElementById('setting-allow-bash').checked = Boolean(s.allowBash);
-    document.getElementById('setting-approval-edit').checked = Boolean(s.requireApprovalForEdit);
-    document.getElementById('setting-approval-bash').checked = Boolean(s.requireApprovalForBash);
-    document.getElementById('setting-auto-issue').checked = Boolean(s.autoIssue);
-    document.getElementById('setting-auto-pr').checked = Boolean(s.autoPr);
+    const mode = s.mode || (s.autoFix ? 'auto' : s.autoAnalysis ? 'analysis_only' : 'record_only');
+    if (mode === 'auto') {
+      const el = document.getElementById('mode-auto');
+      if (el) el.checked = true;
+    } else if (mode === 'analysis_only') {
+      const el = document.getElementById('mode-analysis-only');
+      if (el) el.checked = true;
+    } else {
+      const el = document.getElementById('mode-record-only');
+      if (el) el.checked = true;
+    }
+
+    const guidelinesEl = document.getElementById('setting-guidelines');
+    if (guidelinesEl) {
+      guidelinesEl.value = s.guidelines || '';
+    }
 
     // Guardrails 設定の反映
     const g = s.guardrails || {};
@@ -624,6 +633,26 @@ async function loadSettings() {
   }
 }
 
+document.getElementById('settings-preset-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const selectedMode = document.querySelector('input[name="nmt-mode"]:checked')?.value || 'record_only';
+  try {
+    await api('/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: selectedMode,
+        guidelines: document.getElementById('setting-guidelines')?.value.trim() || '',
+        aiModel: document.getElementById('setting-ai-model')?.value,
+        geminiApiKey: document.getElementById('setting-gemini-key')?.value.trim(),
+        openaiApiKey: document.getElementById('setting-openai-key')?.value.trim(),
+      }),
+    });
+    alert('プリセットおよびAI設定を保存しました。');
+  } catch (err) {
+    alert(`Save error: ${err.message}`);
+  }
+});
+
 document.getElementById('settings-guardrails-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
@@ -644,36 +673,12 @@ document.getElementById('settings-guardrails-form')?.addEventListener('submit', 
   }
 });
 
-document.getElementById('settings-ai-form').addEventListener('submit', async (e) => {
+document.getElementById('settings-github-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
     await api('/settings', {
       method: 'POST',
       body: JSON.stringify({
-        autoAnalysis: document.getElementById('setting-auto-analysis').checked,
-        autoFix: document.getElementById('setting-auto-fix').checked,
-        allowBash: document.getElementById('setting-allow-bash').checked,
-        requireApprovalForEdit: document.getElementById('setting-approval-edit').checked,
-        requireApprovalForBash: document.getElementById('setting-approval-bash').checked,
-        aiModel: document.getElementById('setting-ai-model').value,
-        geminiApiKey: document.getElementById('setting-gemini-key').value.trim(),
-        openaiApiKey: document.getElementById('setting-openai-key').value.trim(),
-      }),
-    });
-    alert('AI settings saved.');
-  } catch (err) {
-    alert(`Save error: ${err.message}`);
-  }
-});
-
-document.getElementById('settings-github-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    await api('/settings', {
-      method: 'POST',
-      body: JSON.stringify({
-        autoIssue: document.getElementById('setting-auto-issue').checked,
-        autoPr: document.getElementById('setting-auto-pr').checked,
         githubToken: document.getElementById('setting-github-token').value.trim(),
         githubRepo: document.getElementById('setting-github-repo').value.trim(),
       }),

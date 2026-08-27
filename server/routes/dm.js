@@ -846,14 +846,19 @@ router.post({
 	try {
 		const dm = await db.getGroupDm(dmId);
 		if (!dm) return res.status(404).json({ error: 'DM が見つかりません' });
+		if (!dm.member.includes(userId)) {
+			return res.status(403).json({ error: 'Forbidden' });
+		}
 
-		await db.markDmAsRead(dmId, userId);
-		await publishDmReadEvent(req, dm.member, dmId, userId);
+		await db.markGroupDmRead(dmId, userId);
+		const otherMembers = (dm.member || []).filter((id) => Number(id) !== Number(userId));
+		await publishDmReadEvent(req, otherMembers, dmId, userId);
 		await publishDmUnreadCounts(req, [userId], dmId);
 
 		res.json({ success: true });
 	} catch (err) {
 		console.error('[dm] mark read error:', err);
+		res.status(500).json({ error: '既読処理に失敗しました' });
 	}
 });
 

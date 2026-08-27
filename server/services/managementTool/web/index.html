@@ -173,52 +173,74 @@
       <section id="settings-tab" class="tab-pane">
         <div class="panel">
           <div class="panel-header">
-            <h3>AI Analysis</h3>
+            <h3>動作プリセット (Operating Preset)</h3>
           </div>
-          <form id="settings-ai-form">
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="setting-auto-analysis">
-                Enable Auto Analysis
+          <form id="settings-preset-form">
+            <div class="preset-selector" style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.8rem; margin-bottom:1rem;">
+              <label class="preset-card" id="preset-card-record">
+                <input type="radio" name="nmt-mode" value="record_only" id="mode-record-only">
+                <div class="preset-card-title">📝 記録のみ</div>
+                <div class="preset-card-desc">エラー検知時のログ保存と履歴記録のみ行います。AI解析・自動修正は実行しません。</div>
+              </label>
+              <label class="preset-card" id="preset-card-analysis">
+                <input type="radio" name="nmt-mode" value="analysis_only" id="mode-analysis-only">
+                <div class="preset-card-title">🔍 自動で解析</div>
+                <div class="preset-card-desc">エラー検知時にAIがファイルを読み取り専用で調査し、原因特定と修正案のレポートを作成します。</div>
+              </label>
+              <label class="preset-card" id="preset-card-auto">
+                <input type="radio" name="nmt-mode" value="auto" id="mode-auto">
+                <div class="preset-card-title">⚡ 自動 (Autonomous)</div>
+                <div class="preset-card-desc">AIが問題ファイルの修正、Issue/PR作成、セキュリティ昇格、報告書作成、サーバー再起動まで自律対応します。</div>
               </label>
             </div>
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="setting-auto-fix">
-                Enable Auto Fix (Git Tracked Files)
-              </label>
+
+            <!-- 自動モード時専用：ガイドライン設定 -->
+            <div id="guidelines-group" class="form-group" style="margin-top:1rem;">
+              <label for="setting-guidelines" style="font-weight:600;">開発ガイドライン / AI指示プロンプト (任意)</label>
+              <p style="font-size:11px; color:var(--secondary-text-color); margin-bottom:0.4rem;">
+                自動モードでAIがコード修正や報告書を作成する際に遵守すべきルールや追加指示を設定できます（例: ai-rule.md に準拠、テスト用ファイルを残さない等）。
+              </p>
+              <textarea id="setting-guidelines" class="form-control" rows="4" placeholder="例：ai-rule.md のコーディング規約を厳守すること。テスト用ファイルをリポジトリ内に作成・残置しないこと。"></textarea>
             </div>
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="setting-allow-bash">
-                Enable Bash Access (Terminal / Shell Commands)
-              </label>
-            </div>
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="setting-approval-edit">
-                Require Approval before Code Edit
-              </label>
-            </div>
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="setting-approval-bash">
-                Require Approval before Bash Execution
-              </label>
-            </div>
-            <div class="form-group">
-              <label for="setting-ai-model">Model</label>
+
+            <div class="form-group" style="margin-top:1rem;">
+              <label for="setting-ai-model">AI Model</label>
               <select id="setting-ai-model" class="form-control"></select>
             </div>
-            <div class="form-group">
-              <label for="setting-gemini-key">Gemini API Key</label>
-              <input type="password" id="setting-gemini-key" class="form-control" placeholder="Optional">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.8rem;">
+              <div class="form-group">
+                <label for="setting-gemini-key">Gemini API Key</label>
+                <input type="password" id="setting-gemini-key" class="form-control" placeholder="Optional">
+              </div>
+              <div class="form-group">
+                <label for="setting-openai-key">OpenAI API Key</label>
+                <input type="password" id="setting-openai-key" class="form-control" placeholder="Optional">
+              </div>
             </div>
-            <div class="form-group">
-              <label for="setting-openai-key">OpenAI API Key</label>
-              <input type="password" id="setting-openai-key" class="form-control" placeholder="Optional">
+
+            <button type="submit" class="btn btn-primary btn-sm" style="margin-top:0.5rem;">Save Preset &amp; AI Settings</button>
+          </form>
+        </div>
+
+        <div class="panel" style="margin-top: 1rem;">
+          <div class="panel-header">
+            <h3>GitHub Integration</h3>
+          </div>
+          <form id="settings-github-form">
+            <p style="font-size:11px; color:var(--secondary-text-color); margin-bottom:0.6rem;">
+              GitHub Token を設定すると、自動モード時にAIが自律的に Issue や Pull Request を作成します。
+            </p>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.8rem;">
+              <div class="form-group">
+                <label for="setting-github-token">GitHub Token</label>
+                <input type="password" id="setting-github-token" class="form-control" placeholder="ghp_...">
+              </div>
+              <div class="form-group">
+                <label for="setting-github-repo">Repository (owner/repo)</label>
+                <input type="text" id="setting-github-repo" class="form-control" placeholder="Nyaitter/Server">
+              </div>
             </div>
-            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+            <button type="submit" class="btn btn-primary btn-sm">Save GitHub Settings</button>
           </form>
         </div>
 
@@ -236,7 +258,7 @@
             <div class="form-group">
               <label class="checkbox-inline">
                 <input type="checkbox" id="guard-syntax-validation" checked>
-                Automated syntax validation & rollback
+                Automated syntax validation &amp; rollback
               </label>
             </div>
             <div class="form-group">
@@ -257,7 +279,7 @@
 
         <div class="panel" style="margin-top: 1rem;">
           <div class="panel-header">
-            <h3>Notifications & Alerts</h3>
+            <h3>Notifications &amp; Alerts</h3>
           </div>
           <div>
             <p style="font-size:12px; color:var(--secondary-text-color); margin-bottom:0.6rem;">
@@ -267,35 +289,6 @@
               Enable Browser Notifications
             </button>
           </div>
-        </div>
-
-        <div class="panel" style="margin-top: 1rem;">
-          <div class="panel-header">
-            <h3>GitHub Integration</h3>
-          </div>
-          <form id="settings-github-form">
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="setting-auto-issue">
-                Enable Auto Issue
-              </label>
-            </div>
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="setting-auto-pr">
-                Enable Auto Pull Request (on Auto Fix)
-              </label>
-            </div>
-            <div class="form-group">
-              <label for="setting-github-token">GitHub Token</label>
-              <input type="password" id="setting-github-token" class="form-control" placeholder="ghp_...">
-            </div>
-            <div class="form-group">
-              <label for="setting-github-repo">Repository (owner/repo)</label>
-              <input type="text" id="setting-github-repo" class="form-control" placeholder="Nyaitter/Server">
-            </div>
-            <button type="submit" class="btn btn-primary btn-sm">Save</button>
-          </form>
         </div>
       </section>
 
