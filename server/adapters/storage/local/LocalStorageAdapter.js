@@ -48,22 +48,32 @@ class LocalStorageAdapter extends StorageAdapter {
 
   async upload(params) {
     const { file, fileName, originalFileName, contentType, folder = 'attachments' } = params;
-    const normalizedFolder = normalizeFolder(folder);
     const id = crypto.randomBytes(16).toString('hex');
+    const target = this.createUploadTarget({ fileName, originalFileName, contentType, folder, id });
+    return this.uploadToId({ ...params, id: target.id, key: target.key });
+  }
+
+  createUploadTarget({ fileName, originalFileName, contentType, folder = 'attachments', id = crypto.randomBytes(16).toString('hex') }) {
+    const normalizedFolder = normalizeFolder(folder);
     const finalFileName = createStorageFileName(id, originalFileName || fileName, contentType);
-    const storageKey = `${normalizedFolder}/${finalFileName}`;
-    const { normalizedKey, resolvedPath } = this._resolveStorageKey(storageKey);
+    const { normalizedKey } = this._resolveStorageKey(`${normalizedFolder}/${finalFileName}`);
+    return { id: normalizedKey, key: normalizedKey, url: this._getPublicUrl(normalizedKey) };
+  }
+
+  async uploadToId({ file, id, key }) {
+    const targetKey = key || id;
+    const { normalizedKey, resolvedPath } = this._resolveStorageKey(targetKey);
 
     await this._ensureDir(path.dirname(resolvedPath));
 
     if (Buffer.isBuffer(file)) {
-      await fs.writeFile(resolvedPath, file, { flag: 'wx' });
+      await fs.writeFile(resolvedPath, file);
     } else {
       const chunks = [];
       for await (const chunk of file) {
         chunks.push(chunk);
       }
-      await fs.writeFile(resolvedPath, Buffer.concat(chunks), { flag: 'wx' });
+      await fs.writeFile(resolvedPath, Buffer.concat(chunks));
     }
 
     return {

@@ -64,6 +64,31 @@ class ImageNormalizingStorageAdapter extends StorageAdapter {
     });
   }
 
+  createUploadTarget(params) {
+    return this.storageAdapter.createUploadTarget(params);
+  }
+
+  async uploadToId(params) {
+    const normalizedParams = await normalizeImageUpload(params, this.imageOptions);
+    const userFolder = getUserStorageFolder(normalizedParams.folder);
+    const fileSize = getFileSize(normalizedParams.file);
+    if (!userFolder || fileSize == null || typeof this.storageAdapter.getUsage !== 'function') {
+      return this.storageAdapter.uploadToId(normalizedParams);
+    }
+
+    return this._withFolderUploadLock(userFolder, async () => {
+      const usedBytes = await this.storageAdapter.getUsage(userFolder);
+      let replacedBytes = 0;
+      try {
+        replacedBytes = Number((await this.storageAdapter.read(normalizedParams.id || normalizedParams.key)).buffer?.length) || 0;
+      } catch (_) {}
+      if (usedBytes - replacedBytes + fileSize > this.userQuotaBytes) {
+        throw new StorageQuotaExceededError(this.userQuotaBytes, usedBytes - replacedBytes, fileSize);
+      }
+      return this.storageAdapter.uploadToId(normalizedParams);
+    });
+  }
+
   async delete(fileId) {
     return this.storageAdapter.delete(fileId);
   }

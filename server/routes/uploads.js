@@ -1,4 +1,5 @@
 const api = require('../utils/ApiRegistry');
+const express = require('express');
 const sharp = require('sharp');
 const { requireAuth } = require('../middleware/auth');
 const config = require('../config');
@@ -34,6 +35,84 @@ function decodeBase64File(value) {
 	}
 	return Buffer.from(value, 'base64');
 }
+
+async function resolveUploadUser(req, asUserId) {
+	return assertPostingUserWritable(
+		await resolvePostingUser(req, req.app.locals.dbAdapter, asUserId),
+	);
+}
+
+router.post({
+	path: '/prepare',
+	summary: '直接アップロード用のファイルIDを発行',
+	auth: 'required',
+}, requireAuth, uploadLimiter, async (req, res) => {
+	const storage = getStorageAdapter(req);
+	if (!storage || typeof storage.createUploadTarget !== 'function') {
+		return res.status(501).json({ error: 'Direct upload is not available' });
+	}
+	const { fileName, contentType, as_user_id, replaceId } = req.body || {};
+	if (typeof fileName !== 'string' || !fileName.trim()) {
+		return res.status(400).json({ error: 'fileName is required' });
+	}
+	try {
+		const uploadUser = await resolveUploadUser(req, as_user_id);
+		if (replaceId) {
+			const normalizedReplaceId = normalizeStorageKey(replaceId);
+			if (!isOwnedAttachmentKey(normalizedReplaceId, uploadUser.id)) {
+				return res.status(403).json({ error: 'You can only replace your own attachments' });
+			}
+			const url = typeof storage.getPublicUrl === 'function'
+				? await storage.getPublicUrl(normalizedReplaceId)
+				: null;
+			return res.json({ id: normalizedReplaceId, url, key: normalizedReplaceId, replaced: true });
+		}
+		const target = storage.createUploadTarget({
+			fileName,
+			contentType: /^image\//i.test(String(contentType || '')) ? 'image/webp' : contentType,
+			folder: `attachments/${uploadUser.id}`,
+		});
+		return res.json({ id: target.id, url: target.url, key: target.key });
+	} catch (error) {
+		return res.status(error.statusCode || 500).json({ error: error.message });
+	}
+});
+
+router.put({
+	path: '/*',
+	summary: '発行済みIDへファイル本体を直接アップロード',
+	auth: 'required',
+}, requireAuth, uploadLimiter, express.raw({
+	type: '*/*',
+	limit: `${config.limits.maxFileUploadSizeMB || 5}mb`,
+}), async (req, res) => {
+	const storage = getStorageAdapter(req);
+	if (!storage || typeof storage.uploadToId !== 'function') {
+		return res.status(501).json({ error: 'Direct upload is not available' });
+	}
+	const uploadId = decodeURIComponent(String(req.params[0] || '')).replace(/^\/+/, '');
+	try {
+		const uploadUser = await resolveUploadUser(req, req.headers['x-as-user-id']);
+		if (!isOwnedAttachmentKey(uploadId, uploadUser.id)) {
+			return res.status(403).json({ error: 'You can only upload to your own attachments' });
+		}
+		if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+			return res.status(400).json({ error: 'File body is required' });
+		}
+		const maxSize = (config.limits.maxFileUploadSizeMB || 5) * 1024 * 1024;
+		if (req.body.length > maxSize) return res.status(413).json({ error: `File too large (max ${config.limits.maxFileUploadSizeMB}MB)` });
+		const result = await storage.uploadToId({
+			file: req.body,
+			id: uploadId,
+			key: uploadId,
+			contentType: req.headers['content-type'],
+			fileName: uploadId.split('/').pop(),
+		});
+		return res.json(result);
+	} catch (error) {
+		return res.status(error.statusCode || 500).json({ error: error.message });
+	}
+});
 
 router.get({
 	path: '/preview',

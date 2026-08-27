@@ -12,6 +12,14 @@ class StorageAdapter {
     throw new Error('upload() must be implemented');
   }
 
+  async createUploadTarget(params) {
+    throw new Error('createUploadTarget() must be implemented');
+  }
+
+  async uploadToId(params) {
+    throw new Error('uploadToId() must be implemented');
+  }
+
   /**
    * ファイルを削除する
    * @param {string} fileId - upload時に返したID

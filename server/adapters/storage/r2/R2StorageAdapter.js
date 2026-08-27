@@ -131,11 +131,19 @@ class R2StorageAdapter extends StorageAdapter {
 
   async upload(params) {
     const { file, fileName, originalFileName, contentType, folder = 'attachments' } = params;
-    const normalizedFolder = normalizeFolder(folder);
     const id = crypto.randomBytes(16).toString('hex');
-    const key = normalizeStorageKey(
-      `${normalizedFolder}/${createStorageFileName(id, originalFileName || fileName, contentType)}`,
-    );
+    const target = this.createUploadTarget({ fileName, originalFileName, contentType, folder, id });
+    return this.uploadToId({ ...params, id: target.id, key: target.key });
+  }
+
+  createUploadTarget({ fileName, originalFileName, contentType, folder = 'attachments', id = crypto.randomBytes(16).toString('hex') }) {
+    const normalizedFolder = normalizeFolder(folder);
+    const key = normalizeStorageKey(`${normalizedFolder}/${createStorageFileName(id, originalFileName || fileName, contentType)}`);
+    return { id: key, key, url: this._getPublicUrlForKey(key) };
+  }
+
+  async uploadToId({ file, id, key, contentType }) {
+    const targetKey = normalizeStorageKey(key || id);
 
     // AWS SDK v3 accepts Buffer and Node.js Readable bodies directly. Do not
     // concatenate async iterable chunks here: R2 can receive the stream while
@@ -143,7 +151,7 @@ class R2StorageAdapter extends StorageAdapter {
     await this._send(
       new PutObjectCommand({
         Bucket: this.bucket,
-        Key: key,
+        Key: targetKey,
         Body: file,
         ContentType: contentType || 'application/octet-stream',
         CacheControl: this.cacheControl || undefined,
@@ -152,8 +160,8 @@ class R2StorageAdapter extends StorageAdapter {
       { retry: Buffer.isBuffer(file) || file instanceof Uint8Array },
     );
 
-    const url = this._getPublicUrlForKey(key);
-    return { id: key, url, key };
+    const url = this._getPublicUrlForKey(targetKey);
+    return { id: targetKey, url, key: targetKey };
   }
 
   async delete(fileId) {
