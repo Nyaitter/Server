@@ -45,6 +45,8 @@ class ErrorManager {
     this.requireApprovalForEdit = process.env.NMT_REQUIRE_APPROVAL_EDIT !== undefined ? process.env.NMT_REQUIRE_APPROVAL_EDIT === 'true' : (config.requireApprovalForEdit ?? false);
     this.githubToken = process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || config.githubToken || '';
     this.githubRepo = process.env.NMT_GITHUB_REPO || process.env.GITHUB_REPO || config.githubRepo || 'Nyaitter/Server';
+    this.gitAuthorName = process.env.NMT_GIT_AUTHOR_NAME || process.env.GIT_AUTHOR_NAME || config.gitAuthorName || 'nyantorusabu';
+    this.gitAuthorEmail = process.env.NMT_GIT_AUTHOR_EMAIL || process.env.GIT_AUTHOR_EMAIL || config.gitAuthorEmail || 'nyantorusabu@outlook.jp';
     this.errors = [];
     this.dismissedPatterns = new Set();
     this._lastFileMtime = 0;
@@ -334,6 +336,8 @@ class ErrorManager {
     if (config.requireApprovalForEdit !== undefined) this.requireApprovalForEdit = Boolean(config.requireApprovalForEdit);
     if (config.githubToken !== undefined) this.githubToken = config.githubToken;
     if (config.githubRepo !== undefined) this.githubRepo = config.githubRepo;
+    if (config.gitAuthorName !== undefined) this.gitAuthorName = config.gitAuthorName;
+    if (config.gitAuthorEmail !== undefined) this.gitAuthorEmail = config.gitAuthorEmail;
   }
 
   _load() {
@@ -614,7 +618,8 @@ class ErrorManager {
       await execGit(['add', ...record.modifiedFiles]);
 
       const commitMsg = `Fix(autofix): ${record.message.slice(0, 70)}\n\nAuto-fixed by NyaitterManagementTool for error ID ${record.id}`;
-      await execGit(['commit', '--author=nyantorusabu <nyantorusabu@outlook.jp>', '-m', commitMsg]);
+      const author = `${this.gitAuthorName || 'nyantorusabu'} <${this.gitAuthorEmail || 'nyantorusabu@outlook.jp'}>`;
+      await execGit(['commit', `--author=${author}`, '-m', commitMsg]);
 
       await execGit(['push', '-u', 'origin', branchName, '--force']);
 

@@ -530,6 +530,8 @@ class ManagementToolServer {
         aiModel: process.env.NMT_AI_MODEL || process.env.GEMINI_MODEL || this.aiService.preferredModel || 'auto',
         githubToken: (process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || this.errorManager.githubToken) ? '********' : '',
         githubRepo: process.env.NMT_GITHUB_REPO || process.env.GITHUB_REPO || this.errorManager.githubRepo,
+        gitAuthorName: process.env.NMT_GIT_AUTHOR_NAME || this.errorManager.gitAuthorName || 'nyantorusabu',
+        gitAuthorEmail: process.env.NMT_GIT_AUTHOR_EMAIL || this.errorManager.gitAuthorEmail || 'nyantorusabu@outlook.jp',
         geminiApiKey: (process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || this.aiService.geminiApiKey) ? '********' : '',
         openaiApiKey: (process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || this.aiService.openaiApiKey) ? '********' : '',
       });
@@ -550,6 +552,8 @@ class ManagementToolServer {
         aiModel,
         githubToken,
         githubRepo,
+        gitAuthorName,
+        gitAuthorEmail,
         geminiApiKey,
         openaiApiKey,
       } = req.body;
@@ -594,6 +598,8 @@ class ManagementToolServer {
         envMap.NMT_GITHUB_TOKEN = githubToken;
       }
       if (githubRepo !== undefined) envMap.NMT_GITHUB_REPO = githubRepo;
+      if (gitAuthorName !== undefined) envMap.NMT_GIT_AUTHOR_NAME = gitAuthorName;
+      if (gitAuthorEmail !== undefined) envMap.NMT_GIT_AUTHOR_EMAIL = gitAuthorEmail;
       if (geminiApiKey && geminiApiKey !== '********') {
         envMap.NMT_GEMINI_API_KEY = geminiApiKey;
       }
@@ -622,6 +628,8 @@ class ManagementToolServer {
       if (aiModel !== undefined) newSettings.aiModel = aiModel;
       if (githubToken && githubToken !== '********') newSettings.githubToken = githubToken;
       if (githubRepo !== undefined) newSettings.githubRepo = githubRepo;
+      if (gitAuthorName !== undefined) newSettings.gitAuthorName = gitAuthorName;
+      if (gitAuthorEmail !== undefined) newSettings.gitAuthorEmail = gitAuthorEmail;
       if (geminiApiKey && geminiApiKey !== '********') newSettings.geminiApiKey = geminiApiKey;
       if (openaiApiKey && openaiApiKey !== '********') newSettings.openaiApiKey = openaiApiKey;
 

@@ -628,6 +628,12 @@ async function loadSettings() {
     document.getElementById('setting-openai-key').value = s.openaiApiKey || '';
     document.getElementById('setting-github-token').value = s.githubToken || '';
     document.getElementById('setting-github-repo').value = s.githubRepo || '';
+    if (document.getElementById('setting-git-author-name')) {
+      document.getElementById('setting-git-author-name').value = s.gitAuthorName || '';
+    }
+    if (document.getElementById('setting-git-author-email')) {
+      document.getElementById('setting-git-author-email').value = s.gitAuthorEmail || '';
+    }
   } catch (e) {
     console.error('Settings load error:', e);
   }
@@ -681,9 +687,11 @@ document.getElementById('settings-github-form')?.addEventListener('submit', asyn
       body: JSON.stringify({
         githubToken: document.getElementById('setting-github-token').value.trim(),
         githubRepo: document.getElementById('setting-github-repo').value.trim(),
+        gitAuthorName: document.getElementById('setting-git-author-name')?.value.trim(),
+        gitAuthorEmail: document.getElementById('setting-git-author-email')?.value.trim(),
       }),
     });
-    alert('GitHub settings saved.');
+    alert('GitHub & Git 設定を保存しました。');
   } catch (err) {
     alert(`Save error: ${err.message}`);
   }

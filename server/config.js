@@ -298,6 +298,8 @@ const config = {
     },
     githubToken: process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || get('nmt.githubToken', ''),
     githubRepo: process.env.NMT_GITHUB_REPO || get('nmt.githubRepo', 'Nyaitter/Server'),
+    gitAuthorName: process.env.NMT_GIT_AUTHOR_NAME || process.env.GIT_AUTHOR_NAME || get('nmt.gitAuthorName', 'nyantorusabu'),
+    gitAuthorEmail: process.env.NMT_GIT_AUTHOR_EMAIL || process.env.GIT_AUTHOR_EMAIL || get('nmt.gitAuthorEmail', 'nyantorusabu@outlook.jp'),
     geminiApiKey: process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || get('nmt.geminiApiKey', ''),
     openaiApiKey: process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || get('nmt.openaiApiKey', ''),
     aiModel: process.env.NMT_AI_MODEL || get('nmt.aiModel', 'auto'),

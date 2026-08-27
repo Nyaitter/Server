@@ -224,11 +224,11 @@
 
         <div class="panel" style="margin-top: 1rem;">
           <div class="panel-header">
-            <h3>GitHub Integration</h3>
+            <h3>GitHub &amp; Git Integration</h3>
           </div>
           <form id="settings-github-form">
             <p style="font-size:11px; color:var(--secondary-text-color); margin-bottom:0.6rem;">
-              GitHub Token を設定すると、自動モード時にAIが自律的に Issue や Pull Request を作成します。
+              GitHub Token を設定すると、自動モード時にAIが自律的に Issue や Pull Request を作成します。また、コミット時のユーザー情報（Author）を設定できます。
             </p>
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.8rem;">
               <div class="form-group">
@@ -240,7 +240,17 @@
                 <input type="text" id="setting-github-repo" class="form-control" placeholder="Nyaitter/Server">
               </div>
             </div>
-            <button type="submit" class="btn btn-primary btn-sm">Save GitHub Settings</button>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.8rem; margin-top:0.6rem;">
+              <div class="form-group">
+                <label for="setting-git-author-name">Commit Author Name</label>
+                <input type="text" id="setting-git-author-name" class="form-control" placeholder="nyantorusabu">
+              </div>
+              <div class="form-group">
+                <label for="setting-git-author-email">Commit Author Email</label>
+                <input type="email" id="setting-git-author-email" class="form-control" placeholder="nyantorusabu@outlook.jp">
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" style="margin-top:0.5rem;">Save GitHub &amp; Git Settings</button>
           </form>
         </div>
 
