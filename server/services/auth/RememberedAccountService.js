@@ -79,7 +79,12 @@ function rememberAccountSession(req, res, session) {
 }
 
 const rememberedAccountCache = new Map();
-const REMEMBERED_CACHE_TTL_MS = 15000;
+const REMEMBERED_CACHE_TTL_MS = 120000;
+const MAX_REMEMBERED_CACHE_ENTRIES = 1024;
+
+SessionManager.onInvalidate(() => {
+  rememberedAccountCache.clear();
+});
 
 async function getValidRememberedAccounts(req, db) {
   const remembered = readRememberedAccounts(req);
@@ -130,6 +135,9 @@ async function getValidRememberedAccounts(req, db) {
     accounts: valid,
     expiresAt: now + REMEMBERED_CACHE_TTL_MS,
   });
+  while (rememberedAccountCache.size > MAX_REMEMBERED_CACHE_ENTRIES) {
+    rememberedAccountCache.delete(rememberedAccountCache.keys().next().value);
+  }
 
   return valid;
 }

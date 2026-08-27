@@ -26,6 +26,7 @@ const {
   getImposterRole,
   canOperateImposter,
   listAccessibleImposters,
+  listAccessibleImpostersForOperators,
   listOwnedImposters,
 } = require('../services/ImposterService');
 const {
@@ -756,13 +757,14 @@ router.get({
     const accounts = await getValidRememberedAccounts(req, db);
     setRememberedAccountsCookie(res, accounts);
     const activeToken = getCookieValue(req, 'nyaitter_session');
-    const accessibleGroups = await Promise.all(
-      accounts.map((account) => listAccessibleImposters(db, account.userId)),
+    const accessibleByOperator = await listAccessibleImpostersForOperators(
+      db,
+      accounts.map((account) => account.userId),
     );
     const automaticallyAccessible = new Map();
     for (let index = 0; index < accounts.length; index += 1) {
       const account = accounts[index];
-      for (const imposter of accessibleGroups[index]) {
+      for (const imposter of accessibleByOperator.get(account.userId) || []) {
         if (!automaticallyAccessible.has(imposter.id)) {
           automaticallyAccessible.set(imposter.id, {
             user: imposter,
