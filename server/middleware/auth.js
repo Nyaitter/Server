@@ -363,7 +363,7 @@ function flexibleCors(req, res, next) {
 
   res.header(
     'Access-Control-Allow-Headers',
-    'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Api-Key',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Api-Key, X-As-User-Id',
   );
   res.header(
     'Access-Control-Allow-Methods',
