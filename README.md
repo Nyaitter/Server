@@ -46,6 +46,12 @@ npm start
 
 初期状態ではデータが一時保存（メモリ）のため、サーバーを再起動するとデータが消えます。データを保存して本格的に運用する手順は `server/README.md` を確認してください。
 
+## クライアント情報と接続先
+
+Web画面の名前、製作者、リポジトリ、APIの接続先などは `page/manifest.json` で確認できます。接続先を変更する場合は、`api_url` を設定してください。
+
+同じ項目を複数の場所で設定した場合は、サーバーが返す ServerStatus、`page/manifest.json`、`page/config.js` の順で優先されます。通常は `manifest.json` を変更し、`config.js` は予備の設定として使用します。
+
 ## ライセンス
 
 MIT ライセンスです。著作権表示を残すことで、誰でも自由に利用・改変・再配布できます。詳細は `LICENSE` を確認してください。
@@ -57,4 +63,3 @@ MIT ライセンスです。著作権表示を残すことで、誰でも自由�
 - データの保存先の選び方: [`server/adapters/README.md`](./server/adapters/README.md)
 - 各種セットアップガイド: [`server/help/README.md`](./server/help/README.md)
 - 外部アプリ連携機能: [`server/help/nyaitter-auth.md`](./server/help/nyaitter-auth.md)
-
