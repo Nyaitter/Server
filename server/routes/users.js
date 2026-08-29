@@ -492,9 +492,13 @@ router.get({
 			let groups = [];
 			let targetGroups = null;
 			if (viewerId != null) {
+				const targetGroupsPromise = db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 });
+				const viewerGroupsPromise = viewerId === userId
+					? targetGroupsPromise
+					: db.getUserGroups(viewerId, { status: 'active', limit: 200, offset: 0 });
 				const [viewerGroups, fetchedTargetGroups] = await Promise.all([
-					db.getUserGroups(viewerId, { status: 'active', limit: 200, offset: 0 }),
-					db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 }),
+					viewerGroupsPromise,
+					targetGroupsPromise,
 				]);
 				targetGroups = fetchedTargetGroups;
 				const targetGroupIds = new Set(targetGroups.map((group) => String(group.id)));
@@ -819,11 +823,11 @@ router.get({
 		const target = await db.getUserById(userId);
 		if (!target) return res.status(404).json({ error: 'User not found' });
 		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'followers', req.user?.visibilityUser || req.user)) return sendPrivateProfileSection(res, 'followers');
-		const followers = await db.getFollowers(userId, offset + limit + 1);
-		const slice = followers.slice(offset, offset + limit);
+		const followers = await db.getFollowers(userId, limit + 1, offset);
+		const slice = followers.slice(0, limit);
 		res.json({
 			followers: slice.map((u) => serializeUserBrief(u)),
-			has_more: followers.length > offset + limit,
+			has_more: followers.length > limit,
 		});
 	} catch (err) {
 		console.error('[users] followers error:', err);
@@ -849,11 +853,11 @@ router.get({
 		const target = await db.getUserById(userId);
 		if (!target) return res.status(404).json({ error: 'User not found' });
 		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'following', req.user?.visibilityUser || req.user)) return sendPrivateProfileSection(res, 'following');
-		const following = await db.getFollowing(userId, offset + limit + 1);
-		const slice = following.slice(offset, offset + limit);
+		const following = await db.getFollowing(userId, limit + 1, offset);
+		const slice = following.slice(0, limit);
 		res.json({
 			following: slice.map((u) => serializeUserBrief(u)),
-			has_more: following.length > offset + limit,
+			has_more: following.length > limit,
 		});
 	} catch (err) {
 		console.error('[users] following error:', err);

@@ -39,9 +39,12 @@ async function getAuthorsById(db, posts) {
 	if (ids.length === 0) return new Map();
 
 	let authors = [];
-	if (typeof db.getUsersByIds === 'function') {
+	const getAuthors = typeof db.getPostAuthorsByIds === 'function'
+		? db.getPostAuthorsByIds.bind(db)
+		: db.getUsersByIds?.bind(db);
+	if (getAuthors) {
 		try {
-			authors = (await db.getUsersByIds(ids)).filter(Boolean);
+			authors = (await getAuthors(ids)).filter(Boolean);
 		} catch (_) {}
 	}
 

@@ -12,11 +12,14 @@ async function createNotificationIfAllowed(db, notificationData) {
 	const recipientId = normalizeUserId(notificationData?.userId);
 	const senderId = normalizeUserId(notificationData?.fromUserId);
 	if (recipientId != null && senderId != null && recipientId !== senderId) {
-		if (await hasBlockRelationship(db, recipientId, senderId)) {
+		const [blocked, sender] = await Promise.all([
+			hasBlockRelationship(db, recipientId, senderId),
+			db.getUserById(senderId),
+		]);
+		if (blocked) {
 			return null;
 		}
 
-		const sender = await db.getUserById(senderId);
 		if (sender?.shadow && !(await db.isFollowing(recipientId, senderId))) {
 			return null;
 		}

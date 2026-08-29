@@ -612,6 +612,15 @@ class D1Adapter extends DatabaseAdapter {
 		return Array.isArray(users) ? users.map(normalizeUser).filter(Boolean) : [];
 	}
 
+	async getPostAuthorsByIds(userIds) {
+		const ids = this._normalizeIds(userIds);
+		if (ids.length === 0) return [];
+		const users = await this._read('/users/batch', {
+			body: { ids, projection: 'post_author' },
+		});
+		return Array.isArray(users) ? users.map(normalizeUser).filter(Boolean) : [];
+	}
+
 	async getAllUsers() {
 		const users = await this._read('/users', { cacheSeconds: 0 });
 		return Array.isArray(users) ? users.map(normalizeUser).filter(Boolean) : [];
@@ -690,16 +699,18 @@ class D1Adapter extends DatabaseAdapter {
 		return typeof result === 'boolean' ? result : !!result?.success;
 	}
 
-	async getFollowing(userId, limit = 100) {
+	async getFollowing(userId, limit = 100, offset = 0) {
 		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/following`, {
 			limit: this._limit(limit, 100, 500),
+			offset: this._offset(offset),
 		}), { cacheSeconds: 0 });
 		return Array.isArray(list) ? list : [];
 	}
 
-	async getFollowers(userId, limit = 100) {
+	async getFollowers(userId, limit = 100, offset = 0) {
 		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/followers`, {
 			limit: this._limit(limit, 100, 500),
+			offset: this._offset(offset),
 		}), { cacheSeconds: 0 });
 		return Array.isArray(list) ? list : [];
 	}
@@ -712,6 +723,17 @@ class D1Adapter extends DatabaseAdapter {
 	async getFollowerCount(userId) {
 		const res = await this._read(`/users/${requireId(userId, 'userId')}/followers/count`, { cacheSeconds: 0 });
 		return Number(res?.count ?? res ?? 0);
+	}
+
+	async getPublicProfileStats(userId) {
+		const stats = await this._read(`/users/${requireId(userId, 'userId')}/profile-stats`, { cacheSeconds: 0 });
+		return {
+			followingCount: Number(stats?.following_count ?? stats?.followingCount ?? 0),
+			followerCount: Number(stats?.follower_count ?? stats?.followerCount ?? 0),
+			postCount: Number(stats?.post_count ?? stats?.postCount ?? 0),
+			mediaCount: Number(stats?.media_count ?? stats?.mediaCount ?? 0),
+			pinnedPostId: stats?.pinned_post_id ?? stats?.pinnedPostId ?? null,
+		};
 	}
 
 	async getFollowIds(userId) {
@@ -1018,14 +1040,12 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	async getTimelinePostIds({ tab = 'foryou', followIds = [], viewerId = null, limit = 30, offset = 0, beforeId = null } = {}) {
-		let resolvedFollowIds = this._normalizeIds(followIds);
-		if (tab === 'following' && resolvedFollowIds.length === 0 && viewerId != null) {
-			const followingUsers = await this.getFollowing(viewerId, 1000);
-			resolvedFollowIds = this._normalizeIds((followingUsers || []).map((u) => u.id));
-		}
+		const resolvedFollowIds = this._normalizeIds(followIds);
 		const body = {
 			tab: String(tab),
 			followIds: resolvedFollowIds,
+			viewerId: viewerId == null ? null : requireId(viewerId, 'viewerId'),
+			includePosts: true,
 			limit: this._limit(limit, 30),
 			offset: this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
@@ -1039,6 +1059,7 @@ class D1Adapter extends DatabaseAdapter {
 			limit: this._limit(limit, 30),
 			offset: this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
+			includePosts: 'true',
 		}), { cacheSeconds: 0 });
 	}
 
@@ -1048,15 +1069,18 @@ class D1Adapter extends DatabaseAdapter {
 			limit: this._limit(limit, 30),
 			offset: this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
+			includePosts: 'true',
 		}), { cacheSeconds: 0 });
 	}
 
-	async searchPostIds(query, limit = 30, offset = 0, beforeId = null) {
+	async searchPostIds(query, limit = 30, offset = 0, beforeId = null, viewerId = null) {
 		return this._read(this._query('/posts/search/ids', {
 			q: String(query || ''),
+			viewerId: viewerId == null ? null : requireId(viewerId, 'viewerId'),
 			limit: this._limit(limit, 30),
 			offset: this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
+			includePosts: 'true',
 		}), { cacheSeconds: 0 });
 	}
 
@@ -1244,9 +1268,17 @@ class D1Adapter extends DatabaseAdapter {
 		return Number(res?.count ?? res ?? 0);
 	}
 
-	async getGroupDmsForUser(userId) {
-		const list = await this._read(`/users/${requireId(userId, 'userId')}/group-dms`, { cacheSeconds: 0 });
+	async getGroupDmsForUser(userId, { limit = 50, offset = 0 } = {}) {
+		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/group-dms`, {
+			limit: this._limit(limit, 50),
+			offset: this._offset(offset),
+		}), { cacheSeconds: 0 });
 		return Array.isArray(list) ? list.map((item) => serializeGroupDm(item, userId)) : [];
+	}
+
+	async getGroupDmVisibilityDataForUser(userId) {
+		const list = await this._read(`/users/${requireId(userId, 'userId')}/group-dms/visibility`, { cacheSeconds: 0 });
+		return Array.isArray(list) ? list : [];
 	}
 
 	async getGroupDm(dmId) {

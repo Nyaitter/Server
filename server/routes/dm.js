@@ -2,6 +2,7 @@ const api = require('../utils/ApiRegistry');
 const crypto = require('crypto');
 const { requireAuth } = require('../middleware/auth');
 const { hasBlockRelationship } = require('../utils/blockRelationship');
+const { normalizeBlockList } = require('../utils/blockList');
 const { getVisibleDmUnreadCount } = require('../services/DmVisibilityService');
 const config = require('../config');
 const { isWithinRange, describeIntegerRange } = require('../utils/settingFormats');
@@ -29,13 +30,22 @@ async function publishDmMessage(req, userIds, dmId, message, sender = null) {
 
 	const db = getDbAdapter(req);
 	const senderId = Number(message?.userid);
+	let blockedUserIds = new Set();
+	const recipientIds = new Set((userIds || []).map(Number));
+	if (Number.isInteger(senderId) && senderId >= 0) {
+		const memberIds = [senderId, ...recipientIds];
+		let usersById = null;
+		try {
+			const users = db.getUsersByIds
+				? await db.getUsersByIds(memberIds)
+				: await Promise.all(memberIds.map((id) => db.getUserById(id)));
+			usersById = new Map((users || []).filter(Boolean).map((user) => [Number(user.id), user]));
+		} catch (_) {}
+		blockedUserIds = await getBlockedDmMemberIds(db, senderId, [...recipientIds], usersById);
+	}
 	for (const userId of new Set((userIds || []).map(Number))) {
 		if (!Number.isInteger(userId) || userId < 0) continue;
-		if (
-			Number.isInteger(senderId) &&
-			userId !== senderId &&
-			await hasBlockRelationship(db, userId, senderId)
-		) {
+		if (blockedUserIds.has(userId)) {
 			continue;
 		}
 		try {
@@ -50,14 +60,14 @@ async function publishDmUnreadCounts(req, userIds, dmId = null) {
 	const realtime = req.app.locals.realtime;
 	if (!realtime) return;
 
-	for (const userId of new Set((userIds || []).map(Number))) {
-		if (!Number.isInteger(userId) || userId < 0) continue;
+	await Promise.all([...new Set((userIds || []).map(Number))].map(async (userId) => {
+		if (!Number.isInteger(userId) || userId < 0) return;
 		try {
 			await realtime.publishDmUnreadCount(userId, getDbAdapter(req), dmId);
 		} catch (error) {
 			console.warn('[dm] unread realtime delivery failed:', error.message);
 		}
-	}
+	}));
 }
 
 async function publishDmReadEvent(req, userIds, dmId, readerId) {
@@ -92,11 +102,9 @@ function serializeDmMember(user) {
 }
 
 async function buildDmPayload(db, dms, userId, { includePosts = true } = {}) {
-	const records = await Promise.all(
-		(dms || []).map((dm) => serializeGroupDm(db, dm, userId, { includePosts })),
-	);
-	const memberIds = [...new Set(records.flatMap((dm) => dm.member || []))];
+	const memberIds = [...new Set((dms || []).flatMap((dm) => dm.member || []))];
 	let users = [];
+	let usersFetchSucceeded = true;
 	if (memberIds.length > 0) {
 		try {
 			users = db.getUsersByIds
@@ -104,8 +112,15 @@ async function buildDmPayload(db, dms, userId, { includePosts = true } = {}) {
 				: await Promise.all(memberIds.map((id) => db.getUserById(id)));
 		} catch (_) {
 			users = [];
+			usersFetchSucceeded = false;
 		}
 	}
+	const usersById = usersFetchSucceeded
+		? new Map((users || []).filter(Boolean).map((user) => [Number(user.id), user]))
+		: null;
+	const records = await Promise.all(
+		(dms || []).map((dm) => serializeGroupDm(db, dm, userId, { includePosts, usersById })),
+	);
 	return {
 		dm: records,
 		members: (users || []).filter(Boolean).map(serializeDmMember),
@@ -238,10 +253,17 @@ function validateMessageHistoryUpdate(existingMessages, requestedMessages, userI
 	}
 }
 
-async function getBlockedDmMemberIds(db, userId, memberIds) {
+async function getBlockedDmMemberIds(db, userId, memberIds, usersById = null) {
 	const blockedMemberIds = new Set();
+	const userCache = usersById instanceof Map ? usersById : null;
 	for (const memberId of new Set((memberIds || []).map(Number))) {
 		if (memberId === Number(userId)) continue;
+		if (userCache) {
+			const userBlocksMember = normalizeBlockList(userCache.get(Number(userId))?.block, userId).includes(memberId);
+			const memberBlocksUser = normalizeBlockList(userCache.get(memberId)?.block, memberId).includes(Number(userId));
+			if (userBlocksMember || memberBlocksUser) blockedMemberIds.add(memberId);
+			continue;
+		}
 		if (await hasBlockRelationship(db, userId, memberId)) {
 			blockedMemberIds.add(memberId);
 		}
@@ -251,6 +273,26 @@ async function getBlockedDmMemberIds(db, userId, memberIds) {
 
 async function hasBlockedDmMemberPair(db, memberIds) {
 	const uniqueMemberIds = [...new Set((memberIds || []).map(Number))];
+	let usersById = null;
+	try {
+		const users = db.getUsersByIds
+			? await db.getUsersByIds(uniqueMemberIds)
+			: await Promise.all(uniqueMemberIds.map((id) => db.getUserById(id)));
+		usersById = new Map((users || []).filter(Boolean).map((user) => [Number(user.id), user]));
+	} catch (_) {}
+	if (usersById) {
+		for (let index = 0; index < uniqueMemberIds.length; index += 1) {
+			const firstId = uniqueMemberIds[index];
+			const firstBlocks = new Set(normalizeBlockList(usersById.get(firstId)?.block, firstId));
+			for (let otherIndex = index + 1; otherIndex < uniqueMemberIds.length; otherIndex += 1) {
+				const secondId = uniqueMemberIds[otherIndex];
+				if (firstBlocks.has(secondId) || normalizeBlockList(usersById.get(secondId)?.block, secondId).includes(firstId)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
 	for (let index = 0; index < uniqueMemberIds.length; index += 1) {
 		for (let otherIndex = index + 1; otherIndex < uniqueMemberIds.length; otherIndex += 1) {
 			if (await hasBlockRelationship(db, uniqueMemberIds[index], uniqueMemberIds[otherIndex])) {
@@ -277,8 +319,8 @@ function normalizeDmMemberIds(value) {
 		.filter((id) => Number.isInteger(id) && id >= 0);
 }
 
-async function serializeGroupDm(db, dm, userId, { includePosts = true } = {}) {
-	const blockedMemberIds = await getBlockedDmMemberIds(db, userId, dm.member || []);
+async function serializeGroupDm(db, dm, userId, { includePosts = true, usersById = null } = {}) {
+	const blockedMemberIds = await getBlockedDmMemberIds(db, userId, dm.member || [], usersById);
 	const rawMessages = dm.post ? dm.post.slice() : [];
 	const unreadMap = dm.unread || {};
 	const totalRawCount = rawMessages.length;

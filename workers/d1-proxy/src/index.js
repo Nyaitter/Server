@@ -465,9 +465,45 @@ function normalizePostRow(row) {
 		reply_to: row.reply_to || null,
 		repostTo: row.repost_to || null,
 		repost_to: row.repost_to || null,
+		...(row.like_count !== undefined ? { like_count: Number(row.like_count) || 0 } : {}),
+		...(row.star_count !== undefined ? { star_count: Number(row.star_count) || 0 } : {}),
+		...(row.repost_count !== undefined ? { repost_count: Number(row.repost_count) || 0 } : {}),
+		...(row.reply_count !== undefined ? { reply_count: Number(row.reply_count) || 0 } : {}),
+		...(row.liked_by_me !== undefined ? { liked_by_me: Boolean(row.liked_by_me) } : {}),
+		...(row.starred_by_me !== undefined ? { starred_by_me: Boolean(row.starred_by_me) } : {}),
 		createdAt: row.created_at,
 		created_at: row.created_at,
 	};
+}
+
+// 一覧レスポンス用。投稿本体を返す場合だけ、本人リアクションを1クエリで付与する。
+// 件数はpostsの非正規化カウンターをそのまま利用し、一覧ごとの集計クエリを発生させない。
+async function attachInlinePostMetrics(db, rows, currentUserId) {
+	const posts = Array.isArray(rows) ? rows : [];
+	const viewerId = Number(currentUserId);
+	if (!Number.isSafeInteger(viewerId) || viewerId <= 0 || posts.length === 0) return posts;
+
+	const ids = [...new Set(posts.map((row) => Number(row?.id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+	if (ids.length === 0) return posts;
+	const placeholders = ids.map(() => '?').join(', ');
+	const { results } = await db.prepare(
+		`SELECT post_id, 'like' AS kind FROM likes
+		 WHERE user_id = ? AND post_id IN (${placeholders})
+		 UNION ALL
+		 SELECT post_id, 'star' AS kind FROM stars
+		 WHERE user_id = ? AND post_id IN (${placeholders})`
+	).bind(viewerId, ...ids, viewerId, ...ids).all();
+	const liked = new Set();
+	const starred = new Set();
+	for (const row of results || []) {
+		if (row.kind === 'like') liked.add(Number(row.post_id));
+		if (row.kind === 'star') starred.add(Number(row.post_id));
+	}
+	return posts.map((row) => ({
+		...row,
+		liked_by_me: liked.has(Number(row.id)),
+		starred_by_me: starred.has(Number(row.id)),
+	}));
 }
 
 async function adjustUserKeywordAffinitiesForTags(db, userId, tags, delta) {
@@ -910,8 +946,11 @@ export default {
 				if (ids.length === 0) return json([]);
 
 				const placeholders = ids.map(() => '?').join(', ');
+				const columns = body.projection === 'post_author'
+					? 'id, auth_provider, external_id, name, scid, icon_data, verify, admin, settings, block'
+					: '*';
 				const { results } = await db.prepare(
-					`SELECT * FROM users WHERE id IN (${placeholders})`
+					`SELECT ${columns} FROM users WHERE id IN (${placeholders})`
 				).bind(...ids).all();
 
 				return json((results || []).map(normalizeUserRow));
@@ -1423,22 +1462,24 @@ export default {
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/following$/)) {
 				const userId = Number(pathname.split('/')[2]);
 				const limit = Math.min(Number(url.searchParams.get('limit') || 100), 500);
+				const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
 				const { results } = await db.prepare(
 					`SELECT u.id, u.name, u.scid, u.handle, u.icon_data
 					 FROM follows f JOIN users u ON u.id = f.following_id
-					 WHERE f.follower_id = ? ORDER BY f.created_at DESC LIMIT ?`
-				).bind(userId, limit).all();
+					 WHERE f.follower_id = ? ORDER BY f.created_at DESC LIMIT ? OFFSET ?`
+				).bind(userId, limit, offset).all();
 				return json(results || []);
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/followers$/)) {
 				const userId = Number(pathname.split('/')[2]);
 				const limit = Math.min(Number(url.searchParams.get('limit') || 100), 500);
+				const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
 				const { results } = await db.prepare(
 					`SELECT u.id, u.name, u.scid, u.handle, u.icon_data
 					 FROM follows f JOIN users u ON u.id = f.follower_id
-					 WHERE f.following_id = ? ORDER BY f.created_at DESC LIMIT ?`
-				).bind(userId, limit).all();
+					 WHERE f.following_id = ? ORDER BY f.created_at DESC LIMIT ? OFFSET ?`
+				).bind(userId, limit, offset).all();
 				return json(results || []);
 			}
 
@@ -1452,6 +1493,27 @@ export default {
 				const userId = Number(pathname.split('/')[2]);
 				const row = await db.prepare('SELECT COUNT(*) as count FROM follows WHERE following_id = ?').bind(userId).first();
 				return json({ count: Number(row?.count || 0) });
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/profile-stats$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const row = await db.prepare(
+					`SELECT
+						(SELECT COUNT(*) FROM follows WHERE follower_id = ?) AS following_count,
+						(SELECT COUNT(*) FROM follows WHERE following_id = ?) AS follower_count,
+						(SELECT COUNT(*) FROM posts WHERE user_id = ?) AS post_count,
+						(SELECT COUNT(*) FROM posts
+						 WHERE user_id = ?
+						   AND json_array_length(CASE WHEN json_valid(attachments) = 1 THEN attachments ELSE '[]' END) > 0) AS media_count,
+						(SELECT post_id FROM pinned_posts WHERE user_id = ? ORDER BY created_at DESC LIMIT 1) AS pinned_post_id`,
+				).bind(userId, userId, userId, userId, userId).first();
+				return json({
+					following_count: Number(row?.following_count || 0),
+					follower_count: Number(row?.follower_count || 0),
+					post_count: Number(row?.post_count || 0),
+					media_count: Number(row?.media_count || 0),
+					pinned_post_id: row?.pinned_post_id == null ? null : Number(row.pinned_post_id),
+				});
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/following\/ids$/)) {
@@ -1762,32 +1824,64 @@ export default {
 				const currentUserId = body.currentUserId != null ? Number(body.currentUserId) : null;
 				if (ids.length === 0) return json([]);
 
-				const placeholders = ids.map(() => '?').join(', ');
-				const [likeRes, starRes, repostRes, replyRes, myLikesRes, myStarsRes] = await Promise.all([
-					db.prepare(`SELECT post_id, COUNT(*) as count FROM likes WHERE post_id IN (${placeholders}) GROUP BY post_id`).bind(...ids).all(),
-					db.prepare(`SELECT post_id, COUNT(*) as count FROM stars WHERE post_id IN (${placeholders}) GROUP BY post_id`).bind(...ids).all(),
-					db.prepare(`SELECT post_id, COUNT(*) as count FROM reposts WHERE post_id IN (${placeholders}) GROUP BY post_id`).bind(...ids).all(),
-					db.prepare(`SELECT reply_to as post_id, COUNT(*) as count FROM posts WHERE reply_to IN (${placeholders}) GROUP BY reply_to`).bind(...ids).all(),
-					currentUserId ? db.prepare(`SELECT post_id FROM likes WHERE user_id = ? AND post_id IN (${placeholders})`).bind(currentUserId, ...ids).all() : { results: [] },
-					currentUserId ? db.prepare(`SELECT post_id FROM stars WHERE user_id = ? AND post_id IN (${placeholders})`).bind(currentUserId, ...ids).all() : { results: [] },
-				]);
+				const requestedValues = ids.map(() => '(?)').join(', ');
+				const viewerColumns = currentUserId
+					? `EXISTS (SELECT 1 FROM likes viewer_likes WHERE viewer_likes.post_id = requested.id AND viewer_likes.user_id = ?) AS liked_by_me,
+						EXISTS (SELECT 1 FROM stars viewer_stars WHERE viewer_stars.post_id = requested.id AND viewer_stars.user_id = ?) AS starred_by_me`
+					: '0 AS liked_by_me, 0 AS starred_by_me';
+				const bindings = currentUserId
+					? [...ids, currentUserId, currentUserId]
+					: ids;
+				const { results } = await db.prepare(
+					`WITH requested(id) AS (VALUES ${requestedValues}),
+						like_counts AS (
+							SELECT likes.post_id, COUNT(*) AS count
+							FROM likes JOIN requested ON requested.id = likes.post_id
+							GROUP BY likes.post_id
+						), star_counts AS (
+							SELECT stars.post_id, COUNT(*) AS count
+							FROM stars JOIN requested ON requested.id = stars.post_id
+							GROUP BY stars.post_id
+						), repost_counts AS (
+							SELECT reposts.post_id, COUNT(*) AS count
+							FROM reposts JOIN requested ON requested.id = reposts.post_id
+							GROUP BY reposts.post_id
+						), reply_counts AS (
+							SELECT posts.reply_to AS post_id, COUNT(*) AS count
+							FROM posts JOIN requested ON requested.id = posts.reply_to
+							GROUP BY posts.reply_to
+						)
+						SELECT requested.id AS post_id,
+							COALESCE(like_counts.count, 0) AS like_count,
+							COALESCE(star_counts.count, 0) AS star_count,
+							COALESCE(repost_counts.count, 0) AS repost_count,
+							COALESCE(reply_counts.count, 0) AS reply_count,
+							${viewerColumns}
+						FROM requested
+						LEFT JOIN like_counts ON like_counts.post_id = requested.id
+						LEFT JOIN star_counts ON star_counts.post_id = requested.id
+						LEFT JOIN repost_counts ON repost_counts.post_id = requested.id
+						LEFT JOIN reply_counts ON reply_counts.post_id = requested.id`
+				).bind(...bindings).all();
 
-				const likeMap = new Map((likeRes.results || []).map((r) => [r.post_id, Number(r.count)]));
-				const starMap = new Map((starRes.results || []).map((r) => [r.post_id, Number(r.count)]));
-				const repostMap = new Map((repostRes.results || []).map((r) => [r.post_id, Number(r.count)]));
-				const replyMap = new Map((replyRes.results || []).map((r) => [r.post_id, Number(r.count)]));
-				const myLikesSet = new Set((myLikesRes.results || []).map((r) => r.post_id));
-				const myStarsSet = new Set((myStarsRes.results || []).map((r) => r.post_id));
-
-				const metrics = ids.map((id) => ({
+				const metricsById = new Map((results || []).map((row) => [Number(row.post_id), {
+					post_id: Number(row.post_id),
+					like_count: Number(row.like_count) || 0,
+					star_count: Number(row.star_count) || 0,
+					repost_count: Number(row.repost_count) || 0,
+					reply_count: Number(row.reply_count) || 0,
+					liked_by_me: Boolean(row.liked_by_me),
+					starred_by_me: Boolean(row.starred_by_me),
+				}]));
+				const metrics = ids.map((id) => metricsById.get(id) || {
 					post_id: id,
-					like_count: likeMap.get(id) || 0,
-					star_count: starMap.get(id) || 0,
-					repost_count: repostMap.get(id) || 0,
-					reply_count: replyMap.get(id) || 0,
-					liked_by_me: myLikesSet.has(id),
-					starred_by_me: myStarsSet.has(id),
-				}));
+					like_count: 0,
+					star_count: 0,
+					repost_count: 0,
+					reply_count: 0,
+					liked_by_me: false,
+					starred_by_me: false,
+				});
 				return json(metrics);
 			}
 
@@ -1863,6 +1957,10 @@ export default {
 				const body = await request.json();
 				const tab = body.tab || 'foryou';
 				const followIds = Array.isArray(body.followIds) ? body.followIds.map(Number).filter(Number.isSafeInteger) : [];
+				const viewerId = body.viewerId != null && Number.isSafeInteger(Number(body.viewerId))
+					? Number(body.viewerId)
+					: null;
+				const includePosts = body.includePosts === true;
 				const limit = Math.min(Number(body.limit || 30), 100);
 				const beforeId = Number.isSafeInteger(Number(body.beforeId)) && Number(body.beforeId) > 0
 					? Number(body.beforeId)
@@ -1871,39 +1969,57 @@ export default {
 
 				let results = [];
 				if (tab === 'following') {
-					if (followIds.length === 0) return json({ ids: [], has_more: false });
-					const placeholders = followIds.map(() => '?').join(', ');
-					const queryRes = beforeId != null
-						? await db.prepare(
-							`SELECT id FROM posts WHERE user_id IN (${placeholders}) AND group_id IS NULL AND reply_to IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
-						).bind(...followIds, beforeId, limit + 1).all()
-						: await db.prepare(
-							`SELECT id FROM posts WHERE user_id IN (${placeholders}) AND group_id IS NULL AND reply_to IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
-						).bind(...followIds, limit + 1, offset).all();
+					let queryRes;
+					if (followIds.length > 0) {
+						const placeholders = followIds.map(() => '?').join(', ');
+						queryRes = beforeId != null
+							? await db.prepare(
+								`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE user_id IN (${placeholders}) AND group_id IS NULL AND reply_to IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
+							).bind(...followIds, beforeId, limit + 1).all()
+							: await db.prepare(
+								`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE user_id IN (${placeholders}) AND group_id IS NULL AND reply_to IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+							).bind(...followIds, limit + 1, offset).all();
+					} else if (viewerId != null && viewerId > 0) {
+						const where = `user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) AND group_id IS NULL AND reply_to IS NULL`;
+						queryRes = beforeId != null
+							? await db.prepare(
+								`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE ${where} AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
+							).bind(viewerId, beforeId, limit + 1).all()
+							: await db.prepare(
+								`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+							).bind(viewerId, limit + 1, offset).all();
+					} else {
+						return json({ ids: [], has_more: false });
+					}
 					results = queryRes.results || [];
 				} else if (tab === 'announce') {
 					const queryRes = beforeId != null
 						? await db.prepare(
-							`SELECT id FROM posts WHERE group_id IS NULL AND announcement = 1 AND reply_to IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
+							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE group_id IS NULL AND announcement = 1 AND reply_to IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
 						).bind(beforeId, limit + 1).all()
 						: await db.prepare(
-							`SELECT id FROM posts WHERE group_id IS NULL AND announcement = 1 AND reply_to IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE group_id IS NULL AND announcement = 1 AND reply_to IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
 						).bind(limit + 1, offset).all();
 					results = queryRes.results || [];
 				} else {
 					const queryRes = beforeId != null
 						? await db.prepare(
-							`SELECT id FROM posts WHERE group_id IS NULL AND reply_to IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
+							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE group_id IS NULL AND reply_to IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
 						).bind(beforeId, limit + 1).all()
 						: await db.prepare(
-							`SELECT id FROM posts WHERE group_id IS NULL AND reply_to IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE group_id IS NULL AND reply_to IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
 						).bind(limit + 1, offset).all();
 					results = queryRes.results || [];
 				}
 
-				const ids = results.slice(0, limit).map((r) => r.id);
+				const selectedRows = results.slice(0, limit);
+				const hydratedRows = includePosts
+					? await attachInlinePostMetrics(db, selectedRows, viewerId)
+					: selectedRows;
+				const ids = selectedRows.map((r) => r.id);
 				return json({
 					ids,
+					...(includePosts ? { posts: hydratedRows.map(normalizePostRow) } : {}),
 					has_more: results.length > limit,
 					next_cursor: results.length > limit && ids.length > 0 ? ids[ids.length - 1] : null,
 				});
@@ -1919,6 +2035,7 @@ export default {
 					const viewerId = viewerIdParam !== null && Number.isSafeInteger(Number(viewerIdParam))
 						? Number(viewerIdParam)
 						: null;
+					const includePosts = url.searchParams.get('includePosts') === 'true';
 											const scoringBlockSize = Math.max(240, limit * 8);
 						const candidateLimit = scoringBlockSize + 1;
 						const candidateWhere = beforeId != null ? 'p.group_id IS NULL AND p.reply_to IS NULL AND p.id < ?' : 'p.group_id IS NULL AND p.reply_to IS NULL';
@@ -2042,8 +2159,16 @@ export default {
 						ids = [];
 					}
 					const candidateCount = Math.max(0, Number(row.candidate_count) || 0);
+					const normalizedIds = ids.map(Number).filter(Number.isSafeInteger);
+					let posts = null;
+					if (includePosts && normalizedIds.length > 0) {
+						const placeholders = normalizedIds.map(() => '?').join(', ');
+						const postRows = await db.prepare(`SELECT * FROM posts WHERE id IN (${placeholders})`).bind(...normalizedIds).all();
+						posts = (postRows.results || []).map(normalizePostRow);
+					}
 					return json({
-						ids: ids.map(Number).filter(Number.isSafeInteger),
+						ids: normalizedIds,
+						...(posts ? { posts } : {}),
 						has_more: candidateCount > scoringBlockSize,
 						next_cursor: null,
 						next_offset: offset + Math.min(candidateCount, scoringBlockSize),
@@ -2054,13 +2179,14 @@ export default {
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/post-ids$/)) {
 				const userId = Number(pathname.split('/')[2]);
 				const subType = url.searchParams.get('subType') || 'all';
+				const includePosts = url.searchParams.get('includePosts') === 'true';
 				const limit = Math.min(Number(url.searchParams.get('limit') || 30), 100);
 				const beforeId = Number.isSafeInteger(Number(url.searchParams.get('beforeId'))) && Number(url.searchParams.get('beforeId')) > 0
 					? Number(url.searchParams.get('beforeId'))
 					: null;
 				const offset = beforeId == null ? Number(url.searchParams.get('offset') || 0) : 0;
 
-				let sql = 'SELECT id FROM posts WHERE user_id = ? AND group_id IS NULL';
+				let sql = `SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE user_id = ? AND group_id IS NULL`;
 				const bindings = [userId];
 				if (subType === 'posts_only') sql += ' AND reply_to IS NULL';
 				if (subType === 'replies_only') sql += ' AND reply_to IS NOT NULL';
@@ -2077,8 +2203,14 @@ export default {
 				const { results } = await db.prepare(sql).bind(...bindings).all();
 				const rows = results || [];
 				const ids = rows.slice(0, limit).map((r) => r.id);
+				const selectedRows = rows.slice(0, limit);
+				const hydratedRows = includePosts
+					? await attachInlinePostMetrics(db, selectedRows, viewerId)
+					: selectedRows;
+				const posts = includePosts ? hydratedRows.map(normalizePostRow) : null;
 				return json({
 					ids,
+					...(posts ? { posts } : {}),
 					has_more: rows.length > limit,
 					next_cursor: rows.length > limit && ids.length > 0 ? ids[ids.length - 1] : null,
 				});
@@ -2086,6 +2218,11 @@ export default {
 
 			if (method === 'GET' && pathname === '/posts/search/ids') {
 				const q = url.searchParams.get('q') || '';
+				const includePosts = url.searchParams.get('includePosts') === 'true';
+				const viewerIdParam = url.searchParams.get('viewerId');
+				const viewerId = viewerIdParam !== null && Number.isSafeInteger(Number(viewerIdParam))
+					? Number(viewerIdParam)
+					: null;
 				const limit = Math.min(Number(url.searchParams.get('limit') || 30), 100);
 				const beforeId = Number.isSafeInteger(Number(url.searchParams.get('beforeId'))) && Number(url.searchParams.get('beforeId')) > 0
 					? Number(url.searchParams.get('beforeId'))
@@ -2116,8 +2253,17 @@ export default {
 				}
 
 				const ids = matched.slice(offset, offset + limit);
+				let posts = null;
+				if (includePosts && ids.length > 0) {
+					const placeholders = ids.map(() => '?').join(', ');
+					const postRows = await db.prepare(`SELECT * FROM posts WHERE id IN (${placeholders})`).bind(...ids).all();
+					const hydratedRows = await attachInlinePostMetrics(db, postRows.results || [], viewerId);
+					const postMap = new Map(hydratedRows.map((row) => [Number(row.id), row]));
+					posts = ids.map((id) => postMap.get(Number(id))).filter(Boolean).map(normalizePostRow);
+				}
 				return json({
 					ids,
+					...(posts ? { posts } : {}),
 					has_more: matched.length > offset + limit,
 					next_cursor: matched.length > offset + limit && ids.length > 0 ? ids[ids.length - 1] : null,
 				});
@@ -2646,12 +2792,13 @@ export default {
 
 			if (method === 'GET' && pathname === '/dm/list') {
 				const userId = Number(url.searchParams.get('userId'));
-				const { results } = await db.prepare('SELECT * FROM dm_channels').all();
-				const matched = (results || []).filter((r) => {
-					const parts = parseJsonSafe(r.participants, []);
-					return Array.isArray(parts) && parts.includes(userId);
-				});
-				return json(matched);
+				const { results } = await db.prepare(
+					`SELECT * FROM dm_channels WHERE EXISTS (
+						SELECT 1 FROM json_each(dm_channels.participants)
+						WHERE CAST(json_each.value AS INTEGER) = ?
+					 )`,
+				).bind(userId).all();
+				return json(results || []);
 			}
 
 			if (method === 'POST' && pathname === '/dm/channel') {
@@ -2720,22 +2867,46 @@ export default {
 
 			if (method === 'GET' && pathname === '/dm/unread') {
 				const userId = Number(url.searchParams.get('userId'));
-				const { results } = await db.prepare(
-					`SELECT m.id FROM dm_messages m
+				const row = await db.prepare(
+					`SELECT COUNT(*) AS count FROM dm_messages m
 					 JOIN dm_channels c ON c.id = m.channel_id
-					 WHERE m.sender_id != ? AND m.read_at IS NULL`
-				).bind(userId).all();
-				return json({ count: (results || []).length });
+					 WHERE EXISTS (
+						SELECT 1 FROM json_each(c.participants)
+						WHERE CAST(json_each.value AS INTEGER) = ?
+					 ) AND m.sender_id != ? AND m.read_at IS NULL`
+				).bind(userId, userId).first();
+				return json({ count: Number(row?.count || 0) });
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/group-dms$/)) {
 				const userId = Number(pathname.split('/')[2]);
-				const { results } = await db.prepare('SELECT * FROM group_dms ORDER BY time DESC').all();
-				const filtered = (results || []).filter((r) => {
-					const members = parseJsonSafe(r.member, []);
-					return Array.isArray(members) && members.map(Number).includes(userId);
-				});
-				return json(filtered.map((r) => normalizeGroupDmRow(r, userId)));
+				const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 50), 100));
+				const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+				const { results } = await db.prepare(
+					`SELECT * FROM group_dms
+					 WHERE host_id = ? OR EXISTS (
+						SELECT 1 FROM json_each(group_dms.member)
+						WHERE CAST(json_each.value AS INTEGER) = ?
+					 )
+					 ORDER BY time DESC LIMIT ? OFFSET ?`,
+				).bind(userId, userId, limit, offset).all();
+				return json((results || []).map((r) => normalizeGroupDmRow(r, userId)));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/group-dms\/visibility$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const { results } = await db.prepare(
+					`SELECT id, member, unread FROM group_dms
+					 WHERE host_id = ? OR EXISTS (
+						SELECT 1 FROM json_each(group_dms.member)
+						WHERE CAST(json_each.value AS INTEGER) = ?
+					 )`,
+				).bind(userId, userId).all();
+				return json((results || []).map((row) => ({
+					id: row.id,
+					member: parseJsonSafe(row.member, []),
+					unread: parseJsonSafe(row.unread, {}),
+				})));
 			}
 
 			if (method === 'GET' && pathname.match(/^\/group-dms\/([^/]+)$/)) {
@@ -2837,7 +3008,13 @@ export default {
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/group-dms\/unread-counts$/)) {
 				const userId = Number(pathname.split('/')[2]);
-				const { results } = await db.prepare('SELECT id, member, unread FROM group_dms').all();
+				const { results } = await db.prepare(
+					`SELECT id, member, unread FROM group_dms
+					 WHERE host_id = ? OR EXISTS (
+						SELECT 1 FROM json_each(group_dms.member)
+						WHERE CAST(json_each.value AS INTEGER) = ?
+					 )`,
+				).bind(userId, userId).all();
 				const counts = [];
 				for (const r of results || []) {
 					const members = parseJsonSafe(r.member, []);
@@ -2851,16 +3028,15 @@ export default {
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/group-dms\/unread-total$/)) {
 				const userId = Number(pathname.split('/')[2]);
-				const { results } = await db.prepare('SELECT member, unread FROM group_dms').all();
-				let total = 0;
-				for (const r of results || []) {
-					const members = parseJsonSafe(r.member, []);
-					if (Array.isArray(members) && members.map(Number).includes(userId)) {
-						const unread = parseJsonSafe(r.unread, {});
-						total += Number(unread[String(userId)] || 0);
-					}
-				}
-				return json({ total });
+				const row = await db.prepare(
+					`SELECT COALESCE(SUM(COALESCE(json_extract(unread, '$.' || ?), 0)), 0) AS total
+					 FROM group_dms
+					 WHERE host_id = ? OR EXISTS (
+						SELECT 1 FROM json_each(group_dms.member)
+						WHERE CAST(json_each.value AS INTEGER) = ?
+					 )`,
+				).bind(String(userId), userId, userId).first();
+				return json({ total: Number(row?.total || 0) });
 			}
 
 			if (method === 'POST' && pathname.match(/^\/group-dms\/([^/]+)\/delete$/)) {
@@ -2888,15 +3064,19 @@ export default {
 			if (method === 'POST' && pathname === '/group-dms/find-by-members') {
 				const body = await request.json();
 				const target = Array.from(new Set(body.memberIds.map(Number))).sort((a, b) => a - b);
-				const { results } = await db.prepare('SELECT * FROM group_dms').all();
-
-				for (const r of results || []) {
-					const current = Array.from(new Set(parseJsonSafe(r.member, []).map(Number))).sort((a, b) => a - b);
-					if (target.length === current.length && target.every((v, i) => v === current[i])) {
-						return json(normalizeGroupDmRow(r));
-					}
-				}
-				return json(null);
+				if (target.length === 0) return json(null);
+				const placeholders = target.map(() => '?').join(', ');
+				const row = await db.prepare(
+					`SELECT * FROM group_dms
+					 WHERE json_array_length(member) = ?
+					   AND (
+						 SELECT COUNT(DISTINCT CAST(value AS INTEGER))
+						 FROM json_each(group_dms.member)
+						 WHERE CAST(value AS INTEGER) IN (${placeholders})
+					   ) = ?
+					 LIMIT 1`,
+				).bind(target.length, ...target, target.length).first();
+				return json(normalizeGroupDmRow(row));
 			}
 
 			// DM E2E暗号化用の公開鍵

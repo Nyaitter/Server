@@ -61,8 +61,10 @@ function hasPermission(group, membership, role, permission) {
 
 async function resolveGroupMembership(db, group, userId) {
   if (!group || userId == null) return { membership: null, role: null, roles: [] };
-  const membership = await db.getGroupMembership(group.id, userId);
-  const roles = await db.getGroupRoles(group.id);
+  const [membership, roles] = await Promise.all([
+    db.getGroupMembership(group.id, userId),
+    db.getGroupRoles(group.id),
+  ]);
   const roleId = membership?.roleId ?? membership?.role_id ?? null;
   const role = roles.find((candidate) => String(candidate.id) === String(roleId)) || null;
   return { membership, role, roles };

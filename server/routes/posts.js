@@ -170,7 +170,7 @@ async function getDiscoverableModePage(
 				});
 			}
 			if (mode === 'search') {
-				return db.searchPostIds(query, candidateLimit, candidateOffset, candidateBeforeId);
+				return db.searchPostIds(query, candidateLimit, candidateOffset, candidateBeforeId, viewerId);
 			}
 			throw new Error(`Unsupported discoverable mode: ${mode}`);
 		},
@@ -628,9 +628,16 @@ router.get({
 					? result.ids[result.ids.length - 1]
 					: null
 			);
-			const discoveredPosts = isDiscoverableMode && Array.isArray(result.posts)
-				? result.posts
+			const providedPostMap = Array.isArray(result.posts)
+				? new Map(result.posts.filter(Boolean).map((post) => [Number(post.id), post]))
 				: null;
+			// アダプターが候補と同時に返した投稿本体はID順に並べ直す。
+			// pin_id等で本体が不足する場合は、従来どおりID取得へ戻す。
+			const providedPosts = providedPostMap && Array.isArray(result.ids)
+				&& result.ids.every((id) => providedPostMap.has(Number(id)))
+				? result.ids.map((id) => providedPostMap.get(Number(id)))
+				: null;
+			const discoveredPosts = providedPosts;
 			const discoveredPostIds = discoveredPosts
 				? discoveredPosts.map((post) => Number(post.id))
 				: null;

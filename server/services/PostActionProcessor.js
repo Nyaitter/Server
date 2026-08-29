@@ -192,17 +192,18 @@ function normalizeTargetPostId(value) {
 
 async function notifyGroupAnnouncement(context, group, post) {
   const memberIds = await listActiveGroupMemberIds(context.db, group.id);
-  for (const memberId of memberIds) {
-    if (Number(memberId) === Number(post.userId)) continue;
-    const notification = await createNotificationIfAllowed(context.db, {
-      userId: memberId,
-      type: 'group_announcement',
-      fromUserId: post.userId,
-      target: { kind: 'post', id: Number(post.id) },
-      message: `「${group.name}」のグループアナウンスが投稿されました。`,
-    });
-    if (notification) await publishNewNotification(context, memberId, notification);
-  }
+  await Promise.all(memberIds
+    .filter((memberId) => Number(memberId) !== Number(post.userId))
+    .map(async (memberId) => {
+      const notification = await createNotificationIfAllowed(context.db, {
+        userId: memberId,
+        type: 'group_announcement',
+        fromUserId: post.userId,
+        target: { kind: 'post', id: Number(post.id) },
+        message: `「${group.name}」のグループアナウンスが投稿されました。`,
+      });
+      if (notification) await publishNewNotification(context, memberId, notification);
+    }));
 }
 
 async function processCreatePostAction(context, payload) {

@@ -37,7 +37,9 @@ async function getDiscoverablePostPage({
 		? Number(beforeId)
 		: null;
 	const normalizedOffset = normalizedBeforeId == null ? Math.max(Number(offset) || 0, 0) : 0;
-	const candidateLimit = 100;
+	// 通常は表示件数の2倍+番兵だけ取得し、非公開・ブロック等で
+	// 足りない場合だけ次のチャンクを追加取得する。
+	const candidateLimit = Math.min(100, normalizedLimit * 2 + 1);
 	let candidateOffset = 0;
 	let candidateBeforeId = normalizedBeforeId;
 	let visibleOffset = 0;

@@ -373,9 +373,12 @@ async function fetchNotificationUsersByIds(db, userIds) {
 	const ids = [...new Set((userIds || []).map(Number).filter(Number.isInteger))];
 	if (ids.length === 0) return [];
 	let users = [];
-	if (typeof db.getUsersByIds === 'function') {
+	const getAuthors = typeof db.getPostAuthorsByIds === 'function'
+		? db.getPostAuthorsByIds.bind(db)
+		: db.getUsersByIds?.bind(db);
+	if (getAuthors) {
 		try {
-			const batch = await db.getUsersByIds(ids);
+			const batch = await getAuthors(ids);
 			if (Array.isArray(batch)) users = batch.filter(Boolean);
 		} catch (_) {
 			// 一括取得が利用できない旧アダプターだけ、既存の単件取得へ後退する。
@@ -421,8 +424,13 @@ async function fetchPostMetrics(db, allPosts, currentUserId, knownViewer = null)
 	const hasCounters = Array.isArray(allPosts) && allPosts.length > 0 && typeof allPosts[0] === 'object'
 		&& (allPosts[0].like_count !== undefined || allPosts[0].likeCount !== undefined);
 
+	// 一覧アダプターが本人リアクションまで同梱した場合も追加取得しない。
+	const hasInlineViewerReaction = currentUserId != null && allPosts.every((post) => (
+		Object.prototype.hasOwnProperty.call(post, 'liked_by_me') &&
+		Object.prototype.hasOwnProperty.call(post, 'starred_by_me')
+	));
 	// If viewer reaction state is known or user is not logged in, assemble purely in-memory
-	const hasViewerReactionState = currentUserId == null || (knownViewer && Array.isArray(knownViewer.like));
+	const hasViewerReactionState = currentUserId == null || hasInlineViewerReaction || (knownViewer && Array.isArray(knownViewer.like));
 
 	if (hasCounters && hasViewerReactionState) {
 		const likedSet = new Set((knownViewer?.like || []).map(Number));
@@ -435,8 +443,12 @@ async function fetchPostMetrics(db, allPosts, currentUserId, knownViewer = null)
 				star_count: Math.max(0, Number(post.star_count ?? post.starCount) || 0),
 				repost_count: Math.max(0, Number(post.repost_count ?? post.repostCount) || 0),
 				reply_count: Math.max(0, Number(post.reply_count ?? post.replyCount) || 0),
-				liked_by_me: currentUserId != null ? likedSet.has(postId) : false,
-				starred_by_me: currentUserId != null ? starredSet.has(postId) : false,
+				liked_by_me: currentUserId != null
+					? (hasInlineViewerReaction ? Boolean(post.liked_by_me) : likedSet.has(postId))
+					: false,
+				starred_by_me: currentUserId != null
+					? (hasInlineViewerReaction ? Boolean(post.starred_by_me) : starredSet.has(postId))
+					: false,
 			};
 		});
 	}
@@ -502,24 +514,27 @@ async function serializePostsBatch(
 	const postsById = new Map(initialPosts.map((post) => [Number(post.id), post]));
 	let loadedReferences = false;
 
-	// Extract embedded post URLs in content
-	const embeddedPostIds = [];
+	// ルート投稿は呼び出し元がすでに取得済みなので再取得しない。
+	// 返信・引用先だけを関連投稿APIへ渡し、通常のタイムラインで
+	// 同じ投稿本体を二重取得するWorker/DB往復を避ける。
+	const referenceIds = [];
 	for (const post of initialPosts) {
 		const repostTo = post.repostTo ?? post.repost_to;
+		const replyTo = post.replyTo ?? post.reply_to ?? post.reply_id;
+		if (replyTo != null && !postsById.has(Number(replyTo))) referenceIds.push(replyTo);
+		if (repostTo != null && !postsById.has(Number(repostTo))) referenceIds.push(repostTo);
 		if (repostTo == null && post.content) {
 			const embId = extractPostIdFromText(post.content, post.id);
-			if (embId && !postsById.has(embId)) embeddedPostIds.push(embId);
+			if (embId && !postsById.has(embId)) referenceIds.push(embId);
 		}
 	}
 
-	if (typeof db.getPostReferencesByIds === 'function') {
+	if (referenceIds.length === 0) {
+		loadedReferences = true;
+	} else if (typeof db.getPostReferencesByIds === 'function') {
 		try {
-			const allIdsToFetch = [
-				...initialPosts.map((post) => post.id),
-				...embeddedPostIds,
-			];
 			const references = await db.getPostReferencesByIds(
-				allIdsToFetch,
+				[...new Set(referenceIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))],
 				2,
 			);
 			if (Array.isArray(references)) {

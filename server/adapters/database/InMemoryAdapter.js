@@ -845,6 +845,10 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return results;
 	}
 
+	async getPostAuthorsByIds(userIds) {
+		return this.getUsersByIds(userIds);
+	}
+
 	
 	async getAllUsers() {
 		return Array.from(this.users.values()).map((user) =>
@@ -1973,14 +1977,28 @@ class InMemoryAdapter extends DatabaseAdapter {
 		};
 	}
 
-	async getGroupDmsForUser(userId) {
+	async getGroupDmsForUser(userId, { limit = 50, offset = 0 } = {}) {
+		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+		const safeOffset = Math.max(Number(offset) || 0, 0);
 		const dmIds = this.groupDmIdsByMember.get(Number(userId)) || new Set();
 		const result = [...dmIds]
 			.map((dmId) => this.groupDms.get(dmId))
 			.filter(Boolean)
 			.map((dm) => this._serializeGroupDm(dm, userId));
 		result.sort((a, b) => new Date(b.time) - new Date(a.time));
-		return result;
+		return result.slice(safeOffset, safeOffset + safeLimit);
+	}
+
+	async getGroupDmVisibilityDataForUser(userId) {
+		const dmIds = this.groupDmIdsByMember.get(Number(userId)) || new Set();
+		return [...dmIds].map((dmId) => {
+			const dm = this.groupDms.get(dmId);
+			return dm ? {
+				id: dm.id,
+				member: (dm.member || []).map(Number),
+				unread: dm.unread || {},
+			} : null;
+		}).filter(Boolean);
 	}
 
 		async getGroupDm(dmId) {
@@ -2161,20 +2179,20 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return this.follows.has(`${followerId}:${followingId}`);
 	}
 
-	async getFollowing(userId, limit = config.limits.followingPageSize) {
+	async getFollowing(userId, limit = config.limits.followingPageSize, offset = 0) {
 		const ids = this.followingIdsByUser.get(Number(userId)) || new Set();
 		return [...ids]
 			.reverse()
-			.slice(0, Math.max(0, Number(limit) || 0))
+			.slice(Math.max(0, Number(offset) || 0), Math.max(0, Number(offset) || 0) + Math.max(0, Number(limit) || 0))
 			.map((followingId) => this.users.get(followingId))
 			.filter(Boolean);
 	}
 
-	async getFollowers(userId, limit = config.limits.followingPageSize) {
+	async getFollowers(userId, limit = config.limits.followingPageSize, offset = 0) {
 		const ids = this.followerIdsByUser.get(Number(userId)) || new Set();
 		return [...ids]
 			.reverse()
-			.slice(0, Math.max(0, Number(limit) || 0))
+			.slice(Math.max(0, Number(offset) || 0), Math.max(0, Number(offset) || 0) + Math.max(0, Number(limit) || 0))
 			.map((followerId) => this.users.get(followerId))
 			.filter(Boolean);
 	}
@@ -2816,6 +2834,16 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 		async getPostCount(userId) {
 			return (this.postIdsByUser.get(Number(userId)) || []).length;
+		}
+
+		async getPublicProfileStats(userId) {
+			return {
+				followingCount: await this.getFollowingCount(userId),
+				followerCount: await this.getFollowerCount(userId),
+				postCount: await this.getPostCount(userId),
+				mediaCount: await this.getMediaCount(userId),
+				pinnedPostId: await this.getPinnedPostId(userId),
+			};
 		}
 
 	async getRanking(type, limit = 50) {

@@ -364,6 +364,17 @@ app.get('/favicon.ico', (req, res) => {
 // ── Static Frontend Serving ────────────────────────────────────────────────────
 const pageDir = path.join(__dirname, '../page');
 const hasStaticPage = fs.existsSync(pageDir) && fs.statSync(pageDir).isDirectory();
+const indexPath = path.join(pageDir, 'index.html');
+let indexHtmlTemplate = null;
+if (hasStaticPage) {
+    try {
+        indexHtmlTemplate = fs.readFileSync(indexPath, 'utf8');
+    } catch (_) {}
+}
+const postPageHtmlTemplate = indexHtmlTemplate?.replace(
+    /<head(?:\s[^>]*)?>/i,
+    (match) => `${match}<base href="/">`,
+);
 
 if (hasStaticPage) {
     const indexRedirects = new Set(['/index', '/index.html', '/page/index', '/page/index.html', '/page', '/page/']);
@@ -424,10 +435,9 @@ if (hasStaticPage) {
                             res.setHeader('Content-Type', 'text/html; charset=utf-8');
                             return res.send(html);
                         }
-                        const indexPath = path.join(pageDir, 'index.html');
-                        if (fs.existsSync(indexPath)) {
+                        if (postPageHtmlTemplate) {
                             const ogpTags = generatePostOgpTags({ post, author, publicUrl });
-                            let html = fs.readFileSync(indexPath, 'utf8');
+                            let html = postPageHtmlTemplate;
                             html = html.replace(/<title>.*?<\/title>/i, ogpTags);
                             res.setHeader('Content-Type', 'text/html; charset=utf-8');
                             return res.send(html);
@@ -436,9 +446,9 @@ if (hasStaticPage) {
                 } catch (err) {
                     console.warn('[ogp] Failed to render post embed:', err.message);
                 }
-                const indexPath = path.join(pageDir, 'index.html');
-                if (fs.existsSync(indexPath)) {
-                    return res.sendFile(indexPath);
+                if (postPageHtmlTemplate) {
+                    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+                    return res.send(postPageHtmlTemplate);
                 }
                 return res.status(404).send('Post not found');
             })();

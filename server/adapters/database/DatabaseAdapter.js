@@ -120,6 +120,10 @@ class DatabaseAdapter {
 		throw new Error('getUsersByIds() must be implemented');
 	}
 
+	async getPostAuthorsByIds(userIds) {
+		return this.getUsersByIds(userIds);
+	}
+
 	
 	async getAllUsers() {
 		throw new Error('getAllUsers() must be implemented');
@@ -464,12 +468,12 @@ class DatabaseAdapter {
 	}
 
 	
-	async getFollowing(userId, limit = 100) {
+	async getFollowing(userId, limit = 100, offset = 0) {
 		throw new Error('getFollowing() must be implemented');
 	}
 
 	
-	async getFollowers(userId, limit = 100) {
+	async getFollowers(userId, limit = 100, offset = 0) {
 		throw new Error('getFollowers() must be implemented');
 	}
 
