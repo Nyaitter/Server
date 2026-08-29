@@ -49,6 +49,33 @@ const router = api.createRouter({
 const { createRateLimiter } = require('../middleware/rateLimit');
 const postWriteLimiter = createRateLimiter(config.rateLimit.postWrite);
 const searchLimiter = createRateLimiter(config.rateLimit.profileUpdate ?? config.rateLimit.postWrite);
+const trendingHashtagsCache = new WeakMap();
+const TRENDING_HASHTAGS_CACHE_TTL_MS = 30 * 1000;
+
+async function getCachedTrendingHashtags(db, limit, type) {
+	let entries = trendingHashtagsCache.get(db);
+	if (!entries) {
+		entries = new Map();
+		trendingHashtagsCache.set(db, entries);
+	}
+	const key = `${limit}:${type}`;
+	const cached = entries.get(key);
+	const now = Date.now();
+	if (cached?.value && cached.expiresAt > now) return cached.value;
+	if (cached?.promise) return cached.promise;
+
+	const promise = db.getTrendingHashtags(limit, { type, detailed: true })
+		.then((value) => {
+			entries.set(key, { value, expiresAt: Date.now() + TRENDING_HASHTAGS_CACHE_TTL_MS });
+			return value;
+		})
+		.catch((error) => {
+			entries.delete(key);
+			throw error;
+		});
+	entries.set(key, { promise });
+	return promise;
+}
 
 function getDbAdapter(req) {
 	return req.app.locals.dbAdapter;
@@ -472,24 +499,26 @@ router.get({
 				beforeId,
 				ngWords: getViewerNgWords(req),
 			});
-			const posts = await serializePostsBatch(
-				db,
-				discoveredPosts,
-				currentUserId,
-				getPublicUrl(req),
-				knownViewer,
-				visibilityContext,
-				);
-				const groupPage = currentUserId != null && typeof db.searchGroupPostIds === 'function'
-					? await db.searchGroupPostIds(currentUserId, q, { limit, offset, beforeId })
-					: { ids: [], has_more: false, next_cursor: null };
-				const groupPosts = await serializePostsByIds(
+			const [posts, groupPage] = await Promise.all([
+				serializePostsBatch(
 					db,
-					groupPage.ids || [],
+					discoveredPosts,
 					currentUserId,
 					getPublicUrl(req),
 					knownViewer,
-				);
+					visibilityContext,
+				),
+				currentUserId != null && typeof db.searchGroupPostIds === 'function'
+					? db.searchGroupPostIds(currentUserId, q, { limit, offset, beforeId })
+					: Promise.resolve({ ids: [], has_more: false, next_cursor: null }),
+			]);
+			const groupPosts = await serializePostsByIds(
+				db,
+				groupPage.ids || [],
+				currentUserId,
+				getPublicUrl(req),
+				knownViewer,
+			);
 				const mergedPosts = [...posts, ...groupPosts]
 					.sort((left, right) => new Date(right.created_at || 0).getTime() - new Date(left.created_at || 0).getTime())
 					.slice(0, limit);
@@ -737,7 +766,7 @@ router.get({
 	const type = String(req.query.type || '').trim().toLowerCase();
 
 	try {
-		const result = await db.getTrendingHashtags(limit, { type, detailed: true });
+		const result = await getCachedTrendingHashtags(db, limit, type);
 		if (!req.user) {
 			res.set('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=60');
 		}
