@@ -17,6 +17,13 @@ function getDbAdapter(req) {
 	return req.app.locals.dbAdapter;
 }
 
+function getClientApiEndpoint(req) {
+	const endpoint = config.server.apiEndpoint || '/';
+	const publicUrl = getApiPublicUrl(req).replace(/\/+$/, '');
+	if (endpoint === '/') return publicUrl || '/';
+	return `${publicUrl}/${endpoint.replace(/^\/+/, '')}`;
+}
+
 function serializeIntegerRange(range) {
 	return {
 		min: Number.isInteger(range?.min) ? range.min : null,
@@ -96,6 +103,7 @@ router.get({
 			nyaitter_id_format: '#{localId}',
 		},
 		client_config: {
+			api_endpoint: getClientApiEndpoint(req),
 			user_file_endpoint: config.userFiles.endpoint,
 			post_share_url: getPostShareUrl(req),
 			turnstile_site_key: config.turnstile?.siteKey || '',
