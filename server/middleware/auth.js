@@ -72,6 +72,7 @@ function extractToken(req) {
 const SESSION_CACHE_TTL_MS = 120000; // 2 minutes TTL
 const MAX_SESSION_CACHE_ENTRIES = 2000;
 const sessionPrincipalCache = new Map(); // tokenHash -> { principal, user, expiresAt }
+const sessionPrincipalInflight = new Map(); // tokenHash -> Promise<user|null>
 
 function pruneSessionPrincipalCache(now = Date.now()) {
   for (const [key, entry] of sessionPrincipalCache) {
@@ -126,15 +127,25 @@ async function getSessionPrincipal(req, token) {
   }
 
   const db = req.app.locals.dbAdapter;
-  let user = null;
-
-  if (typeof db.getUserBySessionToken === 'function') {
-    user = await db.getUserBySessionToken(tokenHash);
-  } else {
-    const sessionManager = new SessionManager({ dbAdapter: db });
-    const sessionInfo = await sessionManager.validateToken(token);
-    if (!sessionInfo) return null;
-    user = await db.getUserById(sessionInfo.userId);
+  let lookup = sessionPrincipalInflight.get(tokenHash);
+  if (!lookup) {
+    lookup = (async () => {
+      if (typeof db.getUserBySessionToken === 'function') {
+        return db.getUserBySessionToken(tokenHash);
+      }
+      const sessionManager = new SessionManager({ dbAdapter: db });
+      const sessionInfo = await sessionManager.validateToken(token);
+      return sessionInfo ? db.getUserById(sessionInfo.userId) : null;
+    })();
+    sessionPrincipalInflight.set(tokenHash, lookup);
+  }
+  let user;
+  try {
+    user = await lookup;
+  } finally {
+    if (sessionPrincipalInflight.get(tokenHash) === lookup) {
+      sessionPrincipalInflight.delete(tokenHash);
+    }
   }
   if (!user) {
     sessionPrincipalCache.delete(tokenHash);

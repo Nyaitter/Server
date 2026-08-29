@@ -45,9 +45,9 @@ class BotTokenManager {
     const record = await this.db.getBotTokenById(tokenId);
     if (!record || record.tokenHash !== tokenHash) return null;
 
-    if (this.db.updateBotTokenLastUsed) {
-      await this.db.updateBotTokenLastUsed(tokenId);
-    }
+		if (this.db.updateBotTokenLastUsed) {
+			void this.db.updateBotTokenLastUsed(tokenId).catch(() => {});
+		}
 
     return {
       userId: record.userId,

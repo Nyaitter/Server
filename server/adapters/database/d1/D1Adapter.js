@@ -422,6 +422,12 @@ class D1Adapter extends DatabaseAdapter {
 		return mapSession(session);
 	}
 
+	async getUserBySessionToken(token) {
+		if (!token) return null;
+		const result = await this._read(`/sessions/token-user/${encodeURIComponent(String(token))}`, { cacheSeconds: 0 });
+		return normalizeUser(result?.user || result);
+	}
+
 	async invalidateSession(token) {
 		if (!token) return false;
 		const result = await this._write('/sessions/invalidate', { token: String(token) });
@@ -1108,7 +1114,7 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	async getTrendingPosts(limit = 20) {
-		const posts = await this._read(this._query('/posts/trending', { limit: this._limit(limit) }), { cacheSeconds: 0 });
+		const posts = await this._read(this._query('/posts/trending', { limit: this._limit(limit) }), { cacheSeconds: 30 });
 		return Array.isArray(posts) ? posts.map(normalizePost) : [];
 	}
 
@@ -1117,7 +1123,7 @@ class D1Adapter extends DatabaseAdapter {
 		const queryParams = { limit: this._limit(limit, 10, 50) };
 		if (type) queryParams.type = type;
 		if (options?.summary) queryParams.summary = 'true';
-		const res = await this._read(this._query('/posts/trending-hashtags', queryParams), { cacheSeconds: 0 });
+		const res = await this._read(this._query('/posts/trending-hashtags', queryParams), { cacheSeconds: 30 });
 		if (res && typeof res === 'object' && !Array.isArray(res)) {
 			return {
 				trends: Array.isArray(res.trends) ? res.trends : [],

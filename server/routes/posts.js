@@ -429,7 +429,7 @@ router.get({
 				visibilityContext,
 			);
 			if (!req.user) {
-				res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+				res.set('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=60');
 			}
 			res.json({ posts: hydrated });
 
@@ -738,6 +738,9 @@ router.get({
 
 	try {
 		const result = await db.getTrendingHashtags(limit, { type, detailed: true });
+		if (!req.user) {
+			res.set('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=60');
+		}
 		if (Array.isArray(result)) {
 			const hashtags = result.filter((item) => String(item.tag_name || '').startsWith('#'));
 			const words = result.filter((item) => !String(item.tag_name || '').startsWith('#'));

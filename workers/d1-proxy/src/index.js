@@ -652,6 +652,35 @@ export default {
 				return json(row);
 			}
 
+			if (method === 'GET' && pathname.startsWith('/sessions/token-user/')) {
+				const token = decodeURIComponent(pathname.slice('/sessions/token-user/'.length));
+				const now = new Date().toISOString();
+				const row = await db.prepare(
+					`SELECT s.session_id, s.token, s.user_id, s.ip_hash, s.ip_masked,
+							s.user_agent, s.expires_at, s.created_at,
+							u.*
+					 FROM sessions s INNER JOIN users u ON u.id = s.user_id
+					 WHERE s.token = ? AND s.expires_at > ? LIMIT 1`
+				).bind(token, now).first();
+				if (!row) {
+					ctx?.waitUntil?.(db.prepare('DELETE FROM sessions WHERE token = ? AND expires_at <= ?').bind(token, now).run());
+					return json(null);
+				}
+				return json({
+					session: {
+						session_id: row.session_id,
+						token: row.token,
+						user_id: row.user_id,
+						expires_at: row.expires_at,
+						created_at: row.created_at,
+						ip_hash: row.ip_hash,
+						ip_masked: row.ip_masked,
+						user_agent: row.user_agent,
+					},
+					user: normalizeUserRow(row),
+				});
+			}
+
 			if (method === 'POST' && pathname === '/sessions/invalidate') {
 				const body = await request.json();
 				const token = String(body.token || '');
@@ -2389,10 +2418,12 @@ export default {
 				const limit = Math.min(Number(url.searchParams.get('limit') || 20), 100);
 				const { results } = await db.prepare(
 					`SELECT p.*,
-					   (COALESCE((SELECT COUNT(*) FROM likes WHERE post_id = p.id), 0) +
-					    COALESCE((SELECT COUNT(*) FROM stars WHERE post_id = p.id), 0) * 2 +
-					    COALESCE((SELECT COUNT(*) FROM reposts WHERE post_id = p.id), 0) * 3) as score
+					   (COALESCE(p.like_count, 0) +
+					    COALESCE(p.star_count, 0) * 2 +
+					    COALESCE(p.repost_count, 0) * 3) as score
 					 FROM posts p
+					 WHERE p.group_id IS NULL AND p.reply_to IS NULL
+					   AND p.created_at >= datetime('now', '-3 days')
 					 ORDER BY score DESC, p.created_at DESC
 					 LIMIT ?`
 				).bind(limit).all();
