@@ -261,6 +261,22 @@ async function hasBlockedDmMemberPair(db, memberIds) {
 	return false;
 }
 
+function normalizeDmMemberIds(value) {
+	let parsed = value;
+	if (typeof parsed === 'string') {
+		try {
+			parsed = JSON.parse(parsed);
+		} catch (_) {
+			parsed = [];
+		}
+	}
+	if (!Array.isArray(parsed)) return [];
+	return parsed
+		.map((member) => member && typeof member === 'object' ? (member.id ?? member.user_id ?? member.userId) : member)
+		.map(Number)
+		.filter((id) => Number.isInteger(id) && id >= 0);
+}
+
 async function serializeGroupDm(db, dm, userId, { includePosts = true } = {}) {
 	const blockedMemberIds = await getBlockedDmMemberIds(db, userId, dm.member || []);
 	const rawMessages = dm.post ? dm.post.slice() : [];
@@ -295,16 +311,18 @@ async function serializeGroupDm(db, dm, userId, { includePosts = true } = {}) {
 	const unreadCount = Number(
 		dm.unread?.[userId] ?? dm.unread?.[String(userId)] ?? dm.unread_count ?? 0,
 	);
-	const acceptedList = Array.isArray(dm.accepted)
-		? dm.accepted.map(Number)
-		: (Array.isArray(dm.unread?._accepted) ? dm.unread._accepted.map(Number) : (dm.member || []).map(Number));
+	const hasAccepted = dm.accepted !== undefined && dm.accepted !== null;
+	const hasStoredAccepted = dm.unread && Object.prototype.hasOwnProperty.call(dm.unread, '_accepted');
+	const acceptedList = hasAccepted
+		? normalizeDmMemberIds(dm.accepted)
+		: (hasStoredAccepted ? normalizeDmMemberIds(dm.unread._accepted) : normalizeDmMemberIds(dm.member));
 	const isPending = !acceptedList.includes(Number(userId));
 
 	return {
 		id: dm.id,
 		title: dm.title || '',
 		member: dm.member.slice(),
-		accepted: acceptedList,
+		is_accepted: !isPending,
 		is_pending: isPending,
 		host_id: dm.host_id,
 		created_at: dm.created_at || dm.createdAt || dm.time || null,

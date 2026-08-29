@@ -2749,13 +2749,14 @@ export default {
 				const id = crypto.randomUUID();
 				const hostId = Number(body.hostId);
 				const member = Array.isArray(body.member) ? body.member.map(Number) : [hostId];
+				const accepted = Array.isArray(body.accepted) ? body.accepted.map(Number) : member;
 				const title = String(body.title || '');
 				const now = new Date().toISOString();
 
 				await db.prepare(
 					`INSERT INTO group_dms (id, host_id, title, member, post, unread, time, created_at)
-					 VALUES (?, ?, ?, ?, '[]', '{}', ?, ?)`
-				).bind(id, hostId, title, JSON.stringify(member), now, now).run();
+					 VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+				).bind(id, hostId, title, JSON.stringify(member), JSON.stringify({ _accepted: accepted }), now, now).run();
 
 				const row = await db.prepare('SELECT * FROM group_dms WHERE id = ?').bind(id).first();
 				return json(normalizeGroupDmRow(row, hostId));
@@ -2764,6 +2765,8 @@ export default {
 			if (method === 'POST' && pathname.match(/^\/group-dms\/([^/]+)\/update$/)) {
 				const dmId = decodeURIComponent(pathname.split('/')[2]);
 				const updates = await request.json();
+				const currentRow = await db.prepare('SELECT * FROM group_dms WHERE id = ?').bind(dmId).first();
+				if (!currentRow) return notFound('Group DM not found');
 				const sets = [];
 				const values = [];
 
@@ -2772,6 +2775,11 @@ export default {
 				if (updates.member !== undefined) { sets.push('member = ?'); values.push(JSON.stringify(updates.member.map(Number))); }
 				if (updates.post !== undefined) { sets.push('post = ?'); values.push(JSON.stringify(updates.post)); }
 				if (updates.unread !== undefined) { sets.push('unread = ?'); values.push(JSON.stringify(updates.unread)); }
+				if (updates.accepted !== undefined) {
+					const unread = parseJsonSafe(currentRow.unread, {});
+					unread._accepted = Array.isArray(updates.accepted) ? updates.accepted.map(Number) : [];
+					sets.push('unread = ?'); values.push(JSON.stringify(unread));
+				}
 				if (updates.time !== undefined) { sets.push('time = ?'); values.push(updates.time); }
 
 				if (sets.length > 0) {
@@ -2797,6 +2805,7 @@ export default {
 				const members = parseJsonSafe(row.member, []);
 
 				if (senderId != null) {
+					unread[String(senderId)] = 0;
 					for (const m of members) {
 						if (Number(m) !== senderId) {
 							const k = String(m);

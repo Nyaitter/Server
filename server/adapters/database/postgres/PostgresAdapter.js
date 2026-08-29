@@ -4138,9 +4138,10 @@ class PostgresAdapter extends DatabaseAdapter {
 			const posts = Array.isArray(row.post) ? row.post : parseJsonSafe(row.post, []);
 			posts.push(message);
 
-			const unread = { ...(typeof row.unread === 'object' && row.unread !== null ? row.unread : parseJsonSafe(row.unread, {})) };
-			if (senderId !== null) {
-				for (const memberId of row.member || []) {
+		const unread = { ...(typeof row.unread === 'object' && row.unread !== null ? row.unread : parseJsonSafe(row.unread, {})) };
+		if (senderId !== null) {
+			unread[String(senderId)] = 0;
+			for (const memberId of row.member || []) {
 					const normalizedMemberId = Number(memberId);
 					if (normalizedMemberId === Number(senderId)) continue;
 					const key = String(normalizedMemberId);

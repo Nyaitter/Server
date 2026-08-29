@@ -1259,6 +1259,7 @@ class D1Adapter extends DatabaseAdapter {
 		const dm = await this._write('/group-dms', {
 			hostId: requireId(dmData.hostId, 'hostId'),
 			member: this._normalizeIds(dmData.member || []),
+			accepted: this._normalizeIds(dmData.accepted || dmData.member || []),
 			title: String(dmData.title || ''),
 		});
 		return serializeGroupDm(dm, dmData.hostId);

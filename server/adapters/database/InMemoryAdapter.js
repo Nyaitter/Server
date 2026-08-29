@@ -2039,6 +2039,14 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 		if (senderId !== null) {
 			dm.unread = dm.unread || {};
+			const senderKey = String(senderId);
+			const previousSenderUnread = Number(dm.unread[senderKey] || 0);
+			dm.unread[senderKey] = 0;
+			if (previousSenderUnread > 0) {
+				const nextTotal = Math.max(0, (this.groupDmUnreadTotalByMember.get(Number(senderId)) || 0) - previousSenderUnread);
+				if (nextTotal === 0) this.groupDmUnreadTotalByMember.delete(Number(senderId));
+				else this.groupDmUnreadTotalByMember.set(Number(senderId), nextTotal);
+			}
 			for (const memberId of dm.member) {
 				if (memberId !== senderId) {
 					dm.unread[memberId] = (dm.unread[memberId] || 0) + 1;
