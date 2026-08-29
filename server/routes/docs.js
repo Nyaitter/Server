@@ -22,7 +22,7 @@ const DEFAULT_DOCUMENTS = [
     id: 'nyaitter-auth',
     category: 'developer',
     title: 'NyaitterAuth 連携仕様',
-    description: '外部 Web サイトやアプリに Nyaitter アカウントでのシングルサインオン（SSO）と認可を提供する連携仕様書です。',
+    description: '外部 Web サイトやアプリに Nyaitter アカウントでのシングルサインオンと認可を提供する連携仕様書です。',
     url: '#docs/nyaitter-auth',
     icon: 'key',
     isExternal: false,
@@ -45,7 +45,7 @@ const NYAITTER_AUTH_DOC = {
   updated_at: '2026-08-25',
   content: `# NyaitterAuth 連携仕様書
 
-NyaitterAuth は、外部 Web アプリケーションやツールが Nyaitter アカウントを利用してログイン認証（SSO）を行い、ユーザーの許可を得て Nyaitter のリソースにアクセスするための認可システムです。
+NyaitterAuth は、外部 Web アプリケーションやツールが Nyaitter アカウントを利用してログイン認証を行い、ユーザーの許可を得て Nyaitter のリソースにアクセスするための認可システムです。
 
 ---
 
@@ -87,7 +87,7 @@ NyaitterAuth は OAuth 2.0 / PKCE (Proof Key for Code Exchange) に準拠した�
   "redirect_uri": "https://yourapp.example.com/callback",
   "scopes": ["profile", "posts:read", "posts:write"],
   "state": "ランダムな状態文字列",
-  "code_challenge": "PKCEコードチャレンジ（推奨）",
+  "code_challenge": "PKCEコードチャレンジ",
   "code_challenge_method": "S256"
 }
 \`\`\`
@@ -114,7 +114,7 @@ NyaitterAuth は OAuth 2.0 / PKCE (Proof Key for Code Exchange) に準拠した�
 \`\`\`json
 {
   "code": "auth_code_from_callback",
-  "code_verifier": "PKCEコードベリファイア（S256検証用）"
+  "code_verifier": "PKCEコードベリファイア"
 }
 \`\`\`
 
@@ -166,7 +166,7 @@ NyaitterAuth は OAuth 2.0 / PKCE (Proof Key for Code Exchange) に準拠した�
 
 | スコープ | 説明 |
 | :--- | :--- |
-| \`profile\` | ユーザーの基本プロフィール（ID、名前、アイコン、自己紹介）の閲覧 |
+| \`profile\` | ユーザーの基本プロフィールの閲覧 |
 | \`posts:read\` | タイムラインおよび投稿の読み取り |
 | \`posts:write\` | ユーザー名義での新規投稿作成・リアクション |
 | \`dm:read\` | ダイレクトメッセージの閲覧 |
@@ -189,7 +189,7 @@ const auth = new NyaitterAuthClient({
   scopes: ['profile', 'posts:read'],
 });
 
-// 1. 認証開始（認可画面へリダイレクト）
+// 1. 認証開始
 document.getElementById('login-btn').addEventListener('click', async () => {
   await auth.login();
 });

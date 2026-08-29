@@ -389,7 +389,7 @@ function generatePostOgpTags({ post, author, publicUrl }) {
 `;
 	}
 
-	// 複数画像がある場合は複数の og:image タグを出力（Discord / Telegram / Facebook のギャラリー表示用）
+	// 複数画像がある場合は複数の og:image タグを出力
 	let imageTags = '';
 	if (images.length > 0) {
 		imageTags = images.slice(0, 4).map((img) => `    <meta property="og:image" content="${escapeHtml(img.url)}" />`).join('\n');

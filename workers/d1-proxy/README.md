@@ -1,6 +1,6 @@
 # D1 Proxy Worker ガイド
 
-Nyaitter サーバーが Cloudflare D1（データベース）と安全に通信するためのプログラム（Worker）です。
+Nyaitter サーバーが Cloudflare D1と安全に通信するためのプログラムです。
 
 ## セットアップ手順
 
@@ -32,7 +32,7 @@ cd workers/d1-proxy
 npm run deploy
 ```
 
-### 4. サーバー本体（`server/.env`）への設定
+### 4. サーバー本体への設定
 ```dotenv
 DB_ADAPTER=d1
 D1_WORKER_URL=https://あなたのWorker名.workers.dev

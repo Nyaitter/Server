@@ -59,7 +59,7 @@ function startPollExpirationScheduler(
           logger.warn?.('[polls] failed to notify author:', err.message);
         }
 
-        // 2. 投票者への通知（ポスト主を除く）
+        // 2. 投票者への通知
         const recipientVoters = voters.filter((vId) => Number(vId) !== authorId);
         for (const voterId of recipientVoters) {
           try {

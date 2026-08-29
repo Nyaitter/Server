@@ -14,7 +14,7 @@ function getDbAdapter(req) {
 
 router.get({
   path: '/summary',
-  summary: 'ナビゲーション用の未読カウントサマリー（通知未読数・DM未読数）の取得',
+  summary: 'ナビゲーション用の未読カウントサマリーの取得',
   auth: 'required',
 }, requireAuth, async (req, res) => {
   const db = getDbAdapter(req);

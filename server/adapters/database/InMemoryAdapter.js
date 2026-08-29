@@ -3172,7 +3172,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				wordUsers.get(word).add(userId);
 			}
 
-			// tags: 「単語より1段階広い範囲」（複合語・フレーズ）
+			// tags: 「単語より1段階広い範囲」
 			const sanitizedContent = content
 				.replace(/https?:\/\/[^\s]+/giu, ' ')
 				.replace(/@[\p{L}\p{N}_-]+/giu, ' ')
@@ -3279,7 +3279,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		if (type === 'words') return wordsList;
 		if (type === 'tags') return tagsList.length > 0 ? tagsList : wordsList;
 
-		// 全体マージソート（互換用）
+		// 全体マージソート
 		const mergedUsers = new Map();
 		for (const [k, set] of hashtagUsers) {
 			if (!mergedUsers.has(k)) mergedUsers.set(k, new Set());
@@ -3886,7 +3886,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 		}
 
-		// 新規投票を挿入（アダプター共通でアプリ側でユニークIDを明示的に生成）
+		// 新規投票を挿入
 		for (const optId of targetOptionIds) {
 			const newVoteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
 			const vote = {

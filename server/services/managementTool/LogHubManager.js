@@ -296,7 +296,7 @@ class LogHubManager {
 
     this.wss = new WebSocketServer({ noServer: true });
 
-    // 定期的な Server Status の WebSocket ブロードキャスト（3秒間隔）
+    // 定期的な Server Status の WebSocket ブロードキャスト
     setInterval(async () => {
       if (!this.wss || !this.serverControl || typeof this.serverControl.getStatus !== 'function') return;
       if (this.wss.clients.size === 0) return;
@@ -329,7 +329,7 @@ class LogHubManager {
     });
 
     this.wss.on('connection', async (ws) => {
-      // 接続時に直近のフィルタリングログ（通常ログ除外）を送信
+      // 接続時に直近のフィルタリングログを送信
       const initialLogs = this.getLogs({
         types: ['error', 'security', 'ai', 'admin', 'moderation'],
         limit: 100,

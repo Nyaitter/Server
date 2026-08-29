@@ -131,8 +131,8 @@ async function listAccessibleImposters(db, operatorId) {
   for (const imposter of imposters) {
     let metadata = getImposterMetadata(imposter);
 
-    // 自己修復（Auto-healing）:
-    // もしインポスターの parent_id が現在のDBに存在せず孤立しており、かつ操作者が通常アカウント（親候補）の場合
+    // 自己修復:
+    // もしインポスターの parent_id が現在のDBに存在せず孤立しており、かつ操作者が通常アカウントの場合
     if (metadata && !existingUserIds.has(metadata.parent_id) && operatorUser && operatorUser.auth_provider !== 'imposter') {
       metadata.parent_id = effectiveParentId;
       const updatedSettings = {

@@ -15,7 +15,7 @@ const VALID_RANKING_TYPES = new Set(['followers', 'posts', 'likes', 'stars']);
 
 router.get({
   path: '/me',
-  summary: '自分のランキング順位（フォロワー・投稿・いいね・スター）の取得',
+  summary: '自分のランキング順位の取得',
   auth: 'required',
 }, requireAuth, async (req, res) => {
   const db = getDbAdapter(req);

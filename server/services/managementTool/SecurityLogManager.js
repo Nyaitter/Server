@@ -156,7 +156,7 @@ class SecurityLogManager {
     // 2. 短時間の大量404スキャン検知 (1分間に15回以上の404)
     if (ipStat.count404 === 15) {
       this._recordSecurityEvent({
-        reason: '短時間の大量404エラー（エンドポイント探索・辞書攻撃の疑い）',
+        reason: '短時間の大量404エラー',
         severity: 'medium',
         ip,
         method,
@@ -170,7 +170,7 @@ class SecurityLogManager {
     // 3. 超高頻度リクエスト (1分間に200リクエスト超)
     if (ipStat.count === 200) {
       this._recordSecurityEvent({
-        reason: '異常なリクエスト頻度（DoS / 高頻度スクレイピングの疑い）',
+        reason: '異常なリクエスト頻度',
         severity: 'high',
         ip,
         method,

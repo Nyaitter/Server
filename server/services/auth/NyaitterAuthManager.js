@@ -275,7 +275,7 @@ class NyaitterAuthManager {
       }
     }
 
-    // 権限の変更・追加差分（New Scopes）の計算
+    // 権限の変更・追加差分の計算
     const requestedScopes = Array.isArray(requestData.scopes) ? requestData.scopes : [];
     const newScopes = alreadyAuthorized
       ? requestedScopes.filter((s) => !existingScopes.includes(s.scope))
@@ -375,7 +375,7 @@ class NyaitterAuthManager {
       );
     }
 
-    // 承認ユーザーのスナップショット情報取得（プロセス分離時の確実な共有のため）
+    // 承認ユーザーのスナップショット情報取得
     let userSnapshot = null;
     if (db && typeof db.getUserById === 'function') {
       try {

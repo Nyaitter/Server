@@ -287,7 +287,7 @@ async function processCreatePostAction(context, payload) {
     ? (rawReplyControl === 'following_or_mentioned' ? 'following' : (rawReplyControl === 'mentioned_only' ? 'mentioned' : rawReplyControl))
     : 'everyone';
 
-  // 返信は強制的に返信先と同一グループ（またはグループなし）に統一し、返信権限を検証
+  // 返信は強制的に返信先と同一グループに統一し、返信権限を検証
   if (replyTo) {
     let replyTarget = relatedPosts.get(replyTo);
     if (!replyTarget && typeof context.db.getPostById === 'function') {
@@ -296,12 +296,12 @@ async function processCreatePostAction(context, payload) {
     if (replyTarget) {
       let rootPost = replyTarget;
 
-      // WITH RECURSIVE で祖先を 1 クエリで取得（利用可能な場合）
+      // WITH RECURSIVE で祖先を 1 クエリで取得
       if (typeof context.db.getPostAncestors === 'function') {
         const ancestors = await context.db.getPostAncestors(replyTo);
         for (const ancestor of ancestors) {
           relatedPosts.set(Number(ancestor.id), ancestor);
-          rootPost = ancestor; // 最後が最も深い祖先（ルート）
+          rootPost = ancestor; // 最後が最も深い祖先
         }
       } else {
         // フォールバック: 旧来の直列走査
@@ -490,7 +490,7 @@ async function processCreatePostAction(context, payload) {
     notificationTasks.push(notifyGroupAnnouncement(context, group, post));
   }
 
-  // 購読者通知（返信・単純リポスト以外）
+  // 購読者通知
   if (!replyTo && !isSimpleRepost && typeof context.db.getUserPostSubscribers === 'function') {
     try {
       const subscribers = await context.db.getUserPostSubscribers(userId);
@@ -531,7 +531,7 @@ async function processCreatePostAction(context, payload) {
     }
   }
 
-  // 全通知を並列実行（失敗しても投稿自体はロールバックしない）
+  // 全通知を並列実行
   await Promise.allSettled(notificationTasks);
 
   await publishNewTimelinePost(context, post);

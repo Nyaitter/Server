@@ -2336,7 +2336,7 @@ class PostgresAdapter extends DatabaseAdapter {
 						? client.query('UPDATE posts SET repost_count = repost_count + 1 WHERE id = $1', [Number(post.repostTo)])
 						: null,
 				].filter(Boolean));
-				// キーワード親和度はトランザクション外でバックグラウンド更新（COMMITをブロックしない）
+				// キーワード親和度はトランザクション外でバックグラウンド更新
 				const savedPost = post;
 				setImmediate(() => {
 					this.pool.connect().then((bgClient) => {
@@ -2456,7 +2456,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	/**
 	 * WITH RECURSIVE で 1 クエリで祖先ポストを全取得。
-	 * 返り値は [直接の親, ..., ルートポスト] の配列（浅い→深い順）。
+	 * 返り値は [直接の親, ..., ルートポスト] の配列。
 	 * PostgreSQL・CockroachDB 両方互換。
 	 */
 	async getPostAncestors(postId, maxDepth = 20) {
@@ -2466,7 +2466,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		// WITH RECURSIVE: 起点を direct parent、JOIN で上方向に再帰
 		// p.* に depth 計算列を含める形ではなく、depth は CTE の独立列として管理し
-		// 外側 SELECT では posts の実カラムのみを取得（CockroachDB 互換）
+		// 外側 SELECT では posts の実カラムのみを取得
 		const { rows } = await this.pool.query(
 			`WITH RECURSIVE ancestors(post_id, anc_depth) AS (
 			   SELECT reply_to, 1
@@ -3305,7 +3305,7 @@ class PostgresAdapter extends DatabaseAdapter {
 				wordUsers.get(word).add(userId);
 			}
 
-			// tags: 「単語より1段階広い範囲」（複合語・フレーズ）
+			// tags: 「単語より1段階広い範囲」
 			const sanitizedContent = content
 				.replace(/https?:\/\/[^\s]+/giu, ' ')
 				.replace(/@[\p{L}\p{N}_-]+/giu, ' ')
@@ -5366,13 +5366,13 @@ class PostgresAdapter extends DatabaseAdapter {
 				targetOptionIds = [targetOptionIds[0]];
 			}
 
-			// 既存の投票を削除（再投票/更新）
+			// 既存の投票を削除
 			await client.query(
 				'DELETE FROM poll_votes WHERE poll_id::text = $1 AND user_id::text = $2',
 				[String(poll.id), uId],
 			);
 
-			// 新規投票を挿入（アダプター共通でアプリ側でユニークIDを明示的に生成し、poll.id を確実に渡す）
+			// 新規投票を挿入
 			const now = new Date().toISOString();
 			for (const optId of targetOptionIds) {
 				const voteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);

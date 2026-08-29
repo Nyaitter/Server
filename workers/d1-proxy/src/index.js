@@ -2292,7 +2292,7 @@ export default {
 						wordUsers.get(word).add(userId);
 					}
 
-					// tags: 「単語より1段階広い範囲」（複合語・フレーズ）
+					// tags: 「単語より1段階広い範囲」
 					const sanitizedContent = content
 						.replace(/https?:\/\/[^\s]+/giu, ' ')
 						.replace(/@[\p{L}\p{N}_-]+/giu, ' ')
@@ -3252,7 +3252,7 @@ export default {
 				// 既存の投票を削除
 				await db.prepare('DELETE FROM poll_votes WHERE poll_id = ? AND user_id = ?').bind(poll.id, userId).run();
 
-				// 新規投票を挿入（poll.id を確実に外部キーとして渡す）
+				// 新規投票を挿入
 				for (const optId of optionIds) {
 					const voteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
 					await db.prepare(

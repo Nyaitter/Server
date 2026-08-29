@@ -3,9 +3,9 @@ class StorageAdapter {
    * ファイルをアップロードする
    * @param {Object} params
    * @param {Buffer|ReadableStream} params.file - ファイル本体
-   * @param {string} params.fileName - 保存時のファイル名（ID含む）
+   * @param {string} params.fileName - 保存時のファイル名
    * @param {string} params.contentType - MIMEタイプ
-   * @param {string} [params.folder] - フォルダ（例: "attachments", "icons"）
+   * @param {string} [params.folder] - フォルダ
    * @returns {Promise<{id: string, url: string}>} - 保存されたファイルのIDと公開URL
    */
   async upload(params) {

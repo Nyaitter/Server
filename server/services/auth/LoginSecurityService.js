@@ -40,8 +40,8 @@ const ipHashSecret = getOrPersistHmacSecret();
 
 /**
  * IPアドレスを正規化します。
- * IPv6の一時アドレス（RFC 4941 Privacy Extensions）による下位64ビットの頻繁なローテーションに対応するため、
- * IPv6の場合は /64 プレフィックス（上位4ブロック）に正規化します。
+ * IPv6の一時アドレスによる下位64ビットの頻繁なローテーションに対応するため、
+ * IPv6の場合は /64 プレフィックスに正規化します。
  * @param {string} ip
  * @returns {string}
  */

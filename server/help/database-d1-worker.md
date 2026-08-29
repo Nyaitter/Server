@@ -1,6 +1,6 @@
-# Cloudflare D1（データベース）設定ガイド
+# Cloudflare D1設定ガイド
 
-Cloudflare D1 を Nyaitter のデータベースとして使用する手順です。専用の接続プログラム（Worker）を経由して安全に通信します。
+Cloudflare D1 を Nyaitter のデータベースとして使用する手順です。専用の接続プログラムを経由して安全に通信します。
 
 ## 1. D1 データベースの作成
 
@@ -32,7 +32,7 @@ cd ../..
 # データベースの初期化
 DB_ADAPTER=d1 npm run migrate
 
-# Worker の公開（デプロイ）
+# Worker の公開
 cd workers/d1-proxy
 npm run deploy
 ```

@@ -100,7 +100,7 @@ class AiAnalysisService {
     ]);
 
     const list = [
-      { id: 'auto', name: 'Auto（最新利用可能モデルを自動選択）', provider: 'auto' },
+      { id: 'auto', name: 'Auto', provider: 'auto' },
     ];
 
     if (geminiModels.length > 0) {
@@ -138,22 +138,22 @@ class AiAnalysisService {
     const activeGuidelines = (guidelines || this.guidelines || '').trim();
 
     const prompt = isAutoFix
-      ? `【重要：自律対応・自動修正（Autonomous Action Agent）】
-あなたはNyaitterサーバー（Node.js / Express / PostgreSQL / D1 / SPA）の開発者向け自律対応専門エージェントです。
+      ? `【重要：自律対応・自動修正】
+あなたはNyaitterサーバーの開発者向け自律対応専門エージェントです。
 システム的な固定自動実行を避け、スタックトレースおよびプロジェクト内のコード、環境を調査した上で、**あなた自身の判断で必要な対応をすべて自律的に実行してください**。
 
 【自律実行可能な対応アクション】
 1. 問題のあるファイルの直接修正:
    - 根本原因を特定し、Git追跡対象のファイルを直接編集・修正してください。
    - 修正後は \`node --check <ファイルパス>\` 等で構文エラーがないか自己検証を行ってください。
-2. GitHub Issue / Pull Request の作成（自律判断）:
-   - バグ追跡やコードレビューが必要と判断した場合、\`gh\` CLI（\`gh issue create\`, \`gh pr create\`）や Git コマンドを自律実行して作成してください。
-3. サーバー再起動（自律判断）:
+2. GitHub Issue / Pull Request の作成:
+   - バグ追跡やコードレビューが必要と判断した場合、\`gh\` CLIや Git コマンドを自律実行して作成してください。
+3. サーバー再起動:
    - コード修正をサーバーに反映させるために再起動が必要と判断した場合、\`npm run cli -- server restart\` を実行してサーバーを再起動してください。
-4. セキュリティインシデントへの昇格（自律判断）:
+4. セキュリティインシデントへの昇格:
    - 脆弱性や不正アクセス、機密情報漏えいリスクを検知した場合は \`NMT_SECURITY_ESCALATE: true\` を出力してください。
 5. 報告書の作成:
-   - 自律的に判断・実施したすべてのアクション（原因、修正内容、修正ファイル一覧、PR/Issue作成状況、サーバー再起動状況、セキュリティ評価）をまとめた報告書を作成してください。
+   - 自律的に判断・実施したすべてのアクションをまとめた報告書を作成してください。
 
 【厳格な安全規則】
 - 修正対象はGit追跡対象の既存ファイルのみです。.envやnode_modules、未追跡の機密ファイルは変更禁止です。
@@ -163,7 +163,7 @@ class AiAnalysisService {
 【Safety Guardrails設定】
 以下の設定は起動時にserver/.envから読み込まれた現在値です。必ず従ってください。
 ${JSON.stringify(this.guardrails)}
-${activeGuidelines ? `\n【開発ガイドライン（ユーザー設定指示）】\n${activeGuidelines}\n` : ''}
+${activeGuidelines ? `\n【開発ガイドライン】\n${activeGuidelines}\n` : ''}
 【エラー情報】
 - エラー種別/メッセージ: ${errorRecord.message || '不明'}
 - 発生日時: ${errorRecord.timestamp || new Date().toISOString()}
@@ -186,18 +186,18 @@ NMT_AUTOFIX_APPLIED: true または false
 NMT_SECURITY_ESCALATE: true または false
 
 ### 1. 原因の分析
-### 2. 自律的に実施した対応（ファイル修正、PR/Issue作成、サーバー再起動など）
+### 2. 自律的に実施した対応
 ### 3. 修正したファイル一覧
 ### 4. セキュリティ評価
 ### 5. 今後の推奨事項・残課題`
-      : `【重要：調査・解析専用エージェント（編集・変更禁止）】
-あなたはNyaitterサーバー（Node.js / Express / PostgreSQL / D1 / SPA）の開発者向けエラー解析専門エージェントです。
+      : `【重要：調査・解析専用エージェント】
+あなたはNyaitterサーバーの開発者向けエラー解析専門エージェントです。
 現在のプロジェクト内のコードや設定ファイル、関連モジュールを自律的に確認・読み取り・調査してください。
 
 【厳格な制限事項】
 - ファイルの編集、書き換え、作成、削除などの変更操作は一切禁止されています。
 - リードオンリーでコードを検索・確認するのみに留めてください。
-${activeGuidelines ? `\n【開発ガイドライン（ユーザー設定指示）】\n${activeGuidelines}\n` : ''}
+${activeGuidelines ? `\n【開発ガイドライン】\n${activeGuidelines}\n` : ''}
 【エラー情報】
 - エラー種別/メッセージ: ${errorRecord.message || '不明'}
 - 発生日時: ${errorRecord.timestamp || new Date().toISOString()}
@@ -210,7 +210,7 @@ ${errorRecord.stack || '(スタックトレースなし)'}
 
 【調査手順】
 1. スタックトレースに記載された該当ファイルや行番号、関連関数をプロジェクト内から読み取って確認してください。
-2. なぜそのエラーが発生したのか（プロパティ未定義、型不一致、API不整合など）の根本原因を特定してください。
+2. なぜそのエラーが発生したのかの根本原因を特定してください。
 3. 修正に必要なコード変更案を作成してください。
 
 【出力形式】
@@ -224,7 +224,7 @@ NMT_SECURITY_ESCALATE: true または false
 ### 1. 原因の分析
 ### 2. 影響範囲
 ### 3. 具体的な対応・修正手順
-### 4. 修正コード例（該当する場合）`;
+### 4. 修正コード例`;
 
     return this._callAi(prompt, 'error_analysis', { allowEdit: isAutoFix });
   }
@@ -258,7 +258,7 @@ Git追跡対象と既存の運用設定を確認し、必要な操作を自律�
   }
 
   async analyzeSecurityLog(securityEvent) {
-    const prompt = `【重要：調査・解析専用エージェント（編集・変更禁止）】
+    const prompt = `【重要：調査・解析専用エージェント】
 あなたはWebセキュリティとアクセスログ解析の専門エージェントです。
 サーバーのルーティング設定やミドルウェア設定を読み取って確認し、攻撃の意図と対策を提示してください。
 
@@ -282,8 +282,8 @@ ${JSON.stringify(securityEvent.details || {}, null, 2)}
 最初に、緊急対応エージェントへの昇格が必要かを次の形式で必ず1行出力してください。通常のスキャンや誤検知ならfalseにしてください。
 NMT_SECURITY_ESCALATE: true または false
 ### 1. 攻撃/アクセスの意図と手法
-### 2. 危険度評価（高/中/低）
-### 3. 推奨される防御・対処手順（Cloudflare WAFルールやIPブロック等）`;
+### 2. 危険度評価
+### 3. 推奨される防御・対処手順`;
 
     return this._callAi(prompt, 'security_analysis');
   }
@@ -319,7 +319,7 @@ NMT_SECURITY_ESCALATE: true または false
       throw new Error('OpenCode agent is required for auto-fix but is not available');
     }
 
-    // エラー解析・セキュリティ調査（リードオンリー）は Direct API を優先して高速処理
+    // エラー解析・セキュリティ調査は Direct API を優先して高速処理
     const isAutoOrGemini = !this.preferredModel || this.preferredModel === 'auto' || this.preferredModel.includes('gemini') || this.preferredModel.includes('google');
     if (this.geminiApiKey && isAutoOrGemini) {
       try {
@@ -639,26 +639,26 @@ NMT_SECURITY_ESCALATE: true または false
   _generateHeuristicAdvice(prompt, taskType) {
     if (taskType === 'error_analysis') {
       return `### 1. 原因の分析
-エラーのスタックトレースおよびコンテキストから、プロパティ参照エラー（TypeError）またはAPIパラメータの欠落の可能性が高いです。
+エラーのスタックトレースおよびコンテキストから、プロパティ参照エラーまたはAPIパラメータの欠落の可能性が高いです。
 
 ### 2. 影響範囲
 対象エンドポイントへのリクエストが500エラーとなり、該当機能の利用が一時的に失敗します。
 
 ### 3. 具体的な対応・修正手順
-1. エラーが発生したモジュールで未定義オブジェクトのオプショナルチェーン（\`?.\`）またはnull/undefinedチェックを実施してください。
-2. DBアダプターメソッドの引数・戻り値型と呼び出し側のプロパティ名（キャメルケース/スネークケース）が一致しているか確認してください。
+1. エラーが発生したモジュールで未定義オブジェクトのオプショナルチェーンまたはnull/undefinedチェックを実施してください。
+2. DBアダプターメソッドの引数・戻り値型と呼び出し側のプロパティ名が一致しているか確認してください。
 3. 修正後に \`node --check\` および該当テストを実行して安全を確認してください。`;
     }
 
     return `### 1. 攻撃/アクセスの意図と手法
-単一または分散IPからの自動スキャンツールによる脆弱性探索（.env, adminパス, SQLiスキャン等）が検知されました。
+単一または分散IPからの自動スキャンツールによる脆弱性探索が検知されました。
 
 ### 2. 危険度評価
-**中（自動スキャン）** - システムが適切に404/403を返している限り直接の侵害リスクは低いです。
+**中** - システムが適切に404/403を返している限り直接の侵害リスクは低いです。
 
 ### 3. 推奨される防御・対処手順
 1. Cloudflare WAFで該当IPアドレスまたは怪しいUser-AgentをBlockリストへ追加してください。
-2. レートリミット（Express rate-limiter）の閾値を超えたクライアントへの一時的IP遮断ルールを検討してください。`;
+2. レートリミットの閾値を超えたクライアントへの一時的IP遮断ルールを検討してください。`;
   }
 }
 

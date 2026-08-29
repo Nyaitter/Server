@@ -118,7 +118,7 @@ class ManagementNotificationManager {
       }
     }
 
-    // Nyaitter 本体のプッシュサービスとの連携（もしあれば）
+    // Nyaitter 本体のプッシュサービスとの連携
     if (this.mainPushService && typeof this.mainPushService.sendPushToAdmins === 'function') {
       try {
         this.mainPushService.sendPushToAdmins({ title: item.title, body: item.message });

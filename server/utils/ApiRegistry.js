@@ -84,7 +84,7 @@ function generateCurlSnippet(endpoint) {
 
 /**
  * NyaitterAPI 共通仕様レジストリ
- * すべての公開 API エンドポイントのメタデータ（パス、メソッド、概要、認証要否など）を一元管理し、
+ * すべての公開 API エンドポイントのメタデータを一元管理し、
  * 仕様登録されていないエンドポイントの公開を禁止します。
  */
 class ApiRegistry {
@@ -105,7 +105,7 @@ class ApiRegistry {
       throw new Error(`API パスは '/' から始まる文字列である必要があります: ${spec.path}`);
     }
     if (!spec.summary || typeof spec.summary !== 'string' || spec.summary.trim() === '') {
-      throw new Error(`API 仕様に summary（機能の概要）が必須です: [${spec.method || 'METHOD'}] ${spec.path}`);
+      throw new Error(`API 仕様に summaryが必須です: [${spec.method || 'METHOD'}] ${spec.path}`);
     }
     const validAuth = ['none', 'optional', 'required', 'admin', 'session', 'frozen_session', 'bot'];
     if (spec.auth && !validAuth.includes(spec.auth)) {
@@ -221,8 +221,8 @@ class ApiRegistry {
    * 仕様登録が必須化された API ルーターを作成します。
    *
    * @param {object} options
-   * @param {string} options.tag - API カテゴリ名（例: 'posts', 'users'）
-   * @param {string} [options.basePath] - ベースパス（例: '/posts'）
+   * @param {string} options.tag - API カテゴリ名
+   * @param {string} [options.basePath] - ベースパス
    * @param {string} [options.description] - カテゴリ説明
    * @returns {import('express').Router}
    */
@@ -237,7 +237,7 @@ class ApiRegistry {
         if (typeof specOrPath === 'string') {
           const maybeSpec = handlers.find((h) => h && typeof h === 'object' && !Array.isArray(h) && (h.summary || h.auth));
           if (!maybeSpec) {
-            throw new Error(`[ApiRegistry] エンドポイント [${httpMethod.toUpperCase()}] ${cleanBasePath}${specOrPath} に API 仕様（summary, auth 等）の登録が必須です。仕様オブジェクトを第1引数に渡してください。`);
+            throw new Error(`[ApiRegistry] エンドポイント [${httpMethod.toUpperCase()}] ${cleanBasePath}${specOrPath} に API 仕様の登録が必須です。仕様オブジェクトを第1引数に渡してください。`);
           }
           spec = { ...maybeSpec, path: specOrPath, method: httpMethod };
           handlers = handlers.filter((h) => h !== maybeSpec);

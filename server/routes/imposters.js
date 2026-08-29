@@ -20,7 +20,7 @@ const {
 const router = api.createRouter({
   tag: 'imposters',
   basePath: '/imposters',
-  description: 'インポスター（代理・サブアカウント）API',
+  description: 'インポスターAPI',
 });
 
 function getDbAdapter(req) {

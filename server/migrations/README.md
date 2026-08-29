@@ -4,7 +4,7 @@
 
 ## 実行方法
 
-`server/.env` にデータベースの設定（PostgreSQL または D1）を記入し、リポジトリのルートで実行します。
+`server/.env` にデータベースの設定を記入し、リポジトリのルートで実行します。
 
 ```bash
 npm run migrate

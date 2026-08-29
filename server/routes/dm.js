@@ -9,7 +9,7 @@ const { isWithinRange, describeIntegerRange } = require('../utils/settingFormats
 const router = api.createRouter({
 	tag: 'dm',
 	basePath: '/dm',
-	description: 'ダイレクトメッセージ（DM）API',
+	description: 'ダイレクトメッセージAPI',
 });
 
 const { createRateLimiter } = require('../middleware/rateLimit');
@@ -123,7 +123,7 @@ function normalizeClientMessage(message, userId) {
 
 	const content = String(message.content || '').trim();
 
-	// E2E暗号化メッセージ（平文 content を含まず、受信者ごとの暗号文を持つ）
+	// E2E暗号化メッセージ
 	if (message.e2e && typeof message.e2e === 'object') {
 		if (!config.dm.e2eEnabled) {
 			throw new Error('DM E2E encryption is temporarily disabled');

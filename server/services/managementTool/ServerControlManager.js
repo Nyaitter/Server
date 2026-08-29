@@ -196,7 +196,7 @@ class ServerControlManager {
       return { success: true, mode: 'pm2', message: 'PM2 再起動シグナルを送信しました。' };
     }
 
-    // ── 安全なプロセス分離再起動（新プロセスの起動確認後に旧プロセスを交代） ──
+    // ── 安全なプロセス分離再起動 ──
     const { spawn } = require('child_process');
     const net = require('net');
     const mainScript = path.resolve(PROJECT_ROOT, 'server/index.js');
@@ -224,7 +224,7 @@ class ServerControlManager {
         if (timeoutTimer) clearTimeout(timeoutTimer);
       };
 
-      // 1. 新プロセスのヘルスチェック（ポート接続確認）
+      // 1. 新プロセスのヘルスチェック
       checkInterval = setInterval(() => {
         const socket = net.createConnection({ port: serverPort, host: '127.0.0.1' }, () => {
           socket.end();
@@ -250,7 +250,7 @@ class ServerControlManager {
         });
       }, 1000);
 
-      // 2. タイムアウト（30秒以内に起動しない場合は旧プロセス維持）
+      // 2. タイムアウト
       timeoutTimer = setTimeout(() => {
         cleanup();
         if (isResolved) return;
@@ -360,7 +360,7 @@ class ServerControlManager {
           }
         });
 
-        // 4. タイムアウト（15秒）
+        // 4. タイムアウト
         timeoutTimer = setTimeout(() => {
           cleanup();
           if (isResolved) return;
@@ -397,7 +397,7 @@ class ServerControlManager {
     console.log('[NMT] Server stop requested via Management Tool.');
     if (typeof this.shutdownFn === 'function') {
       setTimeout(() => this.shutdownFn('NMT_STOP'), 500);
-      return { success: true, message: 'サーバー停止（シャットダウン）を開始しました。' };
+      return { success: true, message: 'サーバー停止を開始しました。' };
     }
 
     setTimeout(() => process.exit(0), 500);

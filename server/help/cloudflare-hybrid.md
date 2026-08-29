@@ -1,6 +1,6 @@
 # Cloudflare 連携構成
 
-Cloudflare のサービス（D1 データベース、R2 ストレージ）を Nyaitter と組み合わせて利用する構成です。
+Cloudflare のサービスを Nyaitter と組み合わせて利用する構成です。
 
 ## 主な組み合わせパターン
 

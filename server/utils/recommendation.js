@@ -48,7 +48,7 @@ function scoreRecommendedPosts(candidatePosts, { viewerId = null, keywordProfile
 					const s = keywordProfile.get(normalizedTag);
 					if (s) {
 						// words vs tags (複合語・句) で 1:2 の影響力を適応
-						// 「の」を含む句、または長さが4文字以上の複合語（漢字・カタカナ・アルファベットの連続）は tags (2x)、それ以外は words (1x)
+						// 「の」を含む句、または長さが4文字以上の複合語は tags (2x)、それ以外は words (1x)
 						const isCompoundTag = normalizedTag.includes('の') || (normalizedTag.length >= 4 && /^[\p{Script=Han}\p{Script=Katakana}a-zA-Z0-9_-]+$/u.test(normalizedTag));
 						const weight = isCompoundTag ? 2 : 1;
 						keywordScore += s * weight;

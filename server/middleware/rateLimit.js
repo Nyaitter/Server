@@ -4,7 +4,7 @@ const config = require('../config');
 
 /**
  * 堅牢なIPアドレス抽出ヘルパー
- * プロキシ背後（CF-Connecting-IP, X-Forwarded-For等）および直接接続から安全にIPを取得
+ * プロキシ背後および直接接続から安全にIPを取得
  */
 function getClientIp(req) {
   if (config.server?.trustProxy) {
@@ -69,7 +69,7 @@ function createRateLimiter(options = {}) {
     const now = Date.now();
     let entry = store.get(key);
 
-    // 継続的過剰リクエスト（DoS / Brute Force）による一時ブロック判定
+    // 継続的過剰リクエストによる一時ブロック判定
     if (entry?.blockedUntil && now < entry.blockedUntil) {
       const retryAfterSec = Math.max(1, Math.ceil((entry.blockedUntil - now) / 1000));
       res.setHeader('Retry-After', retryAfterSec);
@@ -87,7 +87,7 @@ function createRateLimiter(options = {}) {
 
     entry.count += 1;
 
-    // 上限の2倍を超える過剰リクエストを発行した場合はクールダウンブロック（5分）
+    // 上限の2倍を超える過剰リクエストを発行した場合はクールダウンブロック
     if (entry.count > max * 2) {
       entry.blockedUntil = now + Math.max(windowMs * 5, 300000);
       res.setHeader('Retry-After', Math.max(1, Math.ceil((entry.blockedUntil - now) / 1000)));

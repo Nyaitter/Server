@@ -10,7 +10,7 @@ const router = api.createRouter({
 
 router.get({
   path: '/',
-  summary: 'Nyaitter API 全仕様（OpenAPI 互換）の取得',
+  summary: 'Nyaitter API 全仕様の取得',
   auth: 'none',
 }, (req, res) => {
   const publicUrl = req.app.locals.publicUrl || `${req.protocol}://${req.get('host')}`;

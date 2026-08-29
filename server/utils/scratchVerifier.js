@@ -92,7 +92,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 }
 
 /**
- * Scratchのコメント（プロジェクト / プロフィール）から検証コードを探す
+ * Scratchのコメントから検証コードを探す
  * @param {string} username Scratchユーザー名
  * @param {string} code 検証コード
  * @returns {Promise<boolean>}

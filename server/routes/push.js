@@ -63,7 +63,7 @@ function normalizeSubscription(value) {
 
 router.get({
   path: '/config',
-  summary: 'Web Push 設定（VAPID 公開鍵等）の取得',
+  summary: 'Web Push 設定の取得',
   auth: 'session',
 }, requireAuth, requireSessionPrincipal, async (req, res) => {
   const pushService = getPushService(req);

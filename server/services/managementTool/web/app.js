@@ -779,7 +779,7 @@ document.getElementById('server-restart-btn')?.addEventListener('click', async (
 });
 
 document.getElementById('nmt-restart-btn')?.addEventListener('click', async () => {
-  if (!confirm('NMT Console を再起動しますか？（※新プロセスの正常起動が確認できるまで現在のプロセスが維持されます）')) return;
+  if (!confirm('NMT Console を再起動しますか？')) return;
   const btn = document.getElementById('nmt-restart-btn');
   btn.disabled = true;
   btn.textContent = 'Restarting NMT...';
@@ -798,7 +798,7 @@ document.getElementById('nmt-restart-btn')?.addEventListener('click', async () =
 });
 
 document.getElementById('server-stop-btn').addEventListener('click', async () => {
-  if (!confirm('NyaitterServer を停止しますか？（※プロセスが終了します）')) return;
+  if (!confirm('NyaitterServer を停止しますか？')) return;
   const btn = document.getElementById('server-stop-btn');
   btn.disabled = true;
   btn.textContent = 'Stopping...';

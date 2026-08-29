@@ -22,7 +22,7 @@ class ConnectionManager {
     this.connectionsByUser = new Map();
     // 生のセッショントークンを保持せず、Push購読に保存されている値と同じハッシュだけを紐付ける。
     this.sessionHashBySocket = new WeakMap();
-    this.maxConnectionsPerUser = 20; // 1ユーザーあたりの最大WebSocket接続数（DoS/リソース枯渇防止）
+    this.maxConnectionsPerUser = 20; // 1ユーザーあたりの最大WebSocket接続数
   }
 
   register(userId, socket, sessionTokenHash = null) {

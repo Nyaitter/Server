@@ -1,6 +1,6 @@
 # Cloudflare R2 設定ガイド
 
-画像を Cloudflare R2（オブジェクトストレージ）に保存する設定です。画像転送量が多い場合や、サーバーレス運用に適しています。
+画像を Cloudflare R2に保存する設定です。画像転送量が多い場合や、サーバーレス運用に適しています。
 
 ## 1. 設定方法 (`server/.env`)
 
@@ -13,13 +13,13 @@ R2_ACCOUNT_ID=あなたのAccount ID
 R2_BUCKET=バケット名
 R2_ACCESS_KEY_ID=アクセスキーID
 R2_SECRET_ACCESS_KEY=シークレットアクセスキー
-R2_PUBLIC_DOMAIN=https://media.example.com # 公開カスタムドメイン（任意）
+R2_PUBLIC_DOMAIN=https://media.example.com # 公開カスタムドメイン
 ```
 
 ## 2. 動作のポイント
 
 - `R2_PUBLIC_DOMAIN` を設定した場合、画像は直接 Cloudflare から配信され、サーバーの負荷を軽減できます。
-- クライアント側（`page/config.js`）の `userFileEndpoint` にも同じ公開ドメインを設定してください。
+- クライアント側の `userFileEndpoint` にも同じ公開ドメインを設定してください。
 
 ---
 

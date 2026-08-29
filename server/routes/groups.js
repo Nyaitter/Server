@@ -277,7 +277,7 @@ router.get({
 
 router.post({
   path: '/invites/:inviteId/respond',
-  summary: 'グループ招待への応答（承認・辞退）',
+  summary: 'グループ招待への応答',
   auth: 'required',
 }, requireAuth, async (req, res) => {
   const db = getDb(req);
@@ -514,7 +514,7 @@ router.get({
 
 router.post({
   path: '/:groupId/join-requests/:requestId/respond',
-  summary: 'グループ参加申請への応答（承認・拒否）',
+  summary: 'グループ参加申請への応答',
   auth: 'required',
 }, requireAuth, async (req, res) => {
   const decision = String(req.body?.decision || '').toLowerCase();

@@ -36,7 +36,7 @@ class NyaitterAuthProvider extends BaseAuthProvider {
       enabled: this.isEnabled(config, req),
       allowSignup: this.isSignupAllowed(config, req),
       turnstileRequired: Boolean(config?.turnstile?.enabled),
-      description: '他のNyaitterサーバーのアカウントを使用してログイン・連携します（同一サーバーは不可）。',
+      description: '他のNyaitterサーバーのアカウントを使用してログイン・連携します。',
     };
   }
 
@@ -227,7 +227,7 @@ class NyaitterAuthProvider extends BaseAuthProvider {
 
     // 3. Create new user account
     if (!this.isSignupAllowed(context.config || {}, context.req || null)) {
-      const err = new Error(`この認証方式（${this.displayName}）での新規アカウント作成は無効化されています。`);
+      const err = new Error(`この認証方式での新規アカウント作成は無効化されています。`);
       err.status = 403;
       err.code = 'signup_disabled';
       throw err;

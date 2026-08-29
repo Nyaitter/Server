@@ -6,7 +6,7 @@ const config = require('../config');
 const router = api.createRouter({
   tag: 'reports',
   basePath: '/reports',
-  description: '通報（報告）およびモデレーション審査 API',
+  description: '通報およびモデレーション審査 API',
 });
 
 const reportRateLimiter = createRateLimiter(config.rateLimit.report);
@@ -90,7 +90,7 @@ router.post({
 
 router.get({
   path: '/',
-  summary: '通報一覧の取得（管理者専用）',
+  summary: '通報一覧の取得',
   auth: 'admin',
 }, requireAuth, requireAdmin, async (req, res) => {
   const service = getModerationService(req);
@@ -109,7 +109,7 @@ router.get({
 
 router.get({
   path: '/assigned',
-  summary: '自分に割り当てられた通報一覧の取得（管理者専用）',
+  summary: '自分に割り当てられた通報一覧の取得',
   auth: 'admin',
 }, requireAuth, requireAdmin, async (req, res) => {
   const service = getModerationService(req);
@@ -128,7 +128,7 @@ router.get({
 
 router.get({
   path: '/:id',
-  summary: '通報詳細の取得（管理者専用）',
+  summary: '通報詳細の取得',
   auth: 'admin',
 }, requireAuth, requireAdmin, async (req, res) => {
   const service = getModerationService(req);
@@ -149,7 +149,7 @@ router.get({
 
 router.patch({
   path: '/:id',
-  summary: '通報の審査ステータス更新・処置実行（管理者専用）',
+  summary: '通報の審査ステータス更新・処置実行',
   auth: 'admin',
 }, requireAuth, requireAdmin, async (req, res) => {
   const service = getModerationService(req);
@@ -182,7 +182,7 @@ router.patch({
 
 router.post({
   path: '/:id/resolve',
-  summary: '通報・申請の対応完了（管理者専用）',
+  summary: '通報・申請の対応完了',
   auth: 'admin',
 }, requireAuth, requireAdmin, async (req, res) => {
   const service = getModerationService(req);

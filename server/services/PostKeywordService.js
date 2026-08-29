@@ -78,7 +78,7 @@ function extractCompoundTagsFromTokens(tokens) {
     tagScores.set(tag, (tagScores.get(tag) || 0) + weight + Math.min(2, tag.length / 10));
   };
 
-  // 1. 連続する名詞（複合名詞句）: 例「人工知能技術」「機械学習モデル」
+  // 1. 連続する名詞: 例「人工知能技術」「機械学習モデル」
   let currentCompound = [];
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
@@ -225,7 +225,7 @@ async function extractPostTagsAndWords(content) {
   return { words, tags, combined };
 }
 
-// 投稿に保存するキーワード（tags 5個 + words 5個 の合計最大10個）
+// 投稿に保存するキーワード
 async function extractPostKeywords(content) {
   const { combined } = await extractPostTagsAndWords(content);
   return combined;

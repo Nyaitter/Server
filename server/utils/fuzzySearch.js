@@ -15,7 +15,7 @@ function calculateStringSimilarity(str1, str2) {
 	const maxLen = Math.max(len1, len2);
 	const minLen = Math.min(len1, len2);
 
-	// 1. 部分一致率（一方が他方に完全に含まれる場合）
+	// 1. 部分一致率
 	const isSubstring = s1.includes(s2) || s2.includes(s1);
 	const substringSim = isSubstring ? minLen / maxLen : 0;
 
@@ -62,7 +62,7 @@ function calculateStringSimilarity(str1, str2) {
  * テキスト中に対象クエリが80%以上の類似度であいまい一致するか判定する
  * @param {string} text - 検索対象テキスト
  * @param {string} query - 検索クエリ
- * @param {number} threshold - 許容閾値（デフォルト 0.8 = 80%）
+ * @param {number} threshold - 許容閾値
  * @returns {boolean}
  */
 function isFuzzyMatch(text, query, threshold = 0.8) {

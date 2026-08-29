@@ -350,7 +350,7 @@ async function handleUserIcon(req, res) {
 			}
 
 			// 同一オリジン相対パス、または許可済みScratch CDNのURLだけをリダイレクトする。
-			// それ以外（プロトコル相対・任意ホストの絶対URL）はフォールバック画像へ倒す。
+			// それ以外はフォールバック画像へ倒す。
 			if (isAllowedIconRedirectUrl(iconData)) {
 				return res.redirect(302, iconData);
 			}
@@ -557,7 +557,7 @@ router.get({
 
 router.get({
 	path: '/:userId/counts',
-	summary: 'ユーザーのカウント情報（投稿/メディア/フォロー等）取得',
+	summary: 'ユーザーのカウント情報取得',
 	auth: 'optional',
 }, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
@@ -652,7 +652,7 @@ router.get({
 
 router.get({
 	path: '/:userId/status',
-	summary: 'ユーザー関係状態（フォロー/フォロワー/ブロック関係）の取得',
+	summary: 'ユーザー関係状態の取得',
 	auth: 'required',
 }, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
@@ -680,7 +680,7 @@ router.get({
 
 router.put({
 	path: '/:userId/status',
-	summary: 'ユーザー関係状態の更新（ブロック等）',
+	summary: 'ユーザー関係状態の更新',
 	auth: 'required',
 }, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
@@ -721,7 +721,7 @@ router.put({
 
 router.post({
 	path: '/:userId/follow',
-	summary: 'ユーザーのフォロー/フォロー解除（トグル）',
+	summary: 'ユーザーのフォロー/フォロー解除',
 	auth: 'required',
 }, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);
@@ -1072,7 +1072,7 @@ router.put({
 
 router.put({
 	path: '/:userId',
-	summary: 'ユーザープロフィールの更新（本人またはインポスター）',
+	summary: 'ユーザープロフィールの更新',
 	auth: 'required',
 }, requireAuth, async (req, res) => {
 	const db = getDbAdapter(req);

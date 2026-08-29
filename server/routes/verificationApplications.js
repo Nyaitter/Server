@@ -6,7 +6,7 @@ const config = require('../config');
 const router = api.createRouter({
   tag: 'verification',
   basePath: '/verification-applications',
-  description: '認証マーク（公式バッジ）申請 API',
+  description: '認証マーク申請 API',
 });
 
 const verificationApplicationLimiter = createRateLimiter(config.rateLimit.verificationApplication);

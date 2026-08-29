@@ -67,7 +67,7 @@ function normalizeFollowRelationshipSnapshot(value) {
 
 /**
  * 候補投稿者に限定した閲覧者のフォロー関係を取得する。
- * 実装済みアダプターでは1回のDB操作（D1では1回のWorker往復）で完了する。
+ * 実装済みアダプターでは1回のDB操作で完了する。
  * 旧アダプターには安全な後方互換フォールバックを残す。
  */
 async function getFollowRelationshipSnapshot(db, viewerId, authorIds) {
@@ -382,7 +382,7 @@ function normalizeNgWords(value) {
 }
 
 /**
- * ポストの検索対象テキストを返す（content / view_content を結合）。
+ * ポストの検索対象テキストを返す。
  */
 function getPostSearchText(post) {
 	const parts = [

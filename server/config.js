@@ -124,7 +124,7 @@ function normalizeApiEndpoint(value, fallback = '/server') {
 function normalizeUserFilesEndpoint(value) {
   const candidate = String(value === undefined || value === null ? '' : value).trim();
   if (!candidate) return null;
-  // 外部URL（http/https）も許可
+  // 外部URLも許可
   if (candidate.startsWith('http://') || candidate.startsWith('https://')) {
     return candidate.replace(/\/+$/, '');
   }

@@ -79,7 +79,7 @@ class ManagementToolServer {
     }
   }
 
-  // IPC 優先データ取得ヘルパー（NyaitterServer 本体の operatorControl 経由）
+  // IPC 優先データ取得ヘルパー
   async _ipc(action, params = {}, { timeoutMs = 1500 } = {}) {
     const { requestOperatorCommand } = require('../../utils/operatorControl');
     return requestOperatorCommand({ action, ...params }, { timeoutMs });
@@ -191,7 +191,7 @@ class ManagementToolServer {
         }
       }
 
-      // 2. セッション未登録時のみ Nyaitter メインセッション / DB 検証（NyaitterServer 稼働時）
+      // 2. セッション未登録時のみ Nyaitter メインセッション / DB 検証
       let userId = null;
       if (typeof this.dbAdapter?.getSession === 'function') {
         try {
@@ -224,7 +224,7 @@ class ManagementToolServer {
         return next();
       }
 
-      return res.status(401).json({ error: '管理者（Admin）認証が必要です。再度ログインしてください。' });
+      return res.status(401).json({ error: '管理者認証が必要です。再度ログインしてください。' });
     };
 
     // ── NyaitterAuth 連携・リダイレクト ──────────────────────────────────
@@ -234,7 +234,7 @@ class ManagementToolServer {
       try {
         const protocol = req.headers['x-forwarded-proto'] === 'https' ? 'https' : (req.protocol === 'https' ? 'https' : 'http');
         const rawHost = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${this.port}`;
-        // ホストヘッダーのサニタイズ（安全な文字種のみ許可）
+        // ホストヘッダーのサニタイズ
         const currentHost = /^[a-zA-Z0-9.\-:]+$/.test(rawHost) ? rawHost : `localhost:${this.port}`;
         
         // NMT コールバックURL
@@ -303,7 +303,7 @@ class ManagementToolServer {
         NyaitterAuthManager.pendingCodes.delete(String(code));
         NyaitterAuthManager._savePendingStore();
 
-        // ユーザー情報の解決（approved スナップショットまたは dbAdapter）
+        // ユーザー情報の解決
         let user = approved.user || null;
         if (!user && this.dbAdapter && typeof this.dbAdapter.getUserById === 'function') {
           user = await this.dbAdapter.getUserById(userId);
@@ -318,7 +318,7 @@ class ManagementToolServer {
           return res.redirect('/#error=not_an_admin');
         }
 
-        // NMT セッショントークン発行（永続化）
+        // NMT セッショントークン発行
         const token = `nmt_${crypto.randomBytes(32).toString('hex')}`;
         this.setSession(token, {
           userId: user.id,

@@ -224,7 +224,7 @@ function inspect() {
         ['DMメッセージ既定件数', 'NYAITTER_LIMIT_DM_MESSAGES_DEFAULT_PAGE_SIZE', 'limits.dmMessagesDefaultLimit', 50, 1, true],
         ['フォロー一覧取得件数', 'NYAITTER_LIMIT_FOLLOWING_PAGE_SIZE', 'limits.followingPageSize', 100, 1, true],
         ['親投稿プレビュー文字数', 'NYAITTER_LIMIT_PARENT_POST_PREVIEW_LENGTH', 'limits.parentPostPreviewLength', 100, 0, true],
-        ['最大アップロード容量（MB）', 'NYAITTER_LIMIT_MAX_FILE_UPLOAD_SIZE_MB', 'limits.maxFileUploadSizeMB', 5, 1, true],
+        ['最大アップロード容量', 'NYAITTER_LIMIT_MAX_FILE_UPLOAD_SIZE_MB', 'limits.maxFileUploadSizeMB', 5, 1, true],
         ['ファイル一括削除件数', 'NYAITTER_LIMIT_FILE_DELETE_BATCH_SIZE', 'limits.fileDeleteBatchSize', 1000, 1, true],
         ['ポスト一括取得件数', 'NYAITTER_LIMIT_POST_BATCH_SIZE', 'limits.postBatchSize', 100, 1, true],
         ['保存ファイル一覧取得件数', 'NYAITTER_LIMIT_STORAGE_LIST_PAGE_SIZE', 'limits.storageListPageSize', 500, 1, true],
@@ -434,7 +434,7 @@ function inspect() {
         addIssue(
             'warning',
             'AUTOMOD_SETTINGS_INCOMPLETE',
-            'AutoModの設定が一部のみ指定されています（API Key, Model, Promptの3つが必要です）。',
+            'AutoModの設定が一部のみ指定されています。',
             'AUTOMOD_API_KEY, AUTOMOD_MODEL, AUTOMOD_PROMPT をすべて設定するか、すべて未設定にしてください。',
         );
     }

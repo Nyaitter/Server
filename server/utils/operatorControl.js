@@ -211,7 +211,7 @@ function createCommandHandler({ dbAdapter, shutdown, getStatus, managers = {} })
       }
     }
 
-    // ── ログ転送（NyaitterServer → NMT） ──────────────────────────────────────
+    // ── ログ転送 ──────────────────────────────────────
     if (command.action === 'push-log') {
       if (!managers.logHub) return { ok: false, error: 'LogHub not available' };
       try {

@@ -280,7 +280,7 @@ function createPostActionContext(req) {
 
 router.post({
 	path: '/',
-	summary: '新規投稿の作成（返信・引用・メディア添付・CW等対応）',
+	summary: '新規投稿の作成',
 	auth: 'required',
 }, requireAuth, postWriteLimiter, (req, res) => {
 	const {
@@ -861,7 +861,7 @@ router.get({
 			});
 		}
 
-		// 先祖（親チェーン）の解決
+		// 先祖の解決
 		const ancestorPosts = [];
 		let currentParentId = root.replyTo ?? root.reply_id ?? root.reply_to;
 		const visitedParentIds = new Set([postId]);
@@ -1021,7 +1021,7 @@ router.get({
 
 router.post({
 	path: '/:id/like',
-	summary: '投稿へのいいね（トグル）',
+	summary: '投稿へのいいね',
 	auth: 'required',
 }, requireAuth, postWriteLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
@@ -1074,7 +1074,7 @@ router.post({
 
 router.post({
 	path: '/:id/star',
-	summary: '投稿へのスター（トグル）',
+	summary: '投稿へのスター',
 	auth: 'required',
 }, requireAuth, postWriteLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
@@ -1208,7 +1208,7 @@ router.get({
 		const reposts = await db.getRepostsOfPost(postId, 100);
 		const quotePosts = await db.getQuotesOfPost(postId, 100);
 
-		// いいね数（ポスト主のみ）
+		// いいね数
 		let likesCount = undefined;
 		if (isAuthor) {
 			const likes = await db.getLikesOfPost(postId, 100);
@@ -1347,7 +1347,7 @@ router.post({
 
 router.post({
 	path: '/:id/pin',
-	summary: 'プロフィールの固定投稿ピン留め（トグル）',
+	summary: 'プロフィールの固定投稿ピン留め',
 	auth: 'required',
 }, requireAuth, postWriteLimiter, async (req, res) => {
 	const db = getDbAdapter(req);

@@ -34,7 +34,7 @@ class DatabaseAdapter {
 	async consumeLoginApproval(id, pollTokenHash) { throw new Error('consumeLoginApproval() must be implemented'); }
 
 	/**
-	 * SCID（Scratch ID）でユーザーを取得（後方互換用）
+	 * SCIDでユーザーを取得
 	 * @param {string} scid
 	 * @returns {Promise<Object|null>}
 	 */

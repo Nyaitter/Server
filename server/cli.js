@@ -339,7 +339,7 @@ async function main(argv) {
             const status = await getRunningStatus();
             if (!status) {
                 console.log(
-                    `停止中（制御ソケット: ${getOperatorSocketPath()}）`,
+                    `停止中`,
                 );
                 process.exitCode = 1;
                 return;

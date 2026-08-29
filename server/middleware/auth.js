@@ -336,8 +336,7 @@ function csrfProtection(req, res, next) {
     return res.status(403).json({ error: 'Cross-origin state-changing requests are not allowed' });
   }
 
-  // 同一オリジン、またはCORSで明示的に許可したオリジン（資格情報付きCORSが有効な
-  // allowedOrigins）からのCookie付き状態変更要求は許可する。
+  // 同一オリジン、またはCORSで明示的に許可したオリジンからのCookie付き状態変更要求は許可する。
   // 許可したオリジンからのブラウザ要求は Sec-Fetch-Site: cross-site になるため、
   // 信頼判定を先に行う。
   if (isSameOriginRequest(req)) return next();

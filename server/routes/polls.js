@@ -72,7 +72,7 @@ router.post({
 			otherText,
 		});
 
-		// リアルタイム接続へ投票更新を通知（利用可能な場合）
+		// リアルタイム接続へ投票更新を通知
 		if (req.app.locals.realtime?.broadcast) {
 			try {
 				req.app.locals.realtime.broadcast({

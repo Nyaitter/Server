@@ -260,7 +260,7 @@ router.get({
 
 /**
  * POST /server/auth/:provider/initiate
- * 任意の認証プロバイダーの認証開始（コード発行、チャレンジ作成等）
+ * 任意の認証プロバイダーの認証開始
  */
 router.post({
 	path: '/:provider/initiate',
@@ -1027,7 +1027,7 @@ router.get({
 
 /**
  * POST /server/auth/dev-login
- * 開発用簡易ログイン（DEV_BYPASS_AUTH=true のときのみ有効）
+ * 開発用簡易ログイン
  * 実際のScratch認証をスキップして即座にユーザー+セッションを作成する
  */
 router.post({
@@ -1037,7 +1037,7 @@ router.post({
 }, async (req, res) => {
   const isProd = (process.env.NODE_ENV || 'development') === 'production';
   if (process.env.DEV_BYPASS_AUTH !== 'true' || isProd) {
-    return res.status(403).json({ error: 'DEV_BYPASS_AUTH が有効な場合のみ使用可能です（本番環境では無効）' });
+    return res.status(403).json({ error: 'DEV_BYPASS_AUTH が有効な場合のみ使用可能です' });
   }
 
   const { username } = req.body;

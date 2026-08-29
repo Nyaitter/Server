@@ -116,7 +116,7 @@ router.put({
 
 router.get({
 	path: '/preview',
-	summary: '添付画像ファイルのサムネイル（プレビュー）取得',
+	summary: '添付画像ファイルのサムネイル取得',
 	auth: 'none',
 }, async (req, res) => {
 	const storage = getStorageAdapter(req);

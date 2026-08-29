@@ -4,7 +4,7 @@ class MemoryBoundedCache {
   /**
    * @param {Object} options
    * @param {number} [options.maxSize=1000] - 最大エントリ数
-   * @param {number} [options.ttlMs=1800000] - 有効期限（ミリ秒、既定30分）
+   * @param {number} [options.ttlMs=1800000] - 有効期限
    * @param {number} [options.maxHeapMb=0] - メモリ使用量上限 (MB)。0 の場合は無制限
    */
   constructor({ maxSize = 1000, ttlMs = 1800000, maxHeapMb = 0 } = {}) {
@@ -39,7 +39,7 @@ class MemoryBoundedCache {
     if (this.cache.has(key)) {
       this.cache.delete(key);
     } else if (this.cache.size >= this.maxSize) {
-      // LRU: 一番古いキー（Map の最初の要素）を削除
+      // LRU: 一番古いキーを削除
       const oldestKey = this.cache.keys().next().value;
       if (oldestKey !== undefined) {
         this.cache.delete(oldestKey);
