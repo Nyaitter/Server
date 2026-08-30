@@ -26,7 +26,7 @@ async function resolvePostingUser(req, db, requestedUserId = null) {
   }
 
   if (requestedId === currentUserId) {
-    return req.user.visibilityUser || db.getUserById(requestedId);
+    return req.user?.visibilityUser || (await db.getUserById(requestedId));
   }
 
   const rememberedAccounts = await getValidRememberedAccounts(req, db);

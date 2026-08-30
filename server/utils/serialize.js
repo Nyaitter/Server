@@ -78,24 +78,39 @@ async function serializeNotifications(db, notifications, publicUrl = null, optio
 		.filter(Boolean);
 	if (normalizedNotifications.length === 0) return [];
 
-	const fromUserIds = [...new Set(normalizedNotifications
+	const preloadedUsersById = new Map();
+	const preloadedPostsById = new Map();
+
+	for (const notification of normalizedNotifications) {
+		if (notification.fromUser && notification.fromUser.id != null) {
+			preloadedUsersById.set(Number(notification.fromUser.id), notification.fromUser);
+		}
+		if (notification.targetPost && notification.targetPost.id != null) {
+			preloadedPostsById.set(Number(notification.targetPost.id), notification.targetPost);
+		}
+	}
+
+	const missingFromUserIds = [...new Set(normalizedNotifications
 		.map((notification) => Number(notification.fromUserId))
-		.filter(Number.isInteger))];
-	const targetPostIds = [...new Set(normalizedNotifications
+		.filter((id) => Number.isInteger(id) && !preloadedUsersById.has(id)))];
+	const missingTargetPostIds = [...new Set(normalizedNotifications
 		.map((notification) => (
 			notification.target?.kind === 'post' ? Number(notification.target.id) : null
 		))
-		.filter((postId) => Number.isInteger(postId) && postId > 0))];
+		.filter((postId) => Number.isInteger(postId) && postId > 0 && !preloadedPostsById.has(postId)))];
+
 	const [fromUsers, targetPosts] = await Promise.all([
 		Array.isArray(options.fromUsers)
 			? options.fromUsers
-			: fetchNotificationUsersByIds(db, fromUserIds),
+			: (missingFromUserIds.length > 0 ? fetchNotificationUsersByIds(db, missingFromUserIds) : []),
 		Array.isArray(options.targetPosts)
 			? options.targetPosts
-			: (targetPostIds.length > 0 ? db.getPostsByIds(targetPostIds) : []),
+			: (missingTargetPostIds.length > 0 ? db.getPostsByIds(missingTargetPostIds) : []),
 	]);
-	const fromUsersById = new Map(fromUsers.map((user) => [Number(user.id), user]));
-	const targetPostsById = new Map((targetPosts || []).map((post) => [Number(post.id), post]));
+	const fromUsersById = new Map(preloadedUsersById);
+	for (const user of fromUsers) fromUsersById.set(Number(user.id), user);
+	const targetPostsById = new Map(preloadedPostsById);
+	for (const post of targetPosts || []) targetPostsById.set(Number(post.id), post);
 
 	return normalizedNotifications.map((notification) => ({
 		id: notification.id,

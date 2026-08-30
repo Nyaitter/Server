@@ -1028,7 +1028,14 @@ router.get({
 			return res.status(404).json({ error: 'Post not found' });
 		}
 		const userAgent = req.headers['user-agent'] || '';
-		const isApiRequest = req.originalUrl.startsWith('/api/') || req.originalUrl.startsWith('/server/api/');
+		const apiPrefix = config.server.apiEndpoint || '/server';
+		const isApiRequest =
+			(apiPrefix !== '/' && req.originalUrl.startsWith(apiPrefix)) ||
+			req.originalUrl.startsWith('/api/') ||
+			req.originalUrl.startsWith('/server/') ||
+			Boolean(req.headers.authorization) ||
+			Boolean(req.headers['x-api-key']) ||
+			(req.headers.accept && req.headers.accept.includes('application/json'));
 
 		if (!isApiRequest) {
 			if (isCrawler(userAgent)) {

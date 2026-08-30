@@ -2303,7 +2303,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		if (decodedCursor) {
 			values.push(decodedCursor.createdAt, decodedCursor.id);
-			clauses.push(`(created_at < $${values.length - 1} OR (created_at = $${values.length - 1} AND id < $${values.length}))`);
+			clauses.push(`(created_at, id) < ($${values.length - 1}, $${values.length})`);
 		} else if (Number.isInteger(Number(beforeId)) && Number(beforeId) > 0) {
 			values.push(Number(beforeId)); clauses.push(`id < $${values.length}`);
 		}
@@ -2336,7 +2336,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		if (decodedCursor) {
 			values.push(decodedCursor.createdAt, decodedCursor.id);
-			clauses.push(`(created_at < $${values.length - 1} OR (created_at = $${values.length - 1} AND id < $${values.length}))`);
+			clauses.push(`(created_at, id) < ($${values.length - 1}, $${values.length})`);
 		} else if (Number.isInteger(Number(params.beforeId)) && Number(params.beforeId) > 0) {
 			values.push(Number(params.beforeId)); clauses.push(`id < $${values.length}`);
 		}
@@ -2672,15 +2672,20 @@ class PostgresAdapter extends DatabaseAdapter {
 			   JOIN ancestors a ON p.id = a.post_id
 			   WHERE p.reply_to IS NOT NULL AND a.anc_depth < $2
 			 )
-			 SELECT p.* FROM posts p
+			 SELECT p.*, u.id AS author_id, u.name AS author_name, u.scid AS author_scid, u.handle AS author_handle, u.icon_data AS author_icon_data, u.settings AS author_settings, u.block AS author_block, u.created_at AS author_created_at
+			 FROM posts p
 			 JOIN ancestors a ON p.id = a.post_id
+			 LEFT JOIN users u ON u.id = p.user_id
 			 ORDER BY a.anc_depth`,
 			[rootId, limit],
 		);
 		const cache = this._getPostCache();
 		return rows.map((row) => {
 			const post = normalizePostRow(row);
-			if (post) cache?.set(post.id, post);
+			if (post) {
+				if (post.author) this._setCachedUser(post.author);
+				cache?.set(post.id, post);
+			}
 			return post;
 		}).filter(Boolean);
 	}
@@ -3390,7 +3395,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (subType === 'replies_only') clauses.push('reply_to IS NOT NULL');
 		if (decodedCursor) {
 			values.push(decodedCursor.createdAt, decodedCursor.id);
-			clauses.push(`(created_at < $${values.length - 1} OR (created_at = $${values.length - 1} AND id < $${values.length}))`);
+			clauses.push(`(created_at, id) < ($${values.length - 1}, $${values.length})`);
 		} else if (normalizedBeforeId != null) {
 			values.push(normalizedBeforeId);
 			clauses.push(`id < $${values.length}`);
@@ -3437,7 +3442,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			? await this.pool.query(
 				`SELECT id, content, view_content, tags, created_at FROM posts
 				 WHERE group_id IS NULL
-				   AND (created_at < $1 OR (created_at = $1 AND id < $2))
+				   AND (created_at, id) < ($1, $2)
 				 ORDER BY created_at DESC, id DESC LIMIT $3`,
 				[decodedCursor.createdAt, decodedCursor.id, fetchLimit],
 			)
@@ -3504,7 +3509,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (decodedCursor) {
 			const { rows } = await this.pool.query(
 				`SELECT id, created_at FROM posts
-				 WHERE reply_to = $1 AND (created_at < $2 OR (created_at = $2 AND id < $3))
+				 WHERE reply_to = $1 AND (created_at, id) < ($2, $3)
 				 ORDER BY created_at DESC, id DESC LIMIT $4`,
 				[Number(parentPostId), decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1],
 			);
@@ -5015,28 +5020,53 @@ class PostgresAdapter extends DatabaseAdapter {
 		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
 		const safeOffset = Math.max(Number(offset) || 0, 0);
 		const { rows } = await this.pool.query(
-			`SELECT * FROM notifications 
-			 WHERE user_id = $1 
-			 ORDER BY created_at DESC, id DESC
+			`SELECT n.*,
+			        u.id AS from_user_id, u.name AS from_user_name, u.scid AS from_user_scid, u.handle AS from_user_handle, u.icon_data AS from_user_icon_data, u.settings AS from_user_settings, u.block AS from_user_block, u.created_at AS from_user_created_at,
+			        p.id AS target_post_id, p.content AS target_post_content, p.view_content AS target_post_view_content, p.created_at AS target_post_created_at
+			 FROM notifications n
+			 LEFT JOIN users u ON u.id = n.from_user_id
+			 LEFT JOIN posts p ON p.id = n.post_id
+			 WHERE n.user_id = $1
+			 ORDER BY n.created_at DESC, n.id DESC
 			 LIMIT $2 OFFSET $3`,
 			[Number(userId), safeLimit, safeOffset],
 		);
-		return rows.map((r) => ({
-			id: Number(r.id),
-			userId: Number(r.user_id),
-			user_id: Number(r.user_id),
-			type: r.type,
-			fromUserId: r.from_user_id != null ? Number(r.from_user_id) : null,
-			from_user_id: r.from_user_id != null ? Number(r.from_user_id) : null,
-			postId: r.post_id != null ? Number(r.post_id) : null,
-			post_id: r.post_id != null ? Number(r.post_id) : null,
-			target: parseJsonSafe(r.target, null),
-			message: r.message || null,
-			read: Boolean(r.read),
-			clicked: Boolean(r.clicked),
-			createdAt: toIsoString(r.created_at),
-			created_at: toIsoString(r.created_at),
-		}));
+		return rows.map((r) => {
+			const fromUser = r.from_user_id != null ? {
+				id: Number(r.from_user_id),
+				name: r.from_user_name,
+				scid: r.from_user_scid,
+				handle: r.from_user_handle,
+				icon_data: r.from_user_icon_data,
+				settings: r.from_user_settings,
+				block: r.from_user_block,
+				created_at: toIsoString(r.from_user_created_at),
+			} : null;
+			const targetPost = r.target_post_id != null ? {
+				id: Number(r.target_post_id),
+				content: r.target_post_content,
+				view_content: r.target_post_view_content,
+				created_at: toIsoString(r.target_post_created_at),
+			} : null;
+			return {
+				id: Number(r.id),
+				userId: Number(r.user_id),
+				user_id: Number(r.user_id),
+				type: r.type,
+				fromUserId: r.from_user_id != null ? Number(r.from_user_id) : null,
+				from_user_id: r.from_user_id != null ? Number(r.from_user_id) : null,
+				fromUser,
+				postId: r.post_id != null ? Number(r.post_id) : null,
+				post_id: r.post_id != null ? Number(r.post_id) : null,
+				targetPost,
+				target: parseJsonSafe(r.target, null),
+				message: r.message || null,
+				read: Boolean(r.read),
+				clicked: Boolean(r.clicked),
+				createdAt: toIsoString(r.created_at),
+				created_at: toIsoString(r.created_at),
+			};
+		});
 	}
 
 	async markNotificationAsRead(notificationId) {
