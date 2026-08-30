@@ -385,45 +385,54 @@ router.get({
 	auth: 'optional',
 }, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
+	const limit = Math.min(parseInt(req.query.limit, 10) || config.limits.timelinePageSize, 100);
+	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
+	const beforeId = safeParsePostId(req.query.before_id);
+	const rawSinceId = safeParsePostId(req.query.since_id || req.query.sinceId || req.query.after);
+	const offset = beforeId == null && rawSinceId == null && !rawCursor ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
+	const tab = req.query.tab || 'foryou';
+	const currentUserId = req.user ? req.user.id : null;
+	const knownViewer = req.user?.visibilityUser || null;
 
-		try {
-						const posts = await db.getRecentPosts(config.limits.timelinePageSize);
-				const currentUserId = req.user ? req.user.id : null;
-				const knownViewer = req.user?.visibilityUser || null;
-				const visibilityContext = await createPostVisibilityContext(
-					db,
-					posts,
-					currentUserId,
-					null,
-					knownViewer,
-				);
-				const viewablePosts = await filterViewablePosts(
-					db,
-					posts,
-					currentUserId,
-					visibilityContext,
-				);
-			const discoverablePosts = await filterDiscoverablePosts(
-				db,
-				viewablePosts,
-				currentUserId,
-				visibilityContext,
-				{ ngWords: getViewerNgWords(req) },
-			);
+	try {
+		const {
+			posts: discoveredPosts = [],
+			visibilityContext,
+			has_more,
+			next_cursor,
+		} = await getDiscoverableModePage(db, {
+			mode: tab === 'foryou' ? 'recommended' : 'timeline',
+			tab,
+			viewerId: currentUserId,
+			knownViewer,
+			limit,
+			offset,
+			beforeId,
+			cursor: rawCursor,
+			ngWords: getViewerNgWords(req),
+		});
 
-				const enriched = await serializePostsBatch(
-					db,
-					discoverablePosts,
-					currentUserId,
-					getPublicUrl(req),
-					knownViewer,
-					visibilityContext,
-				);
-			if (!req.user) {
-				res.set('Cache-Control', 'public, max-age=10, stale-while-revalidate=30');
-			}
-			res.json({ posts: enriched });
+		let enriched = await serializePostsBatch(
+			db,
+			discoveredPosts,
+			currentUserId,
+			getPublicUrl(req),
+			knownViewer,
+			visibilityContext,
+		);
 
+		if (rawSinceId != null) {
+			enriched = enriched.filter((p) => Number(p.id) > rawSinceId);
+		}
+
+		if (!req.user) {
+			res.set('Cache-Control', 'public, max-age=10, stale-while-revalidate=30');
+		}
+		res.json({
+			posts: enriched,
+			has_more: !!has_more,
+			next_cursor: next_cursor || null,
+		});
 	} catch (err) {
 		console.error('[posts] get error:', err);
 		res.status(500).json({ error: '投稿の取得に失敗しました' });
