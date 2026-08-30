@@ -43,6 +43,9 @@ function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = f
 	if (!user) return null;
 	const id = Number(user.id);
 	const cacheKey = `${id}:${includeSearchExclusion ? 'admin' : 'public'}`;
+	if (Number.isSafeInteger(id) && id > 0 && userBriefCache.has(cacheKey)) {
+		return userBriefCache.get(cacheKey);
+	}
 
 	const groupBadges = Array.isArray(user.group_badges)
 		? user.group_badges.slice(0, 5)

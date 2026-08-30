@@ -192,19 +192,28 @@ class TimelineCacheManager {
 				continue;
 			}
 
-			// Only the first page receives live updates.
-			const pageKey = key.match(/:(\d+):(\d+):(\d+):([^:]*)$/);
-			if (!pageKey || Number(pageKey[2]) !== 0 || Number(pageKey[3]) !== 0 || pageKey[4]) continue;
-			const pageLimit = Math.max(1, Number(pageKey[1]) || this.maxTimelineSize);
-
 			const parts = key.split(':');
 			const mode = parts[0];
 			const tab = parts[1];
-			const viewerId = Number(parts[3]) || 0;
+			const query = parts[2] || '';
+			const profileUserId = Number(parts[3]) || 0;
+			const subType = parts[4] || 'all';
+			const viewerId = Number(parts[7]) || 0;
 
 			// If it's a search query cache, invalidate it
-			if (parts[2] && parts[2].length > 0) {
+			if (query.length > 0) {
 				this.cache.delete(key);
+				continue;
+			}
+
+			// Profile posts cache
+			if (mode === 'profile') {
+				if (profileUserId === postAuthorId) {
+					if (subType === 'replies_only' && !isReply) continue;
+					if (subType === 'posts_only' && isReply) continue;
+					if (entry.payload) this.cache.delete(key);
+					else this._appendPost(entry, postId, post);
+				}
 				continue;
 			}
 
@@ -218,7 +227,7 @@ class TimelineCacheManager {
 					// Group post: only update matching group caches or invalidate
 					if (tab === `group:${groupId}`) {
 						if (entry.payload) this.cache.delete(key);
-						else this._appendPost(entry, postId, post, pageLimit);
+						else this._appendPost(entry, postId, post);
 					}
 					continue;
 				}
@@ -226,7 +235,7 @@ class TimelineCacheManager {
 				// Public post
 				if (tab === 'all' || tab === 'foryou') {
 					if (entry.payload) this.cache.delete(key);
-					else this._appendPost(entry, postId, post, pageLimit);
+					else this._appendPost(entry, postId, post);
 				} else if (tab === 'following') {
 					// If author matches viewer
 					if (viewerId === postAuthorId) {
