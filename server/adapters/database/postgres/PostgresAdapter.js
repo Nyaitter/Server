@@ -3070,11 +3070,21 @@ class PostgresAdapter extends DatabaseAdapter {
 		const parsedViewerId = Number(viewerId);
 		const validViewerId = Number.isSafeInteger(parsedViewerId) && parsedViewerId > 0 ? parsedViewerId : null;
 		const authorSelect = `u.id AS author_id, u.name AS author_name, u.scid AS author_scid, u.handle AS author_handle, u.icon_data AS author_icon_data, u.settings AS author_settings, u.block AS author_block, u.created_at AS author_created_at`;
-		const postSelect = validViewerId == null
+		const outerSelect = validViewerId == null
 			? `p.*, ${authorSelect}`
 			: `p.*, ${authorSelect},
 				(EXISTS (SELECT 1 FROM likes l_viewer WHERE l_viewer.post_id = p.id AND l_viewer.user_id = ${validViewerId})) AS liked_by_me,
 				(EXISTS (SELECT 1 FROM stars s_viewer WHERE s_viewer.post_id = p.id AND s_viewer.user_id = ${validViewerId})) AS starred_by_me`;
+
+		const wrapCte = (innerQuery) => `
+			WITH top_posts AS (
+				${innerQuery}
+			)
+			SELECT ${outerSelect}
+			FROM top_posts p
+			LEFT JOIN users u ON u.id = p.user_id
+			ORDER BY p.created_at DESC, p.id DESC
+		`;
 
 		let query;
 		let values;
@@ -3082,88 +3092,76 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (tab === 'following') {
 			if (validViewerId != null) {
 				if (decodedCursor) {
-					query = `SELECT ${postSelect} FROM posts p
-						LEFT JOIN users u ON u.id = p.user_id
+					query = wrapCte(`SELECT p.* FROM posts p
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
 						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
 						  AND (p.created_at < $2 OR (p.created_at = $2 AND p.id < $3))
-						ORDER BY p.created_at DESC, p.id DESC LIMIT $4`;
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $4`);
 					values = [validViewerId, decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 				} else if (normalizedBeforeId != null) {
-					query = `SELECT ${postSelect} FROM posts p
-						LEFT JOIN users u ON u.id = p.user_id
+					query = wrapCte(`SELECT p.* FROM posts p
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
 						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
 						  AND p.id < $2
-						ORDER BY p.created_at DESC, p.id DESC LIMIT $3`;
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
 					values = [validViewerId, normalizedBeforeId, normalizedLimit + 1];
 				} else {
-					query = `SELECT ${postSelect} FROM posts p
-						LEFT JOIN users u ON u.id = p.user_id
+					query = wrapCte(`SELECT p.* FROM posts p
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
 						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
-						ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`;
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`);
 					values = [validViewerId, normalizedLimit + 1, normalizedOffset];
 				}
 			} else {
 				const ids = [...new Set((followIds || []).map(Number).filter(Number.isSafeInteger))];
 				if (ids.length === 0) return { ids: [], posts: [], has_more: false, next_cursor: null };
 				if (decodedCursor) {
-					query = `SELECT ${postSelect} FROM posts p
-						LEFT JOIN users u ON u.id = p.user_id
+					query = wrapCte(`SELECT p.* FROM posts p
 						WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL
 						  AND (p.created_at < $2 OR (p.created_at = $2 AND p.id < $3))
-						ORDER BY p.created_at DESC, p.id DESC LIMIT $4`;
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $4`);
 					values = [ids, decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 				} else if (normalizedBeforeId != null) {
-					query = `SELECT ${postSelect} FROM posts p
-						LEFT JOIN users u ON u.id = p.user_id
+					query = wrapCte(`SELECT p.* FROM posts p
 						WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL AND p.id < $2
-						ORDER BY p.created_at DESC, p.id DESC LIMIT $3`;
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
 					values = [ids, normalizedBeforeId, normalizedLimit + 1];
 				} else {
-					query = `SELECT ${postSelect} FROM posts p
-						LEFT JOIN users u ON u.id = p.user_id
+					query = wrapCte(`SELECT p.* FROM posts p
 						WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL
-						ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`;
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`);
 					values = [ids, normalizedLimit + 1, normalizedOffset];
 				}
 			}
 		} else if (tab === 'announce') {
 			if (decodedCursor) {
-				query = `SELECT ${postSelect} FROM posts p
-					LEFT JOIN users u ON u.id = p.user_id
+				query = wrapCte(`SELECT p.* FROM posts p
 					WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
-					AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`;
+					AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
 				values = [decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 			} else if (normalizedBeforeId != null) {
-				query = `SELECT ${postSelect} FROM posts p
-					LEFT JOIN users u ON u.id = p.user_id
+				query = wrapCte(`SELECT p.* FROM posts p
 					WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
-					AND p.id < $1 ORDER BY p.created_at DESC, p.id DESC LIMIT $2`;
+					AND p.id < $1 ORDER BY p.created_at DESC, p.id DESC LIMIT $2`);
 				values = [normalizedBeforeId, normalizedLimit + 1];
 			} else {
-				query = `SELECT ${postSelect} FROM posts p
-					LEFT JOIN users u ON u.id = p.user_id
+				query = wrapCte(`SELECT p.* FROM posts p
 					WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
-					ORDER BY p.created_at DESC, p.id DESC LIMIT $1 OFFSET $2`;
+					ORDER BY p.created_at DESC, p.id DESC LIMIT $1 OFFSET $2`);
 				values = [normalizedLimit + 1, normalizedOffset];
 			}
 		} else if (decodedCursor) {
-			query = `SELECT ${postSelect} FROM posts p
-				LEFT JOIN users u ON u.id = p.user_id
+			query = wrapCte(`SELECT p.* FROM posts p
 				WHERE p.group_id IS NULL AND p.reply_to IS NULL
-				AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`;
+				AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
 			values = [decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 		} else if (normalizedBeforeId != null) {
-			query = `SELECT ${postSelect} FROM posts p
-				LEFT JOIN users u ON u.id = p.user_id
-				WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.id < $1 ORDER BY p.created_at DESC, p.id DESC LIMIT $2`;
+			query = wrapCte(`SELECT p.* FROM posts p
+				WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.id < $1 ORDER BY p.created_at DESC, p.id DESC LIMIT $2`);
 			values = [normalizedBeforeId, normalizedLimit + 1];
 		} else {
-			query = `SELECT ${postSelect} FROM posts p
-				LEFT JOIN users u ON u.id = p.user_id
-				WHERE p.group_id IS NULL AND p.reply_to IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT $1 OFFSET $2`;
+			query = wrapCte(`SELECT p.* FROM posts p
+				WHERE p.group_id IS NULL AND p.reply_to IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT $1 OFFSET $2`);
 			values = [normalizedLimit + 1, normalizedOffset];
 		}
 
