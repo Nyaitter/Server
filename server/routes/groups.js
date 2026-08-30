@@ -750,31 +750,27 @@ router.get({
     await requireActiveMembership(getDb(req), group, req.user.id);
     const limit = normalizeLimit(req.query.limit, 30, 100);
     const beforeId = normalizePostId(req.query.before_id);
-    const offset = beforeId == null ? normalizeOffset(req.query.offset) : 0;
+    const rawCursor = typeof req.query.cursor === 'string' ? req.query.cursor.trim() : null;
+    const offset = (beforeId == null && !rawCursor) ? normalizeOffset(req.query.offset) : 0;
     const authorId = req.query.author_id === undefined ? null : normalizeUserId(req.query.author_id);
     if (req.query.author_id !== undefined && authorId == null) return res.status(400).json({ error: '投稿者IDが正しくありません。' });
     const subType = req.query.sub_type === 'replies_only' ? 'replies_only' : 'posts_only';
     const mode = String(req.query.mode || 'all');
     let page;
     if (mode === 'announcements') {
-      page = await getDb(req).getGroupAnnouncementPostIds(group.id, { limit, offset, beforeId });
+      page = await getDb(req).getGroupAnnouncementPostIds(group.id, { limit, offset, beforeId, cursor: rawCursor });
     } else if (mode === 'recommended') {
-      const candidatePage = await getDb(req).getGroupPostIds(group.id, { limit: Math.min(limit * 4, 100), offset, beforeId, authorId, subType });
+      const candidatePage = await getDb(req).getGroupPostIds(group.id, { limit: Math.min(limit * 4, 100), offset, beforeId, authorId, subType, cursor: rawCursor });
       const candidatePosts = await getDb(req).getPostsByIds(candidatePage.ids || []);
-      const eligibleIds = (candidatePosts || [])
-        .filter((post) => Number(post.userId ?? post.user_id) !== Number(req.user.id))
-        .map((post) => Number(post.id));
-      const metrics = await getDb(req).getPostMetricsBatch(eligibleIds, req.user.id);
-      const metricsByPostId = new Map(metrics.map((metric) => [Number(metric.post_id ?? metric.postId), metric]));
-      const rankedIds = [...eligibleIds].sort((left, right) => {
-        const leftMetrics = metricsByPostId.get(Number(left)) || {};
-        const rightMetrics = metricsByPostId.get(Number(right)) || {};
-        const score = (metric) => Number(metric.like_count || 0) + Number(metric.star_count || 0) * 2 + Number(metric.repost_count || 0) * 3;
-        return score(rightMetrics) - score(leftMetrics) || Number(right) - Number(left);
-      });
+      const eligiblePosts = (candidatePosts || [])
+        .filter((post) => Number(post.userId ?? post.user_id) !== Number(req.user.id));
+      const score = (post) => Number(post.like_count ?? post.likeCount ?? 0) + Number(post.star_count ?? post.starCount ?? 0) * 2 + Number(post.repost_count ?? post.repostCount ?? 0) * 3;
+      const rankedIds = [...eligiblePosts].sort((left, right) => {
+        return score(right) - score(left) || Number(right.id) - Number(left.id);
+      }).map((post) => Number(post.id));
       page = { ...candidatePage, ids: rankedIds.slice(0, limit) };
     } else {
-      page = await getDb(req).getGroupPostIds(group.id, { limit, offset, beforeId, authorId, subType });
+      page = await getDb(req).getGroupPostIds(group.id, { limit, offset, beforeId, authorId, subType, cursor: rawCursor });
     }
     const posts = await serializePostsByIds(getDb(req), page.ids || [], req.user.id, getPublicUrl(req), req.user.visibilityUser || null);
     res.json({ posts, has_next: Boolean(page.has_more), next_cursor: page.next_cursor || null });

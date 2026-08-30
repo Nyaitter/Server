@@ -167,6 +167,7 @@ async function getDiscoverableModePage(
 		limit,
 		offset,
 		beforeId = null,
+		cursor = null,
 		ngWords = null,
 	},
 ) {
@@ -177,8 +178,9 @@ async function getDiscoverableModePage(
 		limit,
 		offset,
 		beforeId,
+		cursor,
 		ngWords,
-		fetchCandidatePage: async ({ limit: candidateLimit, offset: candidateOffset, beforeId: candidateBeforeId }) => {
+		fetchCandidatePage: async ({ limit: candidateLimit, offset: candidateOffset, beforeId: candidateBeforeId, cursor: candidateCursor, cursorCreatedAt, cursorId }) => {
 			if (mode === 'timeline') {
 				return db.getTimelinePostIds({
 					tab,
@@ -186,18 +188,24 @@ async function getDiscoverableModePage(
 					limit: candidateLimit,
 					offset: candidateOffset,
 					beforeId: candidateBeforeId,
+					cursor: candidateCursor,
+					cursorCreatedAt,
+					cursorId,
 				});
 			}
 			if (mode === 'recommended') {
 				return db.getRecommendedPostIds({
 					viewerId,
-					limit: candidateLimit,
+					limit: Math.min(candidateLimit, limit + 1),
 					offset: candidateOffset,
 					beforeId: candidateBeforeId,
+					cursor: candidateCursor,
+					cursorCreatedAt,
+					cursorId,
 				});
 			}
 			if (mode === 'search') {
-				return db.searchPostIds(query, candidateLimit, candidateOffset, candidateBeforeId, viewerId);
+				return db.searchPostIds(query, candidateLimit, candidateOffset, candidateBeforeId, viewerId, { cursor: candidateCursor, cursorCreatedAt, cursorId });
 			}
 			throw new Error(`Unsupported discoverable mode: ${mode}`);
 		},
@@ -319,14 +327,21 @@ router.post({
 		group_id,
 		group_announcement,
 		reply_to,
+		replyTo,
+		reply_id,
 		repost_to,
+		repostTo,
+		repost_id,
 		reply_control,
 		replyControl,
 		post_as_user_id,
 	} = req.body || {};
+	const normalizedReplyTo = reply_to ?? replyTo ?? reply_id ?? null;
+	const normalizedRepostTo = repost_to ?? repostTo ?? repost_id ?? null;
+	const normalizedReplyControl = reply_control ?? replyControl ?? 'everyone';
 	const hasContent = typeof content === 'string' && content.trim().length > 0;
 	const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
-	const isSimpleRepost = (content === null || content === undefined || content === '') && repost_to;
+	const isSimpleRepost = (content === null || content === undefined || content === '') && normalizedRepostTo;
 
 	if (!hasContent && !hasAttachments && !isSimpleRepost) {
 		return res.status(400).json({ error: 'content, attachments, or repost_to is required' });
@@ -353,9 +368,9 @@ router.post({
 			announcement: announcement === true,
 			groupId: group_id,
 			groupAnnouncement: group_announcement === true,
-			replyTo: reply_to,
-			repostTo: repost_to,
-			replyControl: reply_control ?? replyControl,
+			replyTo: normalizedReplyTo,
+			repostTo: normalizedRepostTo,
+			replyControl: normalizedReplyControl,
 			postAsUserId: post_as_user_id,
 		}));
 		return res.status(202).json({ success: true, queued: true, action_id: actionId });
@@ -474,8 +489,9 @@ router.get({
 	const db = getDbAdapter(req);
 	const q = req.query.q || '';
 	const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
+	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
 	const beforeId = safeParsePostId(req.query.before_id);
-	const offset = beforeId == null ? (parseInt(req.query.offset, 10) || 0) : 0;
+	const offset = beforeId == null && !rawCursor ? (parseInt(req.query.offset, 10) || 0) : 0;
 
 	if (!q.trim()) {
 		return res.json({ posts: [], has_next: false });
@@ -497,6 +513,7 @@ router.get({
 				limit,
 				offset,
 				beforeId,
+				cursor: rawCursor,
 				ngWords: getViewerNgWords(req),
 			});
 			const [posts, groupPage] = await Promise.all([
@@ -536,8 +553,9 @@ router.get({
 }, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
+	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
 	const beforeId = safeParsePostId(req.query.before_id);
-	const offset = beforeId == null ? (parseInt(req.query.offset, 10) || 0) : 0;
+	const offset = beforeId == null && !rawCursor ? (parseInt(req.query.offset, 10) || 0) : 0;
 
 		try {
 			const currentUserId = req.user ? req.user.id : null;
@@ -554,6 +572,7 @@ router.get({
 				limit,
 				offset,
 				beforeId,
+				cursor: rawCursor,
 				ngWords: getViewerNgWords(req),
 			});
 			const posts = await serializePostsBatch(
@@ -590,14 +609,15 @@ router.get({
 		'search',
 	].includes(mode);
 	const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
+	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
 	const beforeId = safeParsePostId(req.query.before_id);
-	const offset = beforeId == null ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
+	const offset = (beforeId == null && !rawCursor) ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
 	const currentUserId = req.user ? req.user.id : null;
 	const knownViewer = req.user?.visibilityUser || null;
 	const ngWords = getViewerNgWords(req);
 
 	const ngWordsKey = ngWords ? [...ngWords].sort().join(',') : '';
-	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}`;
+	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawCursor || ''}`;
 	const cachedResult = timelineCacheManager.getIds(cacheKey);
 
 	try {
@@ -614,7 +634,8 @@ router.get({
 				limit,
 				offset,
 				beforeId,
-					ngWords,
+				cursor: rawCursor,
+				ngWords,
 			});
 			if (result?.ids) {
 				timelineCacheManager.setIds(cacheKey, result);
@@ -626,7 +647,7 @@ router.get({
 				? req.query.sub_type
 				: 'all';
 			if (db.getProfilePostIds) {
-				result = await db.getProfilePostIds({ userId, subType, limit, offset, beforeId });
+				result = await db.getProfilePostIds({ userId, subType, limit, offset, beforeId, cursor: rawCursor });
 			} else {
 				const posts = await db.getPostsByUserId(userId, offset + limit + 1, currentUserId);
 				const filtered = posts.filter((post) => (
@@ -736,7 +757,8 @@ router.get({
 	const db = getDbAdapter(req);
 	const tab = req.query.tab || 'foryou';
 	const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
-	const offset = parseInt(req.query.offset, 10) || 0;
+	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
+	const offset = rawCursor ? 0 : parseInt(req.query.offset, 10) || 0;
 	const currentUserId = req.user ? req.user.id : null;
 
 		try {
@@ -746,9 +768,10 @@ router.get({
 				viewerId: currentUserId,
 				limit,
 				offset,
+				cursor: rawCursor,
 				ngWords: getViewerNgWords(req),
 			});
-			res.json({ ids: result.ids, has_more: result.has_more });
+			res.json({ ids: result.ids, has_more: result.has_more, next_cursor: result.next_cursor || null });
 
 	} catch (err) {
 		console.error('[posts] ids error:', err);
@@ -863,42 +886,43 @@ router.get({
 			const currentUserId = req.user ? req.user.id : null;
 			const knownViewer = req.user?.visibilityUser || null;
 			const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
-		const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
-		const root = await db.getPostById(postId);
-		const replyPage = await getThreadReplyPostIds(db, postId, limit, offset);
-		const replyPostsById = new Map(
-			(await db.getPostsByIds(replyPage.ids)).filter(Boolean).map((post) => [Number(post.id), post]),
-		);
-		const orderedReplyPosts = replyPage.ids
-			.map((id) => replyPostsById.get(Number(id)))
-			.filter(Boolean);
-
-		if (!root) {
-			// 削除済みの親投稿は返信が存在する場合だけ仮想的に表示する。
-			// 参照先を完全に欠くIDや、閲覧者に見えない返信しかないIDを列挙できないようにする。
-			const replies = await serializePostsBatch(
-				db,
-				orderedReplyPosts,
-				currentUserId,
-				getPublicUrl(req),
-				knownViewer,
+			const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+			const root = await db.getPostById(postId);
+			const replyPage = await getThreadReplyPostIds(db, postId, limit, offset);
+			const replyPostsById = new Map(
+				(await db.getPostsByIds(replyPage.ids)).filter(Boolean).map((post) => [Number(post.id), post]),
 			);
-			if (replies.length === 0) {
-				return res.status(404).json({ error: 'Post not found' });
+			const orderedReplyPosts = replyPage.ids
+				.map((id) => replyPostsById.get(Number(id)))
+				.filter(Boolean);
+
+			if (!root) {
+				// 削除済みの親投稿は返信が存在する場合だけ仮想的に表示する。
+				// 参照先を完全に欠くIDや、閲覧者に見えない返信しかないIDを列挙できないようにする。
+				const replies = await serializePostsBatch(
+					db,
+					orderedReplyPosts,
+					currentUserId,
+					getPublicUrl(req),
+					knownViewer,
+				);
+				if (replies.length === 0) {
+					return res.status(404).json({ error: 'Post not found' });
+				}
+				return res.json({
+					post: {
+						id: postId,
+						unknown: true,
+						user: { id: null, name: 'UnknownPost', scid: 'unknown', nyaitter_id: '@unknown' },
+						author: { id: null, name: 'UnknownPost', scid: 'unknown', nyaitter_id: '@unknown' },
+					},
+					replies,
+					has_more: replyPage.has_more,
+					next_cursor: replyPage.next_cursor || null,
+					offset,
+					limit,
+				});
 			}
-			return res.json({
-				post: {
-					id: postId,
-					unknown: true,
-					user: { id: null, name: 'UnknownPost', scid: 'unknown', nyaitter_id: '@unknown' },
-					author: { id: null, name: 'UnknownPost', scid: 'unknown', nyaitter_id: '@unknown' },
-				},
-				replies,
-				has_more: replyPage.has_more,
-				offset,
-				limit,
-			});
-		}
 
 		// 先祖の解決
 		const ancestorPosts = [];
@@ -937,6 +961,7 @@ router.get({
 			ancestors: serializedAncestors,
 			replies: serializedReplies,
 			has_more: replyPage.has_more,
+			next_cursor: replyPage.next_cursor || null,
 			offset,
 			limit,
 		});
@@ -1033,8 +1058,9 @@ router.get({
 			return res.status(404).json({ error: 'Post not found' });
 		}
 		const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
-		const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
-		const page = await db.getReplyPostIds(postId, limit, offset);
+		const rawCursor = typeof req.query.cursor === 'string' ? req.query.cursor.trim() : null;
+		const offset = !rawCursor ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
+		const page = await db.getReplyPostIds(postId, limit, offset, { cursor: rawCursor });
 		const replyPostsById = new Map(
 			(await db.getPostsByIds(page.ids)).filter(Boolean).map((post) => [Number(post.id), post]),
 		);
@@ -1051,7 +1077,13 @@ router.get({
 		if (!serializedPosts[0]) {
 			return res.status(404).json({ error: 'Post not found' });
 		}
-		res.json({ replies: serializedPosts.slice(1), has_more: page.has_more, offset, limit });
+		res.json({
+			replies: serializedPosts.slice(1),
+			has_more: page.has_more,
+			next_cursor: page.next_cursor || null,
+			offset,
+			limit,
+		});
 	} catch (err) {
 		console.error('[posts] replies error:', err);
 		res.status(500).json({ error: 'リプライの取得に失敗しました' });

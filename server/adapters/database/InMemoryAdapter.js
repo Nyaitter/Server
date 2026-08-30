@@ -13,6 +13,7 @@ const {
 const { scoreRecommendedPosts } = require('../../utils/recommendation');
 const { extractViewContent } = require('../../utils/viewContent');
 const { isFuzzyMatch, calculateStringSimilarity } = require('../../utils/fuzzySearch');
+const { encodePostCursor, decodePostCursor } = require('../../utils/postCursor');
 
 class InMemoryAdapter extends DatabaseAdapter {
 	constructor() {
@@ -24,6 +25,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 			this.loginApprovals = new Map(); // approvalId -> pending login approval
 			this.botTokens = new Map(); // tokenId -> { userId, tokenHash, name, ... }
 		this.posts = new Map();
+		this.postEvents = new Map();
+		this.nextPostEventId = 1;
 		this.groups = new Map(); // groupId -> group
 		this.groupRoles = new Map(); // roleId -> role
 		this.groupRoleIdsByGroup = new Map(); // groupId -> Set(roleId)
@@ -220,15 +223,28 @@ class InMemoryAdapter extends DatabaseAdapter {
 			});
 		}
 		for (const row of [...data.tables.posts].sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)))) {
+			const replyTo = row.reply_to != null && Number.isInteger(Number(row.reply_to)) && Number(row.reply_to) > 0 ? Number(row.reply_to) : null;
+			const repostTo = row.repost_to != null && Number.isInteger(Number(row.repost_to)) && Number(row.repost_to) > 0 ? Number(row.repost_to) : null;
 			const post = {
-				id: row.id, userId: row.user_id, content: row.content,
+				id: Number(row.id), userId: Number(row.user_id), content: row.content,
 				tags: Array.isArray(row.tags) ? row.tags : [],
 				tagsGeneratedAt: row.tags_generated_at ?? row.tagsGeneratedAt ?? null, attachments: row.attachments,
-									mask: row.mask, lock: row.lock, announcement: row.announcement,
-					groupId: row.group_id ?? row.groupId ?? null,
-					groupAnnouncement: Boolean(row.group_announcement ?? row.groupAnnouncement),
-					replyTo: row.reply_to, repostTo: row.repost_to, createdAt: row.created_at,
-
+				mask: Boolean(row.mask), lock: Boolean(row.lock), announcement: Boolean(row.announcement),
+				groupId: row.group_id ?? row.groupId ?? null,
+				groupAnnouncement: Boolean(row.group_announcement ?? row.groupAnnouncement),
+				replyTo,
+				reply_to: replyTo,
+				repostTo,
+				repost_to: repostTo,
+				like_count: Math.max(0, Number(row.like_count ?? row.likeCount) || 0),
+				likeCount: Math.max(0, Number(row.like_count ?? row.likeCount) || 0),
+				star_count: Math.max(0, Number(row.star_count ?? row.starCount) || 0),
+				starCount: Math.max(0, Number(row.star_count ?? row.starCount) || 0),
+				repost_count: Math.max(0, Number(row.repost_count ?? row.repostCount) || 0),
+				repostCount: Math.max(0, Number(row.repost_count ?? row.repostCount) || 0),
+				reply_count: 0,
+				replyCount: 0,
+				createdAt: row.created_at,
 			};
 			this.posts.set(post.id, post);
 			this._addPostIndexes(post);
@@ -366,19 +382,6 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return Object.fromEntries(Object.entries(data.tables).map(([table, rows]) => [table, rows.length]));
 	}
 
-		_updateReplyCountsForAncestors(parentPostId, delta) {
-			let currentId = Number(parentPostId);
-			const visited = new Set();
-			while (Number.isInteger(currentId) && !visited.has(currentId)) {
-				visited.add(currentId);
-				const nextCount = Math.max(0, (this.replyCountByParent.get(currentId) || 0) + delta);
-				if (nextCount === 0) this.replyCountByParent.delete(currentId);
-				else this.replyCountByParent.set(currentId, nextCount);
-				const currentPost = this.posts.get(currentId);
-				currentId = currentPost?.replyTo != null ? Number(currentPost.replyTo) : NaN;
-			}
-		}
-
 		_addPostIndexes(post) {
 			if (!post || !Number.isInteger(Number(post.id))) return;
 		const postId = Number(post.id);
@@ -386,7 +389,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		this.postIdsNewest.unshift(postId);
 		if (!this.postIdsByUser.has(userId)) this.postIdsByUser.set(userId, []);
 		this.postIdsByUser.get(userId).unshift(postId);
-		if (!post.repostTo) {
+		if (!post.repostTo && !post.repost_to) {
 			this.userPostCount.set(userId, (this.userPostCount.get(userId) || 0) + 1);
 		}
 		const groupId = post.groupId || post.group_id;
@@ -399,11 +402,20 @@ class InMemoryAdapter extends DatabaseAdapter {
 				this.groupAnnouncementPostIdsByGroup.get(gid).unshift(postId);
 			}
 		}
-		if (post.replyTo != null) {
-			const parentId = Number(post.replyTo);
-			if (!this.replyIdsByParent.has(parentId)) this.replyIdsByParent.set(parentId, []);
+		const replyTo = post.replyTo ?? post.reply_to ?? post.reply_id;
+		if (replyTo != null) {
+			const parentId = Number(replyTo);
+			if (Number.isInteger(parentId) && parentId > 0) {
+				if (!this.replyIdsByParent.has(parentId)) this.replyIdsByParent.set(parentId, []);
 				this.replyIdsByParent.get(parentId).unshift(postId);
-				this._updateReplyCountsForAncestors(parentId, 1);
+				const nextCount = (this.replyCountByParent.get(parentId) || 0) + 1;
+				this.replyCountByParent.set(parentId, nextCount);
+				const parentPost = this.posts.get(parentId);
+				if (parentPost) {
+					parentPost.reply_count = nextCount;
+					parentPost.replyCount = nextCount;
+				}
+			}
 		}
 		this.likeCountByPost.set(postId, this.likeCountByPost.get(postId) || 0);
 		this.starCountByPost.set(postId, this.starCountByPost.get(postId) || 0);
@@ -420,7 +432,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		removeId(this.postIdsNewest);
 		const userId = Number(post.userId);
 		removeId(this.postIdsByUser.get(userId));
-		if (!post.repostTo) {
+		if (!post.repostTo && !post.repost_to) {
 			const currentPostCount = this.userPostCount.get(userId) || 0;
 			if (currentPostCount <= 1) this.userPostCount.delete(userId);
 			else this.userPostCount.set(userId, currentPostCount - 1);
@@ -437,12 +449,22 @@ class InMemoryAdapter extends DatabaseAdapter {
 				if (!announcePosts || announcePosts.length === 0) this.groupAnnouncementPostIdsByGroup.delete(gid);
 			}
 		}
-		if (post.replyTo != null) {
-			const parentId = Number(post.replyTo);
-			const replies = this.replyIdsByParent.get(parentId);
-			removeId(replies);
-				this._updateReplyCountsForAncestors(parentId, -1);
+		const replyTo = post.replyTo ?? post.reply_to ?? post.reply_id;
+		if (replyTo != null) {
+			const parentId = Number(replyTo);
+			if (Number.isInteger(parentId) && parentId > 0) {
+				const replies = this.replyIdsByParent.get(parentId);
+				removeId(replies);
+				const nextCount = Math.max(0, (this.replyCountByParent.get(parentId) || 0) - 1);
+				if (nextCount === 0) this.replyCountByParent.delete(parentId);
+				else this.replyCountByParent.set(parentId, nextCount);
 				if (!replies || replies.length === 0) this.replyIdsByParent.delete(parentId);
+				const parentPost = this.posts.get(parentId);
+				if (parentPost) {
+					parentPost.reply_count = nextCount;
+					parentPost.replyCount = nextCount;
+				}
+			}
 		}
 		this.likeCountByPost.delete(postId);
 		this.starCountByPost.delete(postId);
@@ -1480,24 +1502,43 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return this._cloneGroupJoinRequest(request);
 	}
 
-	_groupPostResult(postIds, limit, offset, beforeId, filterFn = null) {
+	_groupPostResult(postIds, limit, offset, beforeId, filterFn = null, options = {}) {
 		const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
-		const normalizedOffset = !beforeId ? Math.max(0, Number(offset) || 0) : 0;
+		const cursor = options?.cursor || null;
+		const cursorCreatedAt = options?.cursorCreatedAt || null;
+		const cursorId = options?.cursorId || null;
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
+		const cursorTime = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
+
+		const normalizedOffset = (!beforeId && !decodedCursor) ? Math.max(0, Number(offset) || 0) : 0;
 		const matched = [];
-		for (const id of postIds) {
-			if (beforeId && Number(id) >= Number(beforeId)) continue;
-			const post = this.posts.get(Number(id));
+		for (const item of postIds) {
+			const id = typeof item === 'object' && item !== null ? Number(item.id) : Number(item);
+			const post = typeof item === 'object' && item !== null ? item : this.posts.get(id);
 			if (!post) continue;
+			if (decodedCursor && Number.isFinite(cursorTime)) {
+				const postTime = new Date(post.createdAt || post.created_at || 0).getTime();
+				if (postTime > cursorTime || (postTime === cursorTime && Number(post.id) >= decodedCursor.id)) continue;
+			} else if (beforeId && Number(post.id) >= Number(beforeId)) {
+				continue;
+			}
 			if (filterFn && !filterFn(post)) continue;
-			matched.push(Number(id));
+			matched.push(post);
 			if (matched.length >= normalizedOffset + safeLimit + 1) break;
 		}
 		const window = matched.slice(normalizedOffset, normalizedOffset + safeLimit + 1);
-		const ids = window.slice(0, safeLimit);
-		return { ids, has_more: window.length > safeLimit, next_cursor: window.length > safeLimit ? ids.at(-1) || null : null };
+		const selectedPosts = window.slice(0, safeLimit);
+		const ids = selectedPosts.map((p) => Number(p.id));
+		const lastPost = selectedPosts.length > 0 ? selectedPosts[selectedPosts.length - 1] : null;
+		const nextCursor = window.length > safeLimit && lastPost
+			? (encodePostCursor(lastPost) || ids[ids.length - 1])
+			: null;
+		return { ids, has_more: window.length > safeLimit, next_cursor: nextCursor };
 	}
 
-	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only' } = {}) {
+	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only', cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 		const normalizedAuthorId = authorId == null || authorId === ''
 			? null
 			: (Number.isInteger(Number(authorId)) && Number(authorId) >= 0 ? Number(authorId) : null);
@@ -1505,22 +1546,22 @@ class InMemoryAdapter extends DatabaseAdapter {
 		const sourceIds = this.groupPostIdsByGroup.get(String(groupId)) || [];
 		return this._groupPostResult(sourceIds, limit, offset, beforeId, (post) =>
 			(replyOnly ? post.replyTo != null : post.replyTo == null)
-			&& (normalizedAuthorId == null || Number(post.userId) === normalizedAuthorId));
+			&& (normalizedAuthorId == null || Number(post.userId) === normalizedAuthorId), { cursor, cursorCreatedAt, cursorId });
 	}
 
-	async getGroupAnnouncementPostIds(groupId, { limit = 30, offset = 0, beforeId = null } = {}) {
+	async getGroupAnnouncementPostIds(groupId, { limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 		const sourceIds = this.groupAnnouncementPostIdsByGroup.get(String(groupId)) || [];
-		return this._groupPostResult(sourceIds, limit, offset, beforeId, (post) => Boolean(post.groupAnnouncement || post.group_announcement));
+		return this._groupPostResult(sourceIds, limit, offset, beforeId, (post) => Boolean(post.groupAnnouncement || post.group_announcement), { cursor, cursorCreatedAt, cursorId });
 	}
 
-	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null } = {}) {
+	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 		const q = String(query || '').trim().toLowerCase();
 		if (!q) return { ids: [], has_more: false, next_cursor: null };
 		const activeGroupIds = new Set((this.groupIdsByUser.get(Number(userId)) || new Set()).values());
 		const posts = [...this.posts.values()].filter((post) => post.groupId && activeGroupIds.has(post.groupId) &&
 			this.groupMemberships.get(this._groupMemberKey(post.groupId, userId))?.status === 'active' &&
 			(String(post.viewContent || post.view_content || extractViewContent(post.content || '')).toLowerCase().includes(q) || String(post.content || '').toLowerCase().includes(q)));
-		return this._groupPostResult(posts, limit, offset, beforeId);
+		return this._groupPostResult(posts, limit, offset, beforeId, null, { cursor, cursorCreatedAt, cursorId });
 	}
 
 	async createPost(postData) {
@@ -1531,6 +1572,10 @@ class InMemoryAdapter extends DatabaseAdapter {
 		const viewContent = postData.viewContent != null
 			? String(postData.viewContent)
 			: (postData.view_content != null ? String(postData.view_content) : extractViewContent(postData.content || ''));
+		const replyTo = postData.replyTo ?? postData.reply_to ?? postData.reply_id ?? null;
+		const repostTo = postData.repostTo ?? postData.repost_to ?? postData.repost_id ?? null;
+		const normalizedReplyTo = replyTo != null && Number.isInteger(Number(replyTo)) && Number(replyTo) > 0 ? Number(replyTo) : null;
+		const normalizedRepostTo = repostTo != null && Number.isInteger(Number(repostTo)) && Number(repostTo) > 0 ? Number(repostTo) : null;
 		const post = {
 			id,
 			userId: postData.userId,
@@ -1549,15 +1594,83 @@ class InMemoryAdapter extends DatabaseAdapter {
 			group_announcement: !!(postData.groupAnnouncement ?? postData.group_announcement),
 			replyControl: String(postData.replyControl ?? postData.reply_control ?? 'everyone'),
 			reply_control: String(postData.replyControl ?? postData.reply_control ?? 'everyone'),
-			replyTo: postData.replyTo || null,
-			repostTo: postData.repostTo || null,
+			replyTo: normalizedReplyTo,
+			reply_to: normalizedReplyTo,
+			repostTo: normalizedRepostTo,
+			repost_to: normalizedRepostTo,
+			like_count: 0,
+			likeCount: 0,
+			star_count: 0,
+			starCount: 0,
+			repost_count: 0,
+			repostCount: 0,
+			reply_count: 0,
+			replyCount: 0,
 			createdAt: now,
 		};
 		this.posts.set(id, post);
 		this._addPostIndexes(post);
 		this._adjustUserKeywordAffinitiesForTags(post.userId, post.tags, 1);
+		await this.enqueuePostEvent('post.created', { postId: id, userId: Number(post.userId) }, { postId: id });
 		return post;
 	}
+
+	async enqueuePostEvent(eventType, payload, { postId = null, availableAt = null } = {}) {
+		const event = {
+			id: this.nextPostEventId++,
+			event_type: String(eventType),
+			post_id: postId == null ? null : Number(postId),
+			payload: payload && typeof payload === 'object' ? structuredClone(payload) : {},
+			status: 'pending',
+			attempts: 0,
+			available_at: availableAt ? new Date(availableAt).toISOString() : new Date().toISOString(),
+			locked_at: null,
+			processed_at: null,
+			last_error: null,
+			created_at: new Date().toISOString(),
+		};
+		this.postEvents.set(event.id, event);
+		return { ...event, payload: structuredClone(event.payload) };
+	}
+
+	async claimPostEvents(limit = 50, workerId = null) {
+		const now = Date.now();
+		const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 500));
+		const claimed = [];
+		for (const event of this.postEvents.values()) {
+			const available = new Date(event.available_at).getTime();
+			const stale = event.status === 'processing' && event.locked_at && now - new Date(event.locked_at).getTime() > 60000;
+			if ((!['pending', 'processing'].includes(event.status) || available > now) || (event.status === 'processing' && !stale)) continue;
+			event.status = 'processing';
+			event.attempts += 1;
+			event.locked_at = new Date(now).toISOString();
+			event.worker_id = workerId == null ? null : String(workerId);
+			claimed.push({ ...event, payload: structuredClone(event.payload) });
+			if (claimed.length >= safeLimit) break;
+		}
+		return claimed;
+	}
+
+	async completePostEvent(eventId) {
+		const event = this.postEvents.get(Number(eventId));
+		if (!event) return false;
+		event.status = 'completed';
+		event.locked_at = null;
+		event.processed_at = new Date().toISOString();
+		return true;
+	}
+
+	async failPostEvent(eventId, error, retryAt = null) {
+		const event = this.postEvents.get(Number(eventId));
+		if (!event) return false;
+		event.status = retryAt ? 'pending' : 'failed';
+		event.available_at = retryAt ? new Date(retryAt).toISOString() : event.available_at;
+		event.locked_at = null;
+		event.last_error = String(error?.message || error || 'Unknown error').slice(0, 2000);
+		return true;
+	}
+
+	async processPostCreatedEvent() {}
 
 			async getPostById(id) {
 			return this.posts.get(id) || null;
@@ -1657,6 +1770,16 @@ class InMemoryAdapter extends DatabaseAdapter {
 				repost_count: this.repostCountByPost.get(id) || 0,
 				liked_by_me: currentUserId != null && this.likes.has(`${Number(currentUserId)}:${id}`),
 				starred_by_me: currentUserId != null && this.stars.has(`${Number(currentUserId)}:${id}`),
+			}));
+		}
+
+		async getViewerPostReactions(postIds, currentUserId) {
+			const viewerId = Number(currentUserId);
+			if (!Number.isInteger(viewerId) || viewerId <= 0) return [];
+			return [...new Set((postIds || []).map(Number).filter(Number.isInteger))].map((postId) => ({
+				post_id: postId,
+				liked_by_me: this.likes.has(`${viewerId}:${postId}`),
+				starred_by_me: this.stars.has(`${viewerId}:${postId}`),
 			}));
 		}
 
@@ -2956,7 +3079,16 @@ class InMemoryAdapter extends DatabaseAdapter {
 	}
 
 	
-	async getMediaPosts(userId, limit = 15, offset = 0, type = null) {
+	async getMediaPosts(userId, limit = 15, offset = 0, type = null, options = {}) {
+		const normalizedLimit = Math.max(1, Math.min(Number(limit) || 15, 100));
+		const cursor = options?.cursor || null;
+		const cursorCreatedAt = options?.cursorCreatedAt || null;
+		const cursorId = options?.cursorId || null;
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId), position: options?.cursorPosition != null ? Number(options.cursorPosition) : null }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
+		const cursorTime = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
+
 		const userPosts = (this.postIdsByUser.get(Number(userId)) || [])
 			.map((postId) => this.posts.get(postId))
 			.filter(Boolean);
@@ -2964,31 +3096,100 @@ class InMemoryAdapter extends DatabaseAdapter {
 		const items = [];
 		for (const post of userPosts) {
 			if (!Array.isArray(post.attachments)) continue;
-			for (const att of post.attachments) {
+			const postTime = new Date(post.createdAt || post.created_at || 0).getTime();
+			for (let position = 0; position < post.attachments.length; position++) {
+				const att = post.attachments[position];
 				const attType = att.type || 'file';
 				if (type && attType !== type) continue;
+				if (decodedCursor && Number.isFinite(cursorTime)) {
+					const pos1Based = position + 1;
+					const cursorPosition = decodedCursor.position != null ? Number(decodedCursor.position) : 0;
+					if (postTime > cursorTime || (postTime === cursorTime && (Number(post.id) > decodedCursor.id || (Number(post.id) === decodedCursor.id && pos1Based <= cursorPosition)))) {
+						continue;
+					}
+				}
 				items.push({
 					post_id: post.id,
 					file_id: att.id,
 					file_type: attType,
 					type: attType,
+					created_at: post.createdAt || post.created_at,
+					position: position + 1,
 				});
 			}
 		}
-		return items.slice(offset, offset + limit);
+
+		const normalizedOffset = !decodedCursor ? Math.max(0, Number(offset) || 0) : 0;
+		const window = items.slice(normalizedOffset, normalizedOffset + normalizedLimit + 1);
+		const selected = window.slice(0, normalizedLimit);
+		const lastItem = selected.length > 0 ? selected[selected.length - 1] : null;
+		const nextCursor = window.length > normalizedLimit && lastItem
+			? encodePostCursor({ createdAt: lastItem.created_at, id: lastItem.post_id, position: lastItem.position })
+			: null;
+
+		const resultItems = selected.map((item) => ({
+			post_id: item.post_id,
+			file_id: item.file_id,
+			file_type: item.file_type,
+			type: item.type,
+		}));
+
+		if (options?.withNextCursor || decodedCursor) {
+			return {
+				media_items: resultItems,
+				has_more: window.length > normalizedLimit,
+				next_cursor: nextCursor,
+			};
+		}
+		resultItems.next_cursor = nextCursor;
+		resultItems.has_more = window.length > normalizedLimit;
+		return resultItems;
 	}
 
 	async getReplyCount(postId) {
 		return this.replyCountByParent.get(Number(postId)) || 0;
 	}
 
-		async getReplyPostIds(parentPostId, limit = 50, offset = 0) {
-				const normalizedLimit = Math.max(1, Number(limit) || 50);
-				const normalizedOffset = Math.max(0, Number(offset) || 0);
-				const replyIds = this.replyIdsByParent.get(Number(parentPostId)) || [];
-				const window = replyIds.slice(normalizedOffset, normalizedOffset + normalizedLimit + 1);
-				return { ids: window.slice(0, normalizedLimit), has_more: window.length > normalizedLimit };
+		async getReplyPostIds(parentPostId, limit = 50, offset = 0, options = {}) {
+			const normalizedLimit = Math.max(1, Number(limit) || 50);
+			const cursor = options?.cursor || null;
+			const cursorCreatedAt = options?.cursorCreatedAt || null;
+			const cursorId = options?.cursorId || null;
+			const decodedCursor = cursorCreatedAt && cursorId
+				? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+				: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
+			const cursorTime = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
+
+			const replyIds = this.replyIdsByParent.get(Number(parentPostId)) || [];
+			let candidatePosts = replyIds.map((id) => this.posts.get(Number(id))).filter(Boolean);
+
+			if (decodedCursor && Number.isFinite(cursorTime)) {
+				candidatePosts = candidatePosts.filter((post) => {
+					const postTime = new Date(post.createdAt || post.created_at || 0).getTime();
+					if (postTime < cursorTime) return true;
+					if (postTime === cursorTime && Number(post.id) < decodedCursor.id) return true;
+					return false;
+				});
+				const window = candidatePosts.slice(0, normalizedLimit + 1);
+				const selectedPosts = window.slice(0, normalizedLimit);
+				const ids = selectedPosts.map((p) => Number(p.id));
+				const lastPost = selectedPosts.length > 0 ? selectedPosts[selectedPosts.length - 1] : null;
+				const nextCursor = window.length > normalizedLimit && lastPost
+					? (encodePostCursor(lastPost) || ids[ids.length - 1])
+					: null;
+				return { ids, has_more: window.length > normalizedLimit, next_cursor: nextCursor };
 			}
+
+			const normalizedOffset = Math.max(0, Number(offset) || 0);
+			const window = candidatePosts.slice(normalizedOffset, normalizedOffset + normalizedLimit + 1);
+			const selectedPosts = window.slice(0, normalizedLimit);
+			const ids = selectedPosts.map((p) => Number(p.id));
+			const lastPost = selectedPosts.length > 0 ? selectedPosts[selectedPosts.length - 1] : null;
+			const nextCursor = window.length > normalizedLimit && lastPost
+				? (encodePostCursor(lastPost) || ids[ids.length - 1])
+				: null;
+			return { ids, has_more: window.length > normalizedLimit, next_cursor: nextCursor };
+		}
 
 			async getThreadReplyPostIds(parentPostId, limit = 50, offset = 0) {
 				const normalizedLimit = Math.max(1, Number(limit) || 50);
@@ -3010,16 +3211,24 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 
 		
-			async getProfilePostIds({ userId, subType = 'all', limit = 30, offset = 0, beforeId = null } = {}) {
+			async getProfilePostIds({ userId, subType = 'all', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 			const normalizedLimit = Math.max(1, Number(limit) || 30);
+			const decodedCursor = cursorCreatedAt && cursorId
+				? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+				: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
+			const cursorTime = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
 			const normalizedBeforeId = Number.isInteger(Number(beforeId)) && Number(beforeId) > 0
 				? Number(beforeId)
 				: null;
-			const normalizedOffset = normalizedBeforeId == null ? Math.max(0, Number(offset) || 0) : 0;
+			const normalizedOffset = normalizedBeforeId == null && !decodedCursor ? Math.max(0, Number(offset) || 0) : 0;
 			const sourceIds = this.postIdsByUser.get(Number(userId)) || [];
 			const matched = sourceIds.filter((id) => {
 				const post = this.posts.get(id);
 				if (!post || post.groupId || post.group_id || (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)) return false;
+				if (decodedCursor) {
+					const postTime = new Date(post.createdAt || post.created_at || 0).getTime();
+					if (postTime > cursorTime || (postTime === cursorTime && Number(id) >= decodedCursor.id)) return false;
+				}
 				return subType === 'all' || (subType === 'posts_only' ? post.replyTo == null : post.replyTo != null);
 			});
 			const window = matched.slice(normalizedOffset, normalizedOffset + normalizedLimit + 1);
@@ -3027,16 +3236,25 @@ class InMemoryAdapter extends DatabaseAdapter {
 			return {
 				ids,
 				has_more: window.length > normalizedLimit,
-				next_cursor: window.length > normalizedLimit && ids.length > 0 ? ids[ids.length - 1] : null,
+				next_cursor: window.length > normalizedLimit && ids.length > 0
+					? (encodePostCursor(this.posts.get(ids[ids.length - 1])) || ids[ids.length - 1])
+					: null,
 			};
 		}
 
-		async getTimelinePostIds({ tab = 'foryou', followIds = [], viewerId = null, limit = 30, offset = 0, beforeId = null } = {}) {
+		async getTimelinePostIds({ tab = 'foryou', followIds = [], viewerId = null, limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 			const normalizedLimit = Math.max(1, Number(limit) || 30);
+			const decodedCursor = cursorCreatedAt && cursorId
+				? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+				: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
+			const normalizedOffset = (decodedCursor || (Number.isInteger(Number(beforeId)) && Number(beforeId) > 0))
+				? 0
+				: Math.max(0, Number(offset) || 0);
 			const normalizedBeforeId = Number.isInteger(Number(beforeId)) && Number(beforeId) > 0
 				? Number(beforeId)
 				: null;
-			const normalizedOffset = normalizedBeforeId == null ? Math.max(0, Number(offset) || 0) : 0;
+			const targetCreatedAt = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
+			const targetId = decodedCursor ? Number(decodedCursor.id) : null;
 			const followSet = tab === 'following'
 				? (viewerId != null && this.followingIdsByUser
 					? new Set([...(this.followingIdsByUser.get(Number(viewerId)) || new Set())])
@@ -3045,7 +3263,14 @@ class InMemoryAdapter extends DatabaseAdapter {
 			const matched = [];
 			for (const id of this.postIdsNewest) {
 				const post = this.posts.get(id);
-				if (!post || post.groupId || post.group_id || post.replyTo != null || (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)) continue;
+				if (!post || post.groupId || post.group_id || post.replyTo != null) continue;
+				if (decodedCursor && targetCreatedAt != null && targetId != null) {
+					const postTime = new Date(post.createdAt || 0).getTime();
+					if (postTime > targetCreatedAt) continue;
+					if (postTime === targetCreatedAt && Number(id) >= targetId) continue;
+				} else if (normalizedBeforeId != null && Number(id) >= normalizedBeforeId) {
+					continue;
+				}
 				const matches = tab === 'following'
 					? followSet.has(Number(post.userId))
 					: tab === 'announce'
@@ -3057,19 +3282,27 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 			const window = matched.slice(normalizedOffset, normalizedOffset + normalizedLimit + 1);
 			const ids = window.slice(0, normalizedLimit);
+			const lastPost = ids.length > 0 ? this.posts.get(ids[ids.length - 1]) : null;
+			const nextCursor = window.length > normalizedLimit && lastPost
+				? (encodePostCursor(lastPost) || ids[ids.length - 1])
+				: null;
 			return {
 				ids,
 				has_more: window.length > normalizedLimit,
-				next_cursor: window.length > normalizedLimit && ids.length > 0 ? ids[ids.length - 1] : null,
+				next_cursor: nextCursor,
 			};
 		}
 
-		async getRecommendedPostIds({ viewerId = null, limit = 30, offset = 0, beforeId = null } = {}) {
+		async getRecommendedPostIds({ viewerId = null, limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 			const normalizedLimit = Math.max(1, Number(limit) || 30);
+			const decodedCursor = cursorCreatedAt && cursorId
+				? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+				: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
+			const cursorTime = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
 			const normalizedBeforeId = Number.isInteger(Number(beforeId)) && Number(beforeId) > 0
 				? Number(beforeId)
 				: null;
-			const normalizedOffset = normalizedBeforeId == null ? Math.max(0, Number(offset) || 0) : 0;
+			const normalizedOffset = normalizedBeforeId == null && !decodedCursor ? Math.max(0, Number(offset) || 0) : 0;
 			const scoringBlockSize = Math.max(240, normalizedLimit * 8);
 			const normalizedViewerId = Number.isInteger(Number(viewerId)) ? Number(viewerId) : null;
 			const directFollowIds = normalizedViewerId == null
@@ -3094,6 +3327,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 					|| post.replyTo != null
 					|| (normalizedViewerId != null && Number(post.userId ?? post.user_id) === normalizedViewerId)
 					|| (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)
+					|| (decodedCursor && (new Date(post.createdAt || post.created_at || 0).getTime() > cursorTime
+						|| (new Date(post.createdAt || post.created_at || 0).getTime() === cursorTime && Number(id) >= decodedCursor.id)))
 				) {
 					continue;
 				}
@@ -3131,24 +3366,34 @@ class InMemoryAdapter extends DatabaseAdapter {
 			return {
 				ids: scored.map((s) => s.id),
 				has_more: blockWithSentinel.length > scoringBlockSize,
-				next_cursor: blockWithSentinel.length > scoringBlockSize && lastCandidate ? Number(lastCandidate.id) : null,
+				next_cursor: blockWithSentinel.length > scoringBlockSize && lastCandidate
+					? (encodePostCursor(lastCandidate) || Number(lastCandidate.id))
+					: null,
 				next_offset: normalizedOffset + Math.min(blockWithSentinel.length, scoringBlockSize),
-				use_offset_pagination: normalizedBeforeId == null,
+				use_offset_pagination: normalizedBeforeId == null && !decodedCursor,
 			};
 		}
 
-		async searchPostIds(query, limit = 30, offset = 0, beforeId = null) {
+		async searchPostIds(query, limit = 30, offset = 0, beforeId = null, _viewerId = null, options = {}) {
 			if (!query || query.trim().length === 0) return { ids: [], has_more: false, next_cursor: null };
 			const q = query.toLowerCase().trim();
 			const normalizedLimit = Math.max(1, Number(limit) || 30);
+			const decodedCursor = options?.cursorCreatedAt && options?.cursorId
+				? { createdAt: options.cursorCreatedAt, id: Number(options.cursorId) }
+				: (typeof options?.cursor === 'string' && options.cursor.trim() ? decodePostCursor(options.cursor.trim()) : null);
+			const cursorTime = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
 			const normalizedBeforeId = Number.isInteger(Number(beforeId)) && Number(beforeId) > 0
 				? Number(beforeId)
 				: null;
-			const normalizedOffset = normalizedBeforeId == null ? Math.max(0, Number(offset) || 0) : 0;
+			const normalizedOffset = normalizedBeforeId == null && !decodedCursor ? Math.max(0, Number(offset) || 0) : 0;
 			const matched = [];
 			for (const id of this.postIdsNewest) {
 				const post = this.posts.get(id);
 				if (!post || post.groupId || post.group_id || (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)) continue;
+				if (decodedCursor) {
+					const postTime = new Date(post.createdAt || post.created_at || 0).getTime();
+					if (postTime > cursorTime || (postTime === cursorTime && Number(id) >= decodedCursor.id)) continue;
+				}
 				const targetText = String(post.viewContent || post.view_content || extractViewContent(post.content || '')).toLowerCase();
 				const contentText = String(post.content || '').toLowerCase();
 				const tags = Array.isArray(post.tags) ? post.tags : [];
@@ -3165,7 +3410,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 			return {
 				ids,
 				has_more: window.length > normalizedLimit,
-				next_cursor: window.length > normalizedLimit && ids.length > 0 ? ids[ids.length - 1] : null,
+				next_cursor: window.length > normalizedLimit && ids.length > 0
+					? (encodePostCursor(this.posts.get(ids[ids.length - 1])) || ids[ids.length - 1])
+					: null,
 			};
 		}
 

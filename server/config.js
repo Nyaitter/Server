@@ -514,7 +514,7 @@ const config = {
       'post cache TTL',
       ['POST_CACHE_TTL_MS'],
       ['cache.postCacheTtlMs'],
-      '24h',
+      '86400000ms',
     ),
     memoryCacheMaxHeapMb: envNonNegativeInteger(
       'MEMORY_CACHE_MAX_HEAP_MB',

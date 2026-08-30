@@ -34,6 +34,7 @@ if (config.server.maintenanceMode) {
 }
 
 const { createDatabaseAdapter, createStorageAdapter } = require('./adapters');
+const DatabaseAdapter = require('./adapters/database/DatabaseAdapter');
 const {
     csrfProtection,
     flexibleCors,
@@ -54,6 +55,7 @@ const { startModerationAssignmentScheduler } = require('./services/ModerationAss
 const { AutoModerationService } = require('./services/AutoModerationService');
 const { startPollExpirationScheduler } = require('./services/PollExpirationScheduler');
 const PostActionQueue = require('./services/PostActionQueue');
+const PostEventOutbox = require('./services/PostEventOutbox');
 const PostKeywordBackfillService = require('./services/PostKeywordBackfillService');
 const { serializeNotification } = require('./utils/serialize');
 const { getPublicUrl } = require('./utils/nyaitterAddress');
@@ -575,6 +577,7 @@ const storageAdapter = createStorageAdapter();
 let operatorControl = null;
 let moderationScheduler = null;
 let pollExpirationScheduler = null;
+let postEventOutbox = null;
 
 const pushNotificationService = new PushNotificationService({
     dbAdapter,
@@ -614,6 +617,12 @@ const postActionQueue = new PostActionQueue();
 const postKeywordBackfillQueue = new PostActionQueue({ maxPendingJobs: 2000 });
 const postKeywordBackfillService = new PostKeywordBackfillService({ postActionQueue: postKeywordBackfillQueue });
 dbAdapter.postKeywordBackfillService = postKeywordBackfillService;
+postEventOutbox = new PostEventOutbox({
+    db: dbAdapter,
+    handlers: {
+        'post.created': (event) => dbAdapter.processPostCreatedEvent?.(event),
+    },
+});
 
 app.locals.pushNotificationService = pushNotificationService;
 app.locals.moderationReportService = moderationReportService;
@@ -624,6 +633,9 @@ app.locals.postKeywordBackfillService = postKeywordBackfillService;
 
 async function startServer() {
     await dbAdapter.connect();
+    if (dbAdapter.constructor.prototype.claimPostEvents !== DatabaseAdapter.prototype.claimPostEvents) {
+        postEventOutbox.start();
+    }
     app.locals.dbAdapter = dbAdapter;
     app.locals.storageAdapter = storageAdapter;
     managementToolServer?.setDbAdapter(dbAdapter);
@@ -760,6 +772,7 @@ async function shutdown(signal) {
         postKeywordBackfillService.stop();
         postKeywordBackfillQueue.stop();
         postActionQueue.stop();
+        postEventOutbox?.stop();
         realtimeConnections.closeAll();
         // NMT は独立プロセスとして稼働し続けるためここでは stop しない
         if (managementToolServer) {

@@ -219,6 +219,19 @@ class DatabaseAdapter {
 		throw new Error('createPost() must be implemented');
 	}
 
+	async enqueuePostEvent(eventType, payload, options = {}) {
+		throw new Error('enqueuePostEvent() must be implemented');
+	}
+	async claimPostEvents(limit = 50, workerId = null) {
+		throw new Error('claimPostEvents() must be implemented');
+	}
+	async completePostEvent(eventId) {
+		throw new Error('completePostEvent() must be implemented');
+	}
+	async failPostEvent(eventId, error, retryAt = null) {
+		throw new Error('failPostEvent() must be implemented');
+	}
+
 	
 			async getPostById(postId) {
 			throw new Error('getPostById() must be implemented');

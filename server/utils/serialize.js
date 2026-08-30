@@ -420,9 +420,13 @@ async function fetchPostMetrics(db, allPosts, currentUserId, knownViewer = null)
 	const ids = [...new Set((allPosts || []).map((p) => Number(p?.id ?? p)).filter(Number.isInteger))];
 	if (ids.length === 0) return [];
 
-	// Check if all posts already have denormalized counter columns
-	const hasCounters = Array.isArray(allPosts) && allPosts.length > 0 && typeof allPosts[0] === 'object'
-		&& (allPosts[0].like_count !== undefined || allPosts[0].likeCount !== undefined);
+	const hasCounters = Array.isArray(allPosts) && allPosts.length > 0 && allPosts.every((post) => (
+		post && typeof post === 'object' &&
+		(post.like_count !== undefined || post.likeCount !== undefined) &&
+		(post.reply_count !== undefined || post.replyCount !== undefined) &&
+		(post.star_count !== undefined || post.starCount !== undefined) &&
+		(post.repost_count !== undefined || post.repostCount !== undefined)
+	));
 
 	// 一覧アダプターが本人リアクションまで同梱した場合も追加取得しない。
 	const hasInlineViewerReaction = currentUserId != null && allPosts.every((post) => (
@@ -432,11 +436,25 @@ async function fetchPostMetrics(db, allPosts, currentUserId, knownViewer = null)
 	// If viewer reaction state is known or user is not logged in, assemble purely in-memory
 	const hasViewerReactionState = currentUserId == null || hasInlineViewerReaction || (knownViewer && Array.isArray(knownViewer.like));
 
-	if (hasCounters && hasViewerReactionState) {
+	let viewerReactions = null;
+	if (hasCounters && currentUserId != null && !hasViewerReactionState && typeof db.getViewerPostReactions === 'function') {
+		try {
+			const result = await db.getViewerPostReactions(ids, currentUserId);
+			if (Array.isArray(result)) viewerReactions = new Map(result.map((row) => [Number(row.post_id), row]));
+		} catch (_) {}
+	}
+
+	if (hasCounters && (
+		currentUserId == null ||
+		hasInlineViewerReaction ||
+		(knownViewer && Array.isArray(knownViewer.like)) ||
+		viewerReactions instanceof Map
+	)) {
 		const likedSet = new Set((knownViewer?.like || []).map(Number));
 		const starredSet = new Set((knownViewer?.star || []).map(Number));
 		return allPosts.map((post) => {
 			const postId = Number(post.id);
+			const reaction = viewerReactions?.get(postId);
 			return {
 				post_id: postId,
 				like_count: Math.max(0, Number(post.like_count ?? post.likeCount) || 0),
@@ -444,10 +462,10 @@ async function fetchPostMetrics(db, allPosts, currentUserId, knownViewer = null)
 				repost_count: Math.max(0, Number(post.repost_count ?? post.repostCount) || 0),
 				reply_count: Math.max(0, Number(post.reply_count ?? post.replyCount) || 0),
 				liked_by_me: currentUserId != null
-					? (hasInlineViewerReaction ? Boolean(post.liked_by_me) : likedSet.has(postId))
+					? (hasInlineViewerReaction ? Boolean(post.liked_by_me) : viewerReactions instanceof Map ? Boolean(reaction?.liked_by_me) : likedSet.has(postId))
 					: false,
 				starred_by_me: currentUserId != null
-					? (hasInlineViewerReaction ? Boolean(post.starred_by_me) : starredSet.has(postId))
+					? (hasInlineViewerReaction ? Boolean(post.starred_by_me) : viewerReactions instanceof Map ? Boolean(reaction?.starred_by_me) : starredSet.has(postId))
 					: false,
 			};
 		});
@@ -607,20 +625,36 @@ async function serializePostsBatch(
 	}
 	const briefUsersById = new Map();
 	const visitingPostIds = new Set();
+	const rootPostsById = new Map();
 	const normalizedViewerId = currentUserId != null ? Number(currentUserId) : null;
+	const viewerMentionRegex = Number.isSafeInteger(normalizedViewerId) && normalizedViewerId > 0
+		? new RegExp(`@${normalizedViewerId}\\b`)
+		: null;
 
 	function getRootPost(post) {
+		const postId = Number(post?.id);
+		if (rootPostsById.has(postId)) return rootPostsById.get(postId);
 		let current = post;
-		const seen = new Set();
+		const traversedIds = [];
+		const seen = new Set([postId]);
 		while (current && (current.replyTo != null || current.reply_to != null)) {
 			const parentId = Number(current.replyTo ?? current.reply_to);
 			if (!Number.isInteger(parentId) || seen.has(parentId)) break;
 			seen.add(parentId);
+			if (rootPostsById.has(parentId)) {
+				traversedIds.push(parentId);
+				current = rootPostsById.get(parentId);
+				break;
+			}
 			const parent = postsById.get(parentId);
 			if (!parent) break;
+			traversedIds.push(parentId);
 			current = parent;
 		}
-		return current || post;
+		const root = current || post;
+		rootPostsById.set(postId, root);
+		for (const traversedId of traversedIds) rootPostsById.set(traversedId, root);
+		return root;
 	}
 
 	const followingCheckAuthorIds = normalizedViewerId != null
@@ -733,8 +767,8 @@ async function serializePostsBatch(
 			canReply = true;
 		} else {
 			const isMentioned = Boolean(
-				(post.content && new RegExp(`@${normalizedViewerId}\\b`).test(post.content)) ||
-				(rootPost.content && new RegExp(`@${normalizedViewerId}\\b`).test(rootPost.content))
+				(viewerMentionRegex && post.content && viewerMentionRegex.test(post.content)) ||
+				(viewerMentionRegex && rootPost.content && viewerMentionRegex.test(rootPost.content))
 			);
 			if (effectiveReplyControl === 'mentioned' || effectiveReplyControl === 'mentioned_only') {
 				canReply = isMentioned;

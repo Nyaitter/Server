@@ -2,6 +2,7 @@ const DatabaseAdapter = require('../DatabaseAdapter');
 
 const { normalizeBlockList } = require('../../../utils/blockList');
 const { extractViewContent } = require('../../../utils/viewContent');
+const { encodePostCursor, decodePostCursor } = require('../../../utils/postCursor');
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -921,9 +922,15 @@ class D1Adapter extends DatabaseAdapter {
 		return normalizeGroupJoinRequest(await this._write(`/group-join-requests/${this._groupPath(requestId)}`, fields, 'PATCH'));
 	}
 
-	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only' } = {}) {
+	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only', cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query(`/groups/${this._groupPath(groupId)}/posts`, {
-			limit: this._limit(limit, 30, 100), offset: Math.max(0, Number(offset) || 0), beforeId: beforeId ?? undefined,
+			limit: this._limit(limit, 30, 100),
+			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : Math.max(0, Number(offset) || 0),
+			beforeId: beforeId ?? undefined,
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || undefined),
 			authorId: authorId != null && authorId !== '' && Number.isInteger(Number(authorId)) && Number(authorId) >= 0
 				? Number(authorId)
 				: undefined,
@@ -931,15 +938,29 @@ class D1Adapter extends DatabaseAdapter {
 		}), { cacheSeconds: 0 });
 	}
 
-	async getGroupAnnouncementPostIds(groupId, { limit = 30, offset = 0, beforeId = null } = {}) {
+	async getGroupAnnouncementPostIds(groupId, { limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query(`/groups/${this._groupPath(groupId)}/announcements`, {
-			limit: this._limit(limit, 30, 100), offset: Math.max(0, Number(offset) || 0), beforeId: beforeId ?? undefined,
+			limit: this._limit(limit, 30, 100),
+			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : Math.max(0, Number(offset) || 0),
+			beforeId: beforeId ?? undefined,
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || undefined),
 		}), { cacheSeconds: 0 });
 	}
 
-	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null } = {}) {
-		return this._read(this._query('/group-posts/search', { userId: requireId(userId, 'userId'), query: String(query || ''),
-			limit: this._limit(limit, 30, 100), offset: Math.max(0, Number(offset) || 0), beforeId: beforeId ?? undefined,
+	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
+		return this._read(this._query('/group-posts/search', {
+			userId: requireId(userId, 'userId'),
+			query: String(query || ''),
+			limit: this._limit(limit, 30, 100),
+			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : Math.max(0, Number(offset) || 0),
+			beforeId: beforeId ?? undefined,
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || undefined),
 		}), { cacheSeconds: 0 });
 	}
 
@@ -1009,6 +1030,17 @@ class D1Adapter extends DatabaseAdapter {
 		return this._read('/posts/metrics/batch', { body });
 	}
 
+	async getViewerPostReactions(postIds, currentUserId) {
+		const ids = this._normalizeIds(postIds, { fieldName: 'postId', minimum: 1 });
+		if (ids.length === 0) return [];
+		return this._read('/posts/reactions/batch', {
+			body: {
+				ids,
+				currentUserId: currentUserId == null ? null : requireId(currentUserId, 'currentUserId'),
+			},
+		});
+	}
+
 	async updatePost(postId, fields) {
 		const post = await this._write(`/posts/${requireId(postId, 'postId', 1)}`, fields);
 		return normalizePost(post);
@@ -1045,47 +1077,66 @@ class D1Adapter extends DatabaseAdapter {
 		return { posts, hasMore: posts.length === limit };
 	}
 
-	async getTimelinePostIds({ tab = 'foryou', followIds = [], viewerId = null, limit = 30, offset = 0, beforeId = null } = {}) {
+	async getTimelinePostIds({ tab = 'foryou', followIds = [], viewerId = null, limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 		const resolvedFollowIds = this._normalizeIds(followIds);
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		const body = {
 			tab: String(tab),
 			followIds: resolvedFollowIds,
 			viewerId: viewerId == null ? null : requireId(viewerId, 'viewerId'),
 			includePosts: true,
 			limit: this._limit(limit, 30),
-			offset: this._offset(offset),
+			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || null),
 		};
 		return this._read('/posts/timeline/ids', { body, cacheSeconds: 0 });
 	}
 
-	async getRecommendedPostIds({ viewerId = null, limit = 30, offset = 0, beforeId = null } = {}) {
+	async getRecommendedPostIds({ viewerId = null, limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query('/posts/recommended/ids', {
 			viewerId: viewerId == null ? null : requireId(viewerId, 'viewerId'),
 			limit: this._limit(limit, 30),
-			offset: this._offset(offset),
+			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || null),
 			includePosts: 'true',
 		}), { cacheSeconds: 0 });
 	}
 
-	async getProfilePostIds({ userId, subType = 'all', limit = 30, offset = 0, beforeId = null } = {}) {
+	async getProfilePostIds({ userId, subType = 'all', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query(`/users/${requireId(userId, 'userId')}/post-ids`, {
 			subType: String(subType || 'all'),
 			limit: this._limit(limit, 30),
-			offset: this._offset(offset),
+			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || null),
 			includePosts: 'true',
 		}), { cacheSeconds: 0 });
 	}
 
-	async searchPostIds(query, limit = 30, offset = 0, beforeId = null, viewerId = null) {
+	async searchPostIds(query, limit = 30, offset = 0, beforeId = null, viewerId = null, options = {}) {
+		const cursor = options?.cursor || null;
+		const cursorCreatedAt = options?.cursorCreatedAt || null;
+		const cursorId = options?.cursorId || null;
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query('/posts/search/ids', {
 			q: String(query || ''),
 			viewerId: viewerId == null ? null : requireId(viewerId, 'viewerId'),
 			limit: this._limit(limit, 30),
-			offset: this._offset(offset),
+			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || null),
 			includePosts: 'true',
 		}), { cacheSeconds: 0 });
 	}
@@ -1095,9 +1146,17 @@ class D1Adapter extends DatabaseAdapter {
 		return Array.isArray(posts) ? posts.map(normalizePost) : [];
 	}
 
-	async getReplyPostIds(parentPostId, limit = 50, offset = 0) {
+	async getReplyPostIds(parentPostId, limit = 50, offset = 0, options = {}) {
+		const cursor = options?.cursor || null;
+		const cursorCreatedAt = options?.cursorCreatedAt || null;
+		const cursorId = options?.cursorId || null;
+		const decodedCursor = cursorCreatedAt && cursorId
+			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
+			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query(`/posts/${requireId(parentPostId, 'parentPostId', 1)}/reply-ids`, {
-			limit: this._limit(limit, 50), offset: this._offset(offset),
+			limit: this._limit(limit, 50),
+			offset: decodedCursor ? 0 : this._offset(offset),
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || null),
 		}), { cacheSeconds: 0 });
 	}
 
@@ -1145,13 +1204,19 @@ class D1Adapter extends DatabaseAdapter {
 		return Number(res?.count ?? res ?? 0);
 	}
 
-	async getMediaPosts(userId, limit = 15, offset = 0, type = null) {
-		const query = { limit: this._limit(limit, 15, 100), offset: this._offset(offset) };
+	async getMediaPosts(userId, limit = 15, offset = 0, type = null, options = {}) {
+		const cursor = options?.cursor || null;
+		const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
+		const query = {
+			limit: this._limit(limit, 15, 100),
+			offset: decodedCursor ? 0 : this._offset(offset),
+			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || undefined),
+		};
 		if (type && (type === 'image' || type === 'video')) {
 			query.type = type;
 		}
 		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/media`, query), { cacheSeconds: 0 });
-		return Array.isArray(list) ? list : [];
+		return Array.isArray(list) ? list : (list?.media_items || []);
 	}
 
 	async getReplyCount(postId) {
@@ -1617,6 +1682,41 @@ class D1Adapter extends DatabaseAdapter {
 			limit: this._limit(limit, 50, 100),
 		}), { cacheSeconds: 0 });
 		return Array.isArray(list) ? list.map(normalizePost) : [];
+	}
+
+	// ==================== Post Events (Outbox) ====================
+
+	async enqueuePostEvent(eventType, payload, { postId = null, availableAt = null } = {}) {
+		const body = {
+			eventType: String(eventType),
+			postId: postId == null ? null : requireId(postId, 'postId'),
+			payload: payload || {},
+			availableAt: availableAt ? new Date(availableAt).toISOString() : null,
+		};
+		return this._write('/post-events/enqueue', body);
+	}
+
+	async claimPostEvents(limit = 50, workerId = null) {
+		const body = {
+			limit: this._limit(limit, 50, 500),
+			workerId: workerId == null ? null : String(workerId),
+		};
+		const events = await this._write('/post-events/claim', body);
+		return Array.isArray(events) ? events : [];
+	}
+
+	async completePostEvent(eventId) {
+		const res = await this._write(`/post-events/${requireId(eventId, 'eventId', 1)}/complete`, {});
+		return res?.success === true;
+	}
+
+	async failPostEvent(eventId, error, retryAt = null) {
+		const body = {
+			error: String(error?.message || error || 'Unknown error'),
+			retryAt: retryAt ? new Date(retryAt).toISOString() : null,
+		};
+		const res = await this._write(`/post-events/${requireId(eventId, 'eventId', 1)}/fail`, body);
+		return res?.success === true;
 	}
 }
 

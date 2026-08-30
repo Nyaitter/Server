@@ -608,7 +608,8 @@ router.get({
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 15, 50);
-	const offset = parseInt(req.query.offset, 10) || 0;
+	const rawCursor = typeof req.query.cursor === 'string' ? req.query.cursor.trim() : null;
+	const offset = !rawCursor ? (parseInt(req.query.offset, 10) || 0) : 0;
 	const type = req.query.type;
 	if (type && !['image', 'video'].includes(type)) {
 		return res.status(400).json({ error: 'Invalid type parameter' });
@@ -620,10 +621,15 @@ router.get({
 
 	try {
 		if (req.user?.id && await hasBlockRelationship(db, req.user.id, userId)) {
-			return res.json({ media_items: [] });
+			return res.json({ media_items: [], next_cursor: null });
 		}
-		const mediaItems = await db.getMediaPosts(userId, limit, offset, type);
-		res.json({ media_items: mediaItems });
+		const mediaResult = await db.getMediaPosts(userId, limit, offset, type, { cursor: rawCursor, withNextCursor: true });
+		const mediaItems = Array.isArray(mediaResult) ? mediaResult : (mediaResult?.media_items || []);
+		const nextCursor = mediaResult?.next_cursor || mediaItems?.next_cursor || null;
+		res.json({
+			media_items: mediaItems,
+			next_cursor: nextCursor,
+		});
 	} catch (err) {
 		console.error('[users] media error:', err);
 		res.status(500).json({ error: 'メディア取得に失敗しました' });

@@ -3,6 +3,10 @@ const {
 	filterDiscoverablePosts,
 	filterViewablePosts,
 } = require('../utils/postVisibility');
+const {
+	encodePostCursor,
+	decodePostCursor,
+} = require('../utils/postCursor');
 
 function normalizePostIds(ids) {
 	return [...new Set((ids || []).map(Number).filter(Number.isInteger))];
@@ -25,6 +29,7 @@ async function getDiscoverablePostPage({
 	limit = 30,
 	offset = 0,
 	beforeId = null,
+	cursor = null,
 	ngWords = null,
 	fetchCandidatePage,
 }) {
@@ -33,15 +38,17 @@ async function getDiscoverablePostPage({
 	}
 
 	const normalizedLimit = Math.min(Math.max(Number(limit) || 30, 1), 100);
+	const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
 	const normalizedBeforeId = Number.isInteger(Number(beforeId)) && Number(beforeId) > 0
 		? Number(beforeId)
 		: null;
-	const normalizedOffset = normalizedBeforeId == null ? Math.max(Number(offset) || 0, 0) : 0;
+	const normalizedOffset = (normalizedBeforeId == null && !decodedCursor) ? Math.max(Number(offset) || 0, 0) : 0;
 	// 通常は表示件数の2倍+番兵だけ取得し、非公開・ブロック等で
 	// 足りない場合だけ次のチャンクを追加取得する。
 	const candidateLimit = Math.min(100, normalizedLimit * 2 + 1);
 	let candidateOffset = 0;
-	let candidateBeforeId = normalizedBeforeId;
+	let candidateBeforeId = decodedCursor ? null : normalizedBeforeId;
+	let candidateCursor = decodedCursor;
 	let visibleOffset = 0;
 	const collectedPosts = [];
 	let hasMore = false;
@@ -55,6 +62,9 @@ async function getDiscoverablePostPage({
 			limit: candidateLimit,
 			offset: candidateOffset,
 			beforeId: candidateBeforeId,
+			cursor: candidateCursor ? encodePostCursor(candidateCursor) : null,
+			cursorCreatedAt: candidateCursor?.createdAt || null,
+			cursorId: candidateCursor?.id || null,
 		});
 		const candidateIds = normalizePostIds(candidatePage?.ids);
 		requiresOffsetPagination ||= candidatePage?.use_offset_pagination === true;
@@ -66,6 +76,14 @@ async function getDiscoverablePostPage({
 
 		if (candidateIds.length === 0) {
 			if (!candidatePage?.has_more) break;
+			if (candidateCursor) {
+				const nextCursor = typeof candidatePage?.next_cursor === 'string'
+					? decodePostCursor(candidatePage.next_cursor)
+					: null;
+				if (!nextCursor) break;
+				candidateCursor = nextCursor;
+				continue;
+			}
 			if (candidateBeforeId != null) {
 				const nextCursor = Number(candidatePage?.next_cursor);
 				if (Number.isInteger(nextCursor) && nextCursor > 0 && nextCursor < candidateBeforeId) {
@@ -150,7 +168,13 @@ async function getDiscoverablePostPage({
 		// チャンク内に表示できるポストがなくなった場合、has_moreがあれば次チャンクから取得を継続
 		if (!candidatePage?.has_more) break;
 
-		if (candidateBeforeId != null) {
+		if (candidateCursor) {
+			const nextCursor = typeof candidatePage?.next_cursor === 'string'
+				? decodePostCursor(candidatePage.next_cursor)
+				: null;
+			if (!nextCursor) break;
+			candidateCursor = nextCursor;
+		} else if (candidateBeforeId != null) {
 			const nextCursor = Number(candidatePage?.next_cursor) || candidateIds[candidateIds.length - 1];
 			if (!nextCursor || nextCursor >= candidateBeforeId) break;
 			candidateBeforeId = nextCursor;
@@ -162,15 +186,17 @@ async function getDiscoverablePostPage({
 
 	const posts = collectedPosts.slice(0, normalizedLimit);
 	const ids = posts.map((post) => Number(post.id));
+	const lastPost = posts.length > 0 ? posts[posts.length - 1] : null;
+	const nextCursor = !requiresOffsetPagination && (hasMore || collectedPosts.length > normalizedLimit) && lastPost
+		? (encodePostCursor(lastPost) || ids[ids.length - 1])
+		: null;
 	return {
 		ids,
 		posts,
 		visibilityContext,
 		has_more: hasMore || (collectedPosts.length > normalizedLimit),
 		use_offset_pagination: requiresOffsetPagination,
-		next_cursor: !requiresOffsetPagination && (hasMore || collectedPosts.length > normalizedLimit) && ids.length > 0
-			? ids[ids.length - 1]
-			: null,
+		next_cursor: nextCursor,
 	};
 }
 

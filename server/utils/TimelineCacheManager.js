@@ -1,5 +1,7 @@
 'use strict';
 
+const { encodePostCursor } = require('./postCursor');
+
 /**
  * High-performance Timeline ID Cache Manager.
  * 
@@ -16,7 +18,7 @@ class TimelineCacheManager {
 		this.ttlMs = options.ttlMs ?? 600000;
 		this.maxEntries = options.maxEntries ?? 300;
 		this.maxTimelineSize = options.maxTimelineSize ?? 60;
-		// Map<string, { idsAsc: number[], postsById: Map, has_more: boolean, expiresAt: number }>
+		// Map<string, { idsAsc: number[], idsSet: Set<number>, postsById: Map, has_more: boolean, next_cursor: string|null, expiresAt: number }>
 		this.cache = new Map();
 	}
 
@@ -44,6 +46,7 @@ class TimelineCacheManager {
 				? idsDesc.map((id) => entry.postsById.get(id)).filter(Boolean)
 				: undefined,
 			has_more: entry.has_more,
+			next_cursor: entry.next_cursor || null,
 		};
 	}
 
@@ -51,7 +54,7 @@ class TimelineCacheManager {
 	 * Stores timeline IDs in internal ascending order (chronological) to allow
 	 * efficient push() for new incoming posts.
 	 */
-	setIds(key, { ids = [], posts = [], has_more = false }, customTtlMs = null) {
+	setIds(key, { ids = [], posts = [], has_more = false, next_cursor = null }, customTtlMs = null) {
 		if (!Array.isArray(ids)) return;
 
 		// Input IDs from DB are in descending order (newest first).
@@ -76,10 +79,32 @@ class TimelineCacheManager {
 		const ttl = customTtlMs ?? this.ttlMs;
 		this.cache.set(key, {
 			idsAsc,
+			idsSet: new Set(idsAsc),
 			postsById,
 			has_more: Boolean(has_more),
+			next_cursor: next_cursor == null || next_cursor === '' ? null : String(next_cursor),
 			expiresAt: Date.now() + ttl,
 		});
+	}
+
+	_appendPost(entry, postId, post, maxSize = this.maxTimelineSize) {
+		if (entry.idsSet.has(postId)) return false;
+		entry.idsAsc.push(postId);
+		entry.idsSet.add(postId);
+		entry.postsById?.set(postId, post);
+		if (entry.idsAsc.length > maxSize) {
+			const removed = entry.idsAsc.splice(0, entry.idsAsc.length - maxSize);
+			for (const id of removed) {
+				entry.idsSet.delete(id);
+				entry.postsById?.delete(id);
+			}
+			entry.has_more = true;
+		}
+		const boundaryPost = entry.postsById?.get(entry.idsAsc[0]);
+		entry.next_cursor = boundaryPost
+			? (encodePostCursor(boundaryPost) || String(entry.idsAsc[0]))
+			: String(entry.idsAsc[0] || '');
+		return true;
 	}
 
 	updatePost(post) {
@@ -110,8 +135,19 @@ class TimelineCacheManager {
 		const postAuthorId = Number(post.userId ?? post.user_id);
 		const groupId = post.groupId ?? post.group_id ?? null;
 		const isReply = Boolean(post.replyTo ?? post.reply_to);
-
 		const now = Date.now();
+
+		const replyTargetId = Number(post.replyTo ?? post.reply_to);
+		if (isReply && Number.isInteger(replyTargetId) && replyTargetId > 0) {
+			for (const entry of this.cache.values()) {
+				const cachedParent = entry.postsById?.get(replyTargetId);
+				if (cachedParent) {
+					const nextCount = (Number(cachedParent.reply_count ?? cachedParent.replyCount) || 0) + 1;
+					cachedParent.reply_count = nextCount;
+					cachedParent.replyCount = nextCount;
+				}
+			}
+		}
 
 		for (const [key, entry] of this.cache.entries()) {
 			if (entry.expiresAt <= now) {
@@ -119,8 +155,10 @@ class TimelineCacheManager {
 				continue;
 			}
 
-			// Only top pages (offset 0, beforeId 0) receive live updates
-			if (!key.endsWith(':0:0')) continue;
+			// Only the first page receives live updates.
+			const pageKey = key.match(/:(\d+):(\d+):(\d+):([^:]*)$/);
+			if (!pageKey || Number(pageKey[2]) !== 0 || Number(pageKey[3]) !== 0 || pageKey[4]) continue;
+			const pageLimit = Math.max(1, Number(pageKey[1]) || this.maxTimelineSize);
 
 			const parts = key.split(':');
 			const mode = parts[0];
@@ -142,36 +180,18 @@ class TimelineCacheManager {
 				if (groupId) {
 					// Group post: only update matching group caches or invalidate
 					if (tab === `group:${groupId}`) {
-						if (!entry.idsAsc.includes(postId)) {
-							entry.idsAsc.push(postId);
-							entry.postsById?.set(postId, post);
-							if (entry.idsAsc.length > this.maxTimelineSize) {
-								entry.idsAsc.splice(0, entry.idsAsc.length - this.maxTimelineSize);
-							}
-						}
+						this._appendPost(entry, postId, post, pageLimit);
 					}
 					continue;
 				}
 
 				// Public post
 				if (tab === 'all' || tab === 'foryou') {
-					if (!entry.idsAsc.includes(postId)) {
-						entry.idsAsc.push(postId);
-						entry.postsById?.set(postId, post);
-						if (entry.idsAsc.length > this.maxTimelineSize) {
-							entry.idsAsc.splice(0, entry.idsAsc.length - this.maxTimelineSize);
-						}
-					}
+					this._appendPost(entry, postId, post, pageLimit);
 				} else if (tab === 'following') {
 					// If author matches viewer
 					if (viewerId === postAuthorId) {
-						if (!entry.idsAsc.includes(postId)) {
-							entry.idsAsc.push(postId);
-							entry.postsById?.set(postId, post);
-							if (entry.idsAsc.length > this.maxTimelineSize) {
-								entry.idsAsc.splice(0, entry.idsAsc.length - this.maxTimelineSize);
-							}
-						}
+						this._appendPost(entry, postId, post);
 					} else {
 						// For other viewers' following tabs, invalidate so next fetch queries DB
 						this.cache.delete(key);
@@ -179,13 +199,7 @@ class TimelineCacheManager {
 				}
 			} else if (mode === 'recommended') {
 				if (!isReply && !groupId) {
-					if (!entry.idsAsc.includes(postId)) {
-						entry.idsAsc.push(postId);
-						entry.postsById?.set(postId, post);
-						if (entry.idsAsc.length > this.maxTimelineSize) {
-							entry.idsAsc.splice(0, entry.idsAsc.length - this.maxTimelineSize);
-						}
-					}
+					this._appendPost(entry, postId, post);
 				}
 			}
 		}
@@ -206,6 +220,7 @@ class TimelineCacheManager {
 			const idx = entry.idsAsc.indexOf(pId);
 			if (idx !== -1) {
 				entry.idsAsc.splice(idx, 1);
+				entry.idsSet.delete(pId);
 			}
 			entry.postsById?.delete(pId);
 		}
