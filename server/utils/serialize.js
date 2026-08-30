@@ -591,7 +591,7 @@ async function serializePostsBatch(
 		try {
 			const references = await db.getPostReferencesByIds(
 				[...new Set(referenceIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))],
-				2,
+				1,
 			);
 			if (Array.isArray(references)) {
 				for (const post of references) postsById.set(Number(post.id), post);

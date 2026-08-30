@@ -22,6 +22,31 @@ class TimelineCacheManager {
 		this.cache = new Map();
 	}
 
+	getPayload(key) {
+		const entry = this.cache.get(key);
+		if (!entry || !entry.payload) return null;
+		if (entry.expiresAt <= Date.now()) {
+			this.cache.delete(key);
+			return null;
+		}
+		this.cache.delete(key);
+		this.cache.set(key, entry);
+		return entry.payload;
+	}
+
+	setPayload(key, payload, customTtlMs = null) {
+		if (!payload) return;
+		if (this.cache.size >= this.maxEntries) {
+			const oldestKey = this.cache.keys().next().value;
+			if (oldestKey) this.cache.delete(oldestKey);
+		}
+		const ttl = customTtlMs ?? this.ttlMs;
+		this.cache.set(key, {
+			payload,
+			expiresAt: Date.now() + ttl,
+		});
+	}
+
 	getIds(key) {
 		const entry = this.cache.get(key);
 		if (!entry) return null;
@@ -192,18 +217,21 @@ class TimelineCacheManager {
 				if (groupId) {
 					// Group post: only update matching group caches or invalidate
 					if (tab === `group:${groupId}`) {
-						this._appendPost(entry, postId, post, pageLimit);
+						if (entry.payload) this.cache.delete(key);
+						else this._appendPost(entry, postId, post, pageLimit);
 					}
 					continue;
 				}
 
 				// Public post
 				if (tab === 'all' || tab === 'foryou') {
-					this._appendPost(entry, postId, post, pageLimit);
+					if (entry.payload) this.cache.delete(key);
+					else this._appendPost(entry, postId, post, pageLimit);
 				} else if (tab === 'following') {
 					// If author matches viewer
 					if (viewerId === postAuthorId) {
-						this._appendPost(entry, postId, post);
+						if (entry.payload) this.cache.delete(key);
+						else this._appendPost(entry, postId, post);
 					} else {
 						// For other viewers' following tabs, invalidate so next fetch queries DB
 						this.cache.delete(key);
@@ -211,7 +239,8 @@ class TimelineCacheManager {
 				}
 			} else if (mode === 'recommended') {
 				if (!isReply && !groupId) {
-					this._appendPost(entry, postId, post);
+					if (entry.payload) this.cache.delete(key);
+					else this._appendPost(entry, postId, post);
 				}
 			}
 		}
@@ -226,6 +255,10 @@ class TimelineCacheManager {
 
 		for (const [key, entry] of this.cache.entries()) {
 			if (entry.expiresAt <= now) {
+				this.cache.delete(key);
+				continue;
+			}
+			if (entry.payload) {
 				this.cache.delete(key);
 				continue;
 			}

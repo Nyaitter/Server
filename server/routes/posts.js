@@ -649,6 +649,10 @@ router.get({
 
 	const ngWordsKey = ngWords ? [...ngWords].sort().join(',') : '';
 	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawSinceId || 0}:${rawCursor || ''}`;
+	const cachedPayload = timelineCacheManager.getPayload(cacheKey);
+	if (cachedPayload) {
+		return res.json(cachedPayload);
+	}
 	const cachedResult = timelineCacheManager.getIds(cacheKey);
 
 	try {
@@ -751,15 +755,7 @@ router.get({
 				);
 			const requestedPostCount = discoveredPostIds?.length ?? posts.length;
 		const postContext = collectPostContext(posts);
-		const authorIds = new Set(postContext.authors.keys());
-		const missingMentionIds = postContext.mentionedIds.filter((id) => !authorIds.has(id));
-		const mentionUsers = missingMentionIds.length > 0 && db.getUsersByIds
-			? await db.getUsersByIds(missingMentionIds)
-			: [];
-		const contextUsers = [
-			...postContext.authors.values(),
-			...(mentionUsers || []),
-		];
+		const contextUsers = Array.from(postContext.authors.values());
 		
 		const payload = {
 			posts,
@@ -782,6 +778,7 @@ router.get({
 			},
 		};
 
+		timelineCacheManager.setPayload(cacheKey, payload);
 		res.json(payload);
 	} catch (err) {
 		console.error('[posts] page error:', err);
