@@ -12,12 +12,42 @@ const {
 const { extractViewContent } = require('./viewContent');
 const { getVisibleDmUnreadCount } = require('../services/DmVisibilityService');
 
+const USER_BRIEF_CACHE_LIMIT = 5000;
+const userBriefCache = new Map();
+
+function invalidateUserBriefCache(userId) {
+	if (userId == null) return;
+	const id = Number(userId);
+	userBriefCache.delete(`${id}:public`);
+	userBriefCache.delete(`${id}:admin`);
+}
+
+function clearUserBriefCache() {
+	userBriefCache.clear();
+}
+
+const IMMUTABLE_POST_CACHE_LIMIT = 10000;
+const immutablePostCache = new Map();
+
+function invalidateImmutablePostCache(postId) {
+	if (postId == null) return;
+	const id = Number(postId);
+	immutablePostCache.delete(id);
+}
+
+function clearImmutablePostCache() {
+	immutablePostCache.clear();
+}
+
 function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = false } = {}) {
 	if (!user) return null;
+	const id = Number(user.id);
+	const cacheKey = `${id}:${includeSearchExclusion ? 'admin' : 'public'}`;
+
 	const groupBadges = Array.isArray(user.group_badges)
 		? user.group_badges.slice(0, 3)
 		: (Array.isArray(user.groupBadges) ? user.groupBadges.slice(0, 3) : []);
-	return {
+	const brief = {
 		id: user.id,
 		nyaitter_id: getUserNyaitterId(user),
 		name: user.name || '',
@@ -30,6 +60,16 @@ function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = f
 		group_badges: groupBadges,
 		...(includeSearchExclusion ? { shadow: !!user.shadow } : {}),
 	};
+
+	if (Number.isSafeInteger(id) && id > 0) {
+		if (userBriefCache.size >= USER_BRIEF_CACHE_LIMIT) {
+			const oldestKey = userBriefCache.keys().next().value;
+			if (oldestKey !== undefined) userBriefCache.delete(oldestKey);
+		}
+		userBriefCache.set(cacheKey, brief);
+	}
+
+	return brief;
 }
 
 async function serializeNotifications(db, notifications, publicUrl = null, options = {}) {
@@ -752,7 +792,37 @@ async function serializePostsBatch(
 				}
 			}
 		}
-		const brief = getBriefUser(author);
+		const cachedBase = depth === 0 ? immutablePostCache.get(postId) : null;
+		const postUpdatedAt = post.updated_at || post.updatedAt || post.createdAt;
+		let base;
+		if (cachedBase && cachedBase.updatedAt === postUpdatedAt) {
+			base = cachedBase;
+		} else {
+			const brief = getBriefUser(author);
+			base = {
+				id: post.id,
+				userid: post.userId,
+				content: post.content,
+				view_content: post.view_content ?? post.viewContent ?? extractViewContent(post.content || ''),
+				tags: Array.isArray(post.tags) ? post.tags : [],
+				mask: !!post.mask,
+				lock: !!post.lock,
+				announcement: !!post.announcement,
+				attachments: post.attachments || [],
+				reply_id: post.replyTo || null,
+				created_at: post.createdAt,
+				user: brief,
+				author: brief,
+				updatedAt: postUpdatedAt,
+			};
+			if (depth === 0 && Number.isSafeInteger(postId) && postId > 0) {
+				if (immutablePostCache.size >= IMMUTABLE_POST_CACHE_LIMIT) {
+					const oldestKey = immutablePostCache.keys().next().value;
+					if (oldestKey !== undefined) immutablePostCache.delete(oldestKey);
+				}
+				immutablePostCache.set(postId, base);
+			}
+		}
 
 		const rootPost = getRootPost(post);
 		const effectiveReplyControl = rootPost.reply_control ?? rootPost.replyControl ?? post.reply_control ?? post.replyControl ?? 'everyone';
@@ -780,23 +850,11 @@ async function serializePostsBatch(
 		}
 
 		const serialized = {
-			id: post.id,
-			userid: post.userId,
-			content: post.content,
-			view_content: post.view_content ?? post.viewContent ?? extractViewContent(post.content || ''),
-			tags: Array.isArray(post.tags) ? post.tags : [],
-			mask: !!post.mask,
-			lock: !!post.lock,
-			announcement: !!post.announcement,
+			...base,
 			reply_control: effectiveReplyControl,
 			can_reply: canReply,
 			private: isPrivatePost(post, author),
-			attachments: post.attachments || [],
-			reply_id: post.replyTo || null,
 			repost_to: effectiveRepostTo,
-			created_at: post.createdAt,
-			user: brief,
-			author: brief,
 			reply_to_post: replyToPost,
 			reposted_post: repostedPost,
 			like_count: Number(metric.like_count || 0),
@@ -891,6 +949,10 @@ async function serializePostsByIds(
 module.exports = {
 	serializeUser,
 	serializeUserBrief,
+	invalidateUserBriefCache,
+	clearUserBriefCache,
+	invalidateImmutablePostCache,
+	clearImmutablePostCache,
 	serializePublicProfile,
 	serializeNotification,
 	serializeNotifications,

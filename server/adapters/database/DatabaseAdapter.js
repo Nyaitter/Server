@@ -111,7 +111,7 @@ class DatabaseAdapter {
 	}
 
 	
-	async searchUsers(query, limit = 20, offset = 0) {
+	async searchUsers(query, limit = 20, offset = 0, options = {}) {
 		throw new Error('searchUsers() must be implemented');
 	}
 
@@ -480,13 +480,16 @@ class DatabaseAdapter {
 		throw new Error('isFollowing() must be implemented');
 	}
 
-	
-	async getFollowing(userId, limit = 100, offset = 0) {
-		throw new Error('getFollowing() must be implemented');
+	async getPublicProfileStats(userId) {
+		throw new Error('getPublicProfileStats() must be implemented');
 	}
 
 	
-	async getFollowers(userId, limit = 100, offset = 0) {
+	async getFollowing(userId, limit = 100, offset = 0, options = {}) {
+		throw new Error('getFollowing() must be implemented');
+	}
+
+	async getFollowers(userId, limit = 100, offset = 0, options = {}) {
 		throw new Error('getFollowers() must be implemented');
 	}
 

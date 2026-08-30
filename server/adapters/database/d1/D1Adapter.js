@@ -604,12 +604,22 @@ class D1Adapter extends DatabaseAdapter {
 		return normalizeUser(await this._write('/users', userData));
 	}
 
-	async searchUsers(query, limit = 20, offset = 0) {
-		return this._read(this._query('/users/search', {
+	async searchUsers(query, limit = 20, offset = 0, { cursor = null, withNextCursor = false } = {}) {
+		const raw = await this._read(this._query('/users/search', {
 			q: String(query || ''),
 			limit: this._limit(limit),
 			offset: Math.max(Number(offset) || 0, 0),
+			cursor: cursor || undefined,
+			withNextCursor: withNextCursor ? 'true' : undefined,
 		}));
+		if (withNextCursor && raw && typeof raw === 'object' && !Array.isArray(raw)) {
+			return {
+				users: Array.isArray(raw.users) ? raw.users : [],
+				has_more: !!raw.has_more,
+				next_cursor: raw.next_cursor || null,
+			};
+		}
+		return Array.isArray(raw) ? raw : (raw?.users || []);
 	}
 
 	async getUsersByIds(userIds) {
@@ -706,20 +716,38 @@ class D1Adapter extends DatabaseAdapter {
 		return typeof result === 'boolean' ? result : !!result?.success;
 	}
 
-	async getFollowing(userId, limit = 100, offset = 0) {
-		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/following`, {
+	async getFollowing(userId, limit = 100, offset = 0, { cursor = null, withNextCursor = false } = {}) {
+		const raw = await this._read(this._query(`/users/${requireId(userId, 'userId')}/following`, {
 			limit: this._limit(limit, 100, 500),
 			offset: this._offset(offset),
+			cursor: cursor || undefined,
+			withNextCursor: withNextCursor ? 'true' : undefined,
 		}), { cacheSeconds: 0 });
-		return Array.isArray(list) ? list : [];
+		if (withNextCursor && raw && typeof raw === 'object' && !Array.isArray(raw)) {
+			return {
+				users: Array.isArray(raw.users) ? raw.users : [],
+				has_more: !!raw.has_more,
+				next_cursor: raw.next_cursor || null,
+			};
+		}
+		return Array.isArray(raw) ? raw : (raw?.users || []);
 	}
 
-	async getFollowers(userId, limit = 100, offset = 0) {
-		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/followers`, {
+	async getFollowers(userId, limit = 100, offset = 0, { cursor = null, withNextCursor = false } = {}) {
+		const raw = await this._read(this._query(`/users/${requireId(userId, 'userId')}/followers`, {
 			limit: this._limit(limit, 100, 500),
 			offset: this._offset(offset),
+			cursor: cursor || undefined,
+			withNextCursor: withNextCursor ? 'true' : undefined,
 		}), { cacheSeconds: 0 });
-		return Array.isArray(list) ? list : [];
+		if (withNextCursor && raw && typeof raw === 'object' && !Array.isArray(raw)) {
+			return {
+				users: Array.isArray(raw.users) ? raw.users : [],
+				has_more: !!raw.has_more,
+				next_cursor: raw.next_cursor || null,
+			};
+		}
+		return Array.isArray(raw) ? raw : (raw?.users || []);
 	}
 
 	async getFollowingCount(userId) {

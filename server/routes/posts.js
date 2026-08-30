@@ -611,13 +611,14 @@ router.get({
 	const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
 	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
 	const beforeId = safeParsePostId(req.query.before_id);
-	const offset = (beforeId == null && !rawCursor) ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
+	const rawSinceId = safeParsePostId(req.query.since_id || req.query.sinceId || req.query.after);
+	const offset = (beforeId == null && rawSinceId == null && !rawCursor) ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
 	const currentUserId = req.user ? req.user.id : null;
 	const knownViewer = req.user?.visibilityUser || null;
 	const ngWords = getViewerNgWords(req);
 
 	const ngWordsKey = ngWords ? [...ngWords].sort().join(',') : '';
-	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawCursor || ''}`;
+	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawSinceId || 0}:${rawCursor || ''}`;
 	const cachedResult = timelineCacheManager.getIds(cacheKey);
 
 	try {
@@ -671,6 +672,15 @@ router.get({
 			result = { ids, has_more: false };
 		} else {
 			return res.status(400).json({ error: 'Unsupported post page mode' });
+		}
+
+		if (rawSinceId != null) {
+			if (Array.isArray(result.posts)) {
+				result.posts = result.posts.filter((post) => Number(post.id) > rawSinceId);
+			}
+			if (Array.isArray(result.ids)) {
+				result.ids = result.ids.filter((id) => Number(id) > rawSinceId);
+			}
 		}
 
 			const nextCursor = result.next_cursor ?? (
@@ -1119,13 +1129,19 @@ router.post({
 
 		if (result.liked) {
 			if (post.userId !== userId) {
-					const notification = await createNotificationIfAllowed(db, {
-						userId: post.userId,
-						type: 'like',
-						fromUserId: userId,
-					target: { kind: 'post', id: postId },
-					});
-					await publishNewNotification(req, post.userId, notification);
+				void (async () => {
+					try {
+						const notification = await createNotificationIfAllowed(db, {
+							userId: post.userId,
+							type: 'like',
+							fromUserId: userId,
+							target: { kind: 'post', id: postId },
+						});
+						if (notification) await publishNewNotification(req, post.userId, notification);
+					} catch (notifErr) {
+						console.warn('[posts] like notification background error:', notifErr.message);
+					}
+				})();
 			}
 		}
 

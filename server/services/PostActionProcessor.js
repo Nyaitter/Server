@@ -5,6 +5,7 @@ const { extractPostKeywords } = require('./PostKeywordService');
 const { extractViewContent } = require('../utils/viewContent');
 const {
   serializeNotification,
+  invalidateImmutablePostCache,
 } = require('../utils/serialize');
 const timelineCacheManager = require('../utils/TimelineCacheManager');
 const {
@@ -532,11 +533,11 @@ async function processCreatePostAction(context, payload) {
     }
   }
 
-  // 全通知を並列実行
-  await Promise.allSettled(notificationTasks);
-
-  await publishNewTimelinePost(context, post);
   timelineCacheManager.onPostCreated(post);
+  await publishNewTimelinePost(context, post);
+  void Promise.allSettled(notificationTasks).catch((err) => {
+    console.warn('[post-actions] background notification delivery error:', err.message);
+  });
   enqueueGeminiModeration(context, post);
   return post;
 }
@@ -553,6 +554,7 @@ async function processDeletePostAction(context, { postId, userId, admin = false 
   }
 
   timelineCacheManager.onPostDeleted(postId);
+  invalidateImmutablePostCache(postId);
   await deleteStoredAttachments(
     context.storage,
     postToDelete.attachments,
@@ -588,6 +590,7 @@ async function processEditPostAction(context, { postId, userId, content, attachm
   }
 
   const updated = await context.db.updatePost(postId, updatePayload);
+  invalidateImmutablePostCache(postId);
 
   // 返信制限変更時スレッド全体に伝播、条件外の返信を削除
   if (!isReply && replyControl !== undefined) {

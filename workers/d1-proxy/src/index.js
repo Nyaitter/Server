@@ -1034,20 +1034,55 @@ export default {
 			if (method === 'GET' && pathname === '/users/search') {
 				const q = url.searchParams.get('q') || '';
 				const limit = Math.min(Number(url.searchParams.get('limit') || 20), 100);
+				const decodedCursor = decodePostCursor(url.searchParams.get('cursor'));
+				const withNextCursor = url.searchParams.get('withNextCursor') === 'true';
 				const queryPattern = `%${q.toLowerCase()}%`;
 				const digits = q.replace(/^#/, '').replace(/\D/g, '');
+				const fetchLimit = limit + 1;
 
-					const { results } = await db.prepare(
-						`SELECT id, name, scid, handle, nyaitter_address, auth_provider, provider_domain, external_id, icon_data
+				let query;
+				let bindings;
+				if (decodedCursor) {
+					query = `SELECT id, name, scid, handle, nyaitter_address, auth_provider, provider_domain, external_id, icon_data, created_at
+						 FROM users
+						 WHERE id > ? AND (
+						    LOWER(COALESCE(scid, '')) LIKE ?
+						    OR LOWER(COALESCE(name, '')) LIKE ?
+						    OR LOWER(COALESCE(handle, '')) LIKE ?
+						    OR CAST(id AS TEXT) LIKE ?
+						 )
+						 ORDER BY id ASC LIMIT ?`;
+					bindings = [decodedCursor.id, queryPattern, queryPattern, queryPattern, digits ? `%${digits}%` : queryPattern, fetchLimit];
+				} else {
+					const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
+					query = `SELECT id, name, scid, handle, nyaitter_address, auth_provider, provider_domain, external_id, icon_data, created_at
 						 FROM users
 						 WHERE LOWER(COALESCE(scid, '')) LIKE ?
 						    OR LOWER(COALESCE(name, '')) LIKE ?
 						    OR LOWER(COALESCE(handle, '')) LIKE ?
 						    OR CAST(id AS TEXT) LIKE ?
-						 ORDER BY id DESC LIMIT ?`
-					).bind(queryPattern, queryPattern, queryPattern, digits ? `%${digits}%` : queryPattern, limit).all();
+						 ORDER BY id ASC LIMIT ? OFFSET ?`;
+					bindings = [queryPattern, queryPattern, queryPattern, digits ? `%${digits}%` : queryPattern, fetchLimit, offset];
+				}
 
-				return json((results || []).map(normalizeUserRow));
+				const { results } = await db.prepare(query).bind(...bindings).all();
+				const rows = results || [];
+				const hasMore = rows.length > limit;
+				const slice = rows.slice(0, limit);
+				const lastRow = slice.length > 0 ? slice[slice.length - 1] : null;
+				const nextCursor = hasMore && lastRow
+					? encodePostCursor({ id: Number(lastRow.id), created_at: lastRow.created_at || new Date(0).toISOString() })
+					: null;
+				const users = slice.map(normalizeUserRow);
+
+				if (withNextCursor) {
+					return json({
+						users,
+						has_more: hasMore,
+						next_cursor: nextCursor,
+					});
+				}
+				return json(users);
 			}
 
 			if (method === 'POST' && pathname === '/users/batch') {
@@ -1572,25 +1607,87 @@ export default {
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/following$/)) {
 				const userId = Number(pathname.split('/')[2]);
 				const limit = Math.min(Number(url.searchParams.get('limit') || 100), 500);
-				const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
-				const { results } = await db.prepare(
-					`SELECT u.id, u.name, u.scid, u.handle, u.icon_data
-					 FROM follows f JOIN users u ON u.id = f.following_id
-					 WHERE f.follower_id = ? ORDER BY f.created_at DESC LIMIT ? OFFSET ?`
-				).bind(userId, limit, offset).all();
-				return json(results || []);
+				const decodedCursor = decodePostCursor(url.searchParams.get('cursor'));
+				const withNextCursor = url.searchParams.get('withNextCursor') === 'true';
+				const fetchLimit = limit + 1;
+				let query;
+				let bindings;
+
+				if (decodedCursor) {
+					query = `SELECT u.id, u.name, u.scid, u.handle, u.icon_data, f.created_at AS follow_created_at
+						 FROM follows f JOIN users u ON u.id = f.following_id
+						 WHERE f.follower_id = ? AND (f.created_at < ? OR (f.created_at = ? AND f.following_id < ?))
+						 ORDER BY f.created_at DESC, f.following_id DESC LIMIT ?`;
+					bindings = [userId, decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id, fetchLimit];
+				} else {
+					const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
+					query = `SELECT u.id, u.name, u.scid, u.handle, u.icon_data, f.created_at AS follow_created_at
+						 FROM follows f JOIN users u ON u.id = f.following_id
+						 WHERE f.follower_id = ?
+						 ORDER BY f.created_at DESC, f.following_id DESC LIMIT ? OFFSET ?`;
+					bindings = [userId, fetchLimit, offset];
+				}
+
+				const { results } = await db.prepare(query).bind(...bindings).all();
+				const rows = results || [];
+				const hasMore = rows.length > limit;
+				const slice = rows.slice(0, limit);
+				const lastRow = slice.length > 0 ? slice[slice.length - 1] : null;
+				const nextCursor = hasMore && lastRow
+					? encodePostCursor({ id: Number(lastRow.id), created_at: lastRow.follow_created_at })
+					: null;
+
+				if (withNextCursor) {
+					return json({
+						users: slice,
+						has_more: hasMore,
+						next_cursor: nextCursor,
+					});
+				}
+				return json(slice);
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/followers$/)) {
 				const userId = Number(pathname.split('/')[2]);
 				const limit = Math.min(Number(url.searchParams.get('limit') || 100), 500);
-				const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
-				const { results } = await db.prepare(
-					`SELECT u.id, u.name, u.scid, u.handle, u.icon_data
-					 FROM follows f JOIN users u ON u.id = f.follower_id
-					 WHERE f.following_id = ? ORDER BY f.created_at DESC LIMIT ? OFFSET ?`
-				).bind(userId, limit, offset).all();
-				return json(results || []);
+				const decodedCursor = decodePostCursor(url.searchParams.get('cursor'));
+				const withNextCursor = url.searchParams.get('withNextCursor') === 'true';
+				const fetchLimit = limit + 1;
+				let query;
+				let bindings;
+
+				if (decodedCursor) {
+					query = `SELECT u.id, u.name, u.scid, u.handle, u.icon_data, f.created_at AS follow_created_at
+						 FROM follows f JOIN users u ON u.id = f.follower_id
+						 WHERE f.following_id = ? AND (f.created_at < ? OR (f.created_at = ? AND f.follower_id < ?))
+						 ORDER BY f.created_at DESC, f.follower_id DESC LIMIT ?`;
+					bindings = [userId, decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id, fetchLimit];
+				} else {
+					const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
+					query = `SELECT u.id, u.name, u.scid, u.handle, u.icon_data, f.created_at AS follow_created_at
+						 FROM follows f JOIN users u ON u.id = f.follower_id
+						 WHERE f.following_id = ?
+						 ORDER BY f.created_at DESC, f.follower_id DESC LIMIT ? OFFSET ?`;
+					bindings = [userId, fetchLimit, offset];
+				}
+
+				const { results } = await db.prepare(query).bind(...bindings).all();
+				const rows = results || [];
+				const hasMore = rows.length > limit;
+				const slice = rows.slice(0, limit);
+				const lastRow = slice.length > 0 ? slice[slice.length - 1] : null;
+				const nextCursor = hasMore && lastRow
+					? encodePostCursor({ id: Number(lastRow.id), created_at: lastRow.follow_created_at })
+					: null;
+
+				if (withNextCursor) {
+					return json({
+						users: slice,
+						has_more: hasMore,
+						next_cursor: nextCursor,
+					});
+				}
+				return json(slice);
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/following\/count$/)) {

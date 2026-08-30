@@ -821,14 +821,15 @@ class InMemoryAdapter extends DatabaseAdapter {
 	}
 
 	
-	async searchUsers(query, limit = 20, offset = 0) {
+	async searchUsers(query, limit = 20, offset = 0, { cursor = null, withNextCursor = false } = {}) {
 		if (!query || query.trim().length === 0) {
-			return [];
+			return withNextCursor ? { users: [], has_more: false, next_cursor: null } : [];
 		}
 
 		const q = query.toLowerCase().trim();
-		const safeLimit = Math.max(Number(limit) || 0, 0);
-		const safeOffset = Math.max(Number(offset) || 0, 0);
+		const safeLimit = Math.max(Number(limit) || 20, 1);
+		const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
+		const targetId = decodedCursor ? Number(decodedCursor.id) : null;
 		const results = [];
 
 		for (const user of this.users.values()) {
@@ -850,9 +851,27 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 		}
 
-		return results
-			.sort((left, right) => Number(left.id) - Number(right.id))
-			.slice(safeOffset, safeOffset + safeLimit);
+		results.sort((left, right) => Number(left.id) - Number(right.id));
+
+		const filtered = [];
+		for (const user of results) {
+			if (targetId != null && Number(user.id) <= targetId) continue;
+			filtered.push(user);
+		}
+
+		const safeOffset = decodedCursor ? 0 : Math.max(Number(offset) || 0, 0);
+		const window = filtered.slice(safeOffset, safeOffset + safeLimit + 1);
+		const slice = window.slice(0, safeLimit);
+		const hasMore = window.length > safeLimit;
+		const lastUser = slice.length > 0 ? slice[slice.length - 1] : null;
+		const nextCursor = hasMore && lastUser
+			? encodePostCursor({ id: lastUser.id, created_at: lastUser.created_at || lastUser.createdAt || new Date(0).toISOString() })
+			: null;
+
+		if (withNextCursor) {
+			return { users: slice, has_more: hasMore, next_cursor: nextCursor };
+		}
+		return slice;
 	}
 
 	
@@ -2302,22 +2321,109 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return this.follows.has(`${followerId}:${followingId}`);
 	}
 
-	async getFollowing(userId, limit = config.limits.followingPageSize, offset = 0) {
-		const ids = this.followingIdsByUser.get(Number(userId)) || new Set();
-		return [...ids]
-			.reverse()
-			.slice(Math.max(0, Number(offset) || 0), Math.max(0, Number(offset) || 0) + Math.max(0, Number(limit) || 0))
-			.map((followingId) => this.users.get(followingId))
-			.filter(Boolean);
+	async getPublicProfileStats(userId) {
+		const targetUserId = Number(userId);
+		const followingCount = (this.followingIdsByUser.get(targetUserId) || new Set()).size;
+		const followerCount = (this.followerIdsByUser.get(targetUserId) || new Set()).size;
+		const postCount = this.userPostCount.get(targetUserId) || 0;
+		const mediaCount = typeof this.getMediaCount === 'function' ? await this.getMediaCount(targetUserId) : 0;
+		const pinnedPostId = typeof this.getPinnedPostId === 'function' ? await this.getPinnedPostId(targetUserId) : null;
+		return {
+			followingCount,
+			followerCount,
+			postCount,
+			mediaCount,
+			pinnedPostId,
+			following_count: followingCount,
+			follower_count: followerCount,
+			post_count: postCount,
+			media_count: mediaCount,
+			pinned_post_id: pinnedPostId,
+		};
 	}
 
-	async getFollowers(userId, limit = config.limits.followingPageSize, offset = 0) {
-		const ids = this.followerIdsByUser.get(Number(userId)) || new Set();
-		return [...ids]
-			.reverse()
-			.slice(Math.max(0, Number(offset) || 0), Math.max(0, Number(offset) || 0) + Math.max(0, Number(limit) || 0))
-			.map((followerId) => this.users.get(followerId))
-			.filter(Boolean);
+	async getFollowing(userId, limit = config.limits.followingPageSize, offset = 0, { cursor = null, withNextCursor = false } = {}) {
+		const targetUserId = Number(userId);
+		const ids = this.followingIdsByUser.get(targetUserId) || new Set();
+		const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
+		const targetCreatedAt = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
+		const targetId = decodedCursor ? Number(decodedCursor.id) : null;
+
+		const records = [];
+		for (const followingId of ids) {
+			const key = `${targetUserId}:${followingId}`;
+			const createdAt = this.follows.get(key) || new Date(0).toISOString();
+			records.push({ id: followingId, createdAt });
+		}
+		records.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt) || b.id - a.id);
+
+		const matched = [];
+		for (const rec of records) {
+			if (decodedCursor && targetCreatedAt != null && targetId != null) {
+				const recTime = new Date(rec.createdAt).getTime();
+				if (recTime > targetCreatedAt) continue;
+				if (recTime === targetCreatedAt && rec.id >= targetId) continue;
+			}
+			matched.push(rec);
+		}
+
+		const safeOffset = decodedCursor ? 0 : Math.max(0, Number(offset) || 0);
+		const safeLimit = Math.max(1, Number(limit) || config.limits.followingPageSize);
+		const window = matched.slice(safeOffset, safeOffset + safeLimit + 1);
+		const pageRecords = window.slice(0, safeLimit);
+		const users = pageRecords.map((r) => this.users.get(r.id)).filter(Boolean);
+		const hasMore = window.length > safeLimit;
+		const lastRecord = pageRecords.length > 0 ? pageRecords[pageRecords.length - 1] : null;
+		const nextCursor = hasMore && lastRecord
+			? encodePostCursor({ id: lastRecord.id, created_at: lastRecord.createdAt })
+			: null;
+
+		if (withNextCursor) {
+			return { users, has_more: hasMore, next_cursor: nextCursor };
+		}
+		return users;
+	}
+
+	async getFollowers(userId, limit = config.limits.followingPageSize, offset = 0, { cursor = null, withNextCursor = false } = {}) {
+		const targetUserId = Number(userId);
+		const ids = this.followerIdsByUser.get(targetUserId) || new Set();
+		const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
+		const targetCreatedAt = decodedCursor ? new Date(decodedCursor.createdAt).getTime() : null;
+		const targetId = decodedCursor ? Number(decodedCursor.id) : null;
+
+		const records = [];
+		for (const followerId of ids) {
+			const key = `${followerId}:${targetUserId}`;
+			const createdAt = this.follows.get(key) || new Date(0).toISOString();
+			records.push({ id: followerId, createdAt });
+		}
+		records.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt) || b.id - a.id);
+
+		const matched = [];
+		for (const rec of records) {
+			if (decodedCursor && targetCreatedAt != null && targetId != null) {
+				const recTime = new Date(rec.createdAt).getTime();
+				if (recTime > targetCreatedAt) continue;
+				if (recTime === targetCreatedAt && rec.id >= targetId) continue;
+			}
+			matched.push(rec);
+		}
+
+		const safeOffset = decodedCursor ? 0 : Math.max(0, Number(offset) || 0);
+		const safeLimit = Math.max(1, Number(limit) || config.limits.followingPageSize);
+		const window = matched.slice(safeOffset, safeOffset + safeLimit + 1);
+		const pageRecords = window.slice(0, safeLimit);
+		const users = pageRecords.map((r) => this.users.get(r.id)).filter(Boolean);
+		const hasMore = window.length > safeLimit;
+		const lastRecord = pageRecords.length > 0 ? pageRecords[pageRecords.length - 1] : null;
+		const nextCursor = hasMore && lastRecord
+			? encodePostCursor({ id: lastRecord.id, created_at: lastRecord.createdAt })
+			: null;
+
+		if (withNextCursor) {
+			return { users, has_more: hasMore, next_cursor: nextCursor };
+		}
+		return users;
 	}
 
 	async deletePost(postId, userId) {
@@ -2957,16 +3063,6 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 		async getPostCount(userId) {
 			return (this.postIdsByUser.get(Number(userId)) || []).length;
-		}
-
-		async getPublicProfileStats(userId) {
-			return {
-				followingCount: await this.getFollowingCount(userId),
-				followerCount: await this.getFollowerCount(userId),
-				postCount: await this.getPostCount(userId),
-				mediaCount: await this.getMediaCount(userId),
-				pinnedPostId: await this.getPinnedPostId(userId),
-			};
 		}
 
 	async getRanking(type, limit = 50) {

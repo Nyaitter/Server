@@ -6,6 +6,7 @@ const { isWithinRange, describeIntegerRange } = require('../utils/settingFormats
 const {
 	serializeUser,
 	serializeUserBrief,
+	invalidateUserBriefCache,
 	serializePublicProfile,
 	serializePostsByIds,
 	serializePostsBatch,
@@ -391,21 +392,27 @@ router.get({
 		: config.limits.userSearchDefaultLimit;
 	limit = Math.max(limit, minimum);
 	if (maximum !== null) limit = Math.min(limit, maximum);
-	const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+	const rawCursor = typeof req.query.cursor === 'string' ? req.query.cursor.trim() : null;
+	const offset = !rawCursor ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
 
 	if (query.trim().length === 0) {
-		return res.json({ users: [] });
+		return res.json({ users: [], offset: 0, has_more: false, next_cursor: null });
 	}
 
 	try {
-					const users = await db.searchUsers(query, limit, offset);
-				res.json({
-					users: users.map((user) => serializeUserCard(user, getPublicUrl(req), {
-						includeSearchExclusion: Boolean(req.user?.admin),
-					})),
-					offset,
-				});
-
+		const result = await db.searchUsers(query, limit, offset, { cursor: rawCursor, withNextCursor: true });
+		const users = Array.isArray(result) ? result : (result?.users || []);
+		const hasMore = Array.isArray(result) ? users.length > limit : !!result?.has_more;
+		const nextCursor = result?.next_cursor || null;
+		const slice = Array.isArray(result) ? users.slice(0, limit) : users;
+		res.json({
+			users: slice.map((user) => serializeUserCard(user, getPublicUrl(req), {
+				includeSearchExclusion: Boolean(req.user?.admin),
+			})),
+			offset,
+			has_more: hasMore,
+			next_cursor: nextCursor,
+		});
 	} catch (err) {
 		console.error('[users] search error:', err);
 		res.status(500).json({ error: 'ユーザー検索に失敗しました' });
@@ -580,6 +587,16 @@ router.get({
 				following_count: 0,
 			});
 		}
+		if (typeof db.getPublicProfileStats === 'function') {
+			const stats = await db.getPublicProfileStats(userId);
+			return res.json({
+				post_count: Number(stats.postCount ?? stats.post_count ?? 0),
+				media_count: Number(stats.mediaCount ?? stats.media_count ?? 0),
+				follower_count: Number(stats.followerCount ?? stats.follower_count ?? 0),
+				following_count: Number(stats.followingCount ?? stats.following_count ?? 0),
+			});
+		}
+
 		const [post_count, media_count, follower_count, following_count] =
 			await Promise.all([
 				db.getPostCount ? db.getPostCount(userId) : 0,
@@ -710,6 +727,7 @@ router.put({
 		if (!status) {
 			return res.status(404).json({ error: 'User not found' });
 		}
+		invalidateUserBriefCache(userId);
 
 		try {
 			const LogHubManager = require('../services/managementTool/LogHubManager');
@@ -819,7 +837,8 @@ router.get({
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
-	const offset = parseInt(req.query.offset, 10) || 0;
+	const rawCursor = typeof req.query.cursor === 'string' ? req.query.cursor.trim() : null;
+	const offset = !rawCursor ? (parseInt(req.query.offset, 10) || 0) : 0;
 
 	if (!Number.isInteger(userId) || userId < 0) {
 		return res.status(400).json({ error: 'Invalid user id' });
@@ -829,11 +848,15 @@ router.get({
 		const target = await db.getUserById(userId);
 		if (!target) return res.status(404).json({ error: 'User not found' });
 		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'followers', req.user?.visibilityUser || req.user)) return sendPrivateProfileSection(res, 'followers');
-		const followers = await db.getFollowers(userId, limit + 1, offset);
-		const slice = followers.slice(0, limit);
+		const result = await db.getFollowers(userId, limit, offset, { cursor: rawCursor, withNextCursor: true });
+		const users = Array.isArray(result) ? result : (result?.users || []);
+		const hasMore = Array.isArray(result) ? users.length > limit : !!result?.has_more;
+		const nextCursor = result?.next_cursor || null;
+		const slice = Array.isArray(result) ? users.slice(0, limit) : users;
 		res.json({
 			followers: slice.map((u) => serializeUserBrief(u)),
-			has_more: followers.length > limit,
+			has_more: hasMore,
+			next_cursor: nextCursor,
 		});
 	} catch (err) {
 		console.error('[users] followers error:', err);
@@ -849,7 +872,8 @@ router.get({
 	const db = getDbAdapter(req);
 	const userId = parseInt(req.params.userId, 10);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
-	const offset = parseInt(req.query.offset, 10) || 0;
+	const rawCursor = typeof req.query.cursor === 'string' ? req.query.cursor.trim() : null;
+	const offset = !rawCursor ? (parseInt(req.query.offset, 10) || 0) : 0;
 
 	if (!Number.isInteger(userId) || userId < 0) {
 		return res.status(400).json({ error: 'Invalid user id' });
@@ -859,11 +883,15 @@ router.get({
 		const target = await db.getUserById(userId);
 		if (!target) return res.status(404).json({ error: 'User not found' });
 		if (!isProfileSectionVisible(target, req.user?.id ?? null, 'following', req.user?.visibilityUser || req.user)) return sendPrivateProfileSection(res, 'following');
-		const following = await db.getFollowing(userId, limit + 1, offset);
-		const slice = following.slice(0, limit);
+		const result = await db.getFollowing(userId, limit, offset, { cursor: rawCursor, withNextCursor: true });
+		const users = Array.isArray(result) ? result : (result?.users || []);
+		const hasMore = Array.isArray(result) ? users.length > limit : !!result?.has_more;
+		const nextCursor = result?.next_cursor || null;
+		const slice = Array.isArray(result) ? users.slice(0, limit) : users;
 		res.json({
 			following: slice.map((u) => serializeUserBrief(u)),
-			has_more: following.length > limit,
+			has_more: hasMore,
+			next_cursor: nextCursor,
 		});
 	} catch (err) {
 		console.error('[users] following error:', err);
@@ -1071,6 +1099,7 @@ router.put({
 		if (!updated) {
 			return res.status(404).json({ error: 'User not found' });
 		}
+		invalidateUserBriefCache(userId);
 		res.json({
 			user: await serializeUser(db, updated, userId, getPublicUrl(req)),
 		});
@@ -1107,6 +1136,7 @@ router.put({
 		if (!updated) {
 			return res.status(404).json({ error: 'User not found' });
 		}
+		invalidateUserBriefCache(userId);
 
 		try {
 			const LogHubManager = require('../services/managementTool/LogHubManager');

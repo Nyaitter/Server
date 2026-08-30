@@ -875,24 +875,25 @@ class PostgresAdapter extends DatabaseAdapter {
 		throw new Error('Could not allocate a unique Nyaitter ID');
 	}
 
-	async searchUsers(query, limit = 20, offset = 0) {
+	async searchUsers(query, limit = 20, offset = 0, { cursor = null, withNextCursor = false } = {}) {
 		const q = String(query || '').trim();
-		if (!q) return [];
+		if (!q) return withNextCursor ? { users: [], has_more: false, next_cursor: null } : [];
 		const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
-		const safeOffset = Math.max(Number(offset) || 0, 0);
+		const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
+		const targetId = decodedCursor ? Number(decodedCursor.id) : null;
 		const digits = q.replace(/^#/, '').replace(/\D/g, '');
 
-		// 80% あいまい検索のため、多めに取得してフィルタ
 		const { rows } = await this.pool.query(
 			`SELECT *
 			 FROM users
-			 ORDER BY id DESC LIMIT 500`,
+			 ORDER BY id ASC LIMIT 1000`,
 		);
 
 		const normalizedQ = q.toLowerCase();
 		const matched = [];
 		for (const row of rows) {
 			const user = normalizeUserRow(row);
+			if (targetId != null && Number(user.id) <= targetId) continue;
 			const nyaitterId = String(user.nyaitter_id || user.id || '').toLowerCase();
 			const scid = String(user.scid || '').toLowerCase();
 			const name = String(user.name || '').toLowerCase();
@@ -910,7 +911,19 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 		}
 
-		return matched.slice(safeOffset, safeOffset + safeLimit);
+		const safeOffset = decodedCursor ? 0 : Math.max(Number(offset) || 0, 0);
+		const window = matched.slice(safeOffset, safeOffset + safeLimit + 1);
+		const slice = window.slice(0, safeLimit);
+		const hasMore = window.length > safeLimit;
+		const lastUser = slice.length > 0 ? slice[slice.length - 1] : null;
+		const nextCursor = hasMore && lastUser
+			? encodePostCursor({ id: lastUser.id, created_at: lastUser.created_at || new Date(0).toISOString() })
+			: null;
+
+		if (withNextCursor) {
+			return { users: slice, has_more: hasMore, next_cursor: nextCursor };
+		}
+		return slice;
 	}
 
 	async getAllUsers() {
@@ -4664,32 +4677,108 @@ class PostgresAdapter extends DatabaseAdapter {
 		return rows.length > 0;
 	}
 
-	async getFollowing(userId, limit = 100, offset = 0) {
-		const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
-		const safeOffset = Math.max(Number(offset) || 0, 0);
+	async getPublicProfileStats(userId) {
+		const targetUserId = Number(userId);
 		const { rows } = await this.pool.query(
-			`SELECT u.* FROM follows f
-			 JOIN users u ON u.id = f.following_id
-			 WHERE f.follower_id = $1
-			 ORDER BY f.created_at DESC
-				 LIMIT $2 OFFSET $3`,
-			[Number(userId), safeLimit, safeOffset],
+			`SELECT
+				(SELECT COUNT(*) FROM follows WHERE follower_id = $1) AS following_count,
+				(SELECT COUNT(*) FROM follows WHERE following_id = $1) AS follower_count,
+				(SELECT COUNT(*) FROM posts WHERE user_id = $1 AND group_id IS NULL) AS post_count,
+				(SELECT COUNT(*) FROM posts WHERE user_id = $1 AND group_id IS NULL AND jsonb_array_length(COALESCE(attachments, '[]'::jsonb)) > 0) AS media_count,
+				(SELECT post_id FROM pinned_posts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1) AS pinned_post_id`,
+			[targetUserId],
 		);
-		return rows.map(normalizeUserRow);
+		const row = rows[0] || {};
+		return {
+			followingCount: Number(row.following_count || 0),
+			followerCount: Number(row.follower_count || 0),
+			postCount: Number(row.post_count || 0),
+			mediaCount: Number(row.media_count || 0),
+			pinnedPostId: row.pinned_post_id != null ? Number(row.pinned_post_id) : null,
+			following_count: Number(row.following_count || 0),
+			follower_count: Number(row.follower_count || 0),
+			post_count: Number(row.post_count || 0),
+			media_count: Number(row.media_count || 0),
+			pinned_post_id: row.pinned_post_id != null ? Number(row.pinned_post_id) : null,
+		};
 	}
 
-	async getFollowers(userId, limit = 100, offset = 0) {
+	async getFollowing(userId, limit = 100, offset = 0, { cursor = null, withNextCursor = false } = {}) {
 		const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
-		const safeOffset = Math.max(Number(offset) || 0, 0);
-		const { rows } = await this.pool.query(
-			`SELECT u.* FROM follows f
+		const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
+		const fetchLimit = safeLimit + 1;
+		let query;
+		let params;
+
+		if (decodedCursor) {
+			query = `SELECT u.*, f.created_at AS follow_created_at FROM follows f
+			 JOIN users u ON u.id = f.following_id
+			 WHERE f.follower_id = $1 AND (f.created_at < $2 OR (f.created_at = $2 AND f.following_id < $3))
+			 ORDER BY f.created_at DESC, f.following_id DESC
+			 LIMIT $4`;
+			params = [Number(userId), decodedCursor.createdAt, decodedCursor.id, fetchLimit];
+		} else {
+			const safeOffset = Math.max(Number(offset) || 0, 0);
+			query = `SELECT u.*, f.created_at AS follow_created_at FROM follows f
+			 JOIN users u ON u.id = f.following_id
+			 WHERE f.follower_id = $1
+			 ORDER BY f.created_at DESC, f.following_id DESC
+			 LIMIT $2 OFFSET $3`;
+			params = [Number(userId), fetchLimit, safeOffset];
+		}
+
+		const { rows } = await this.pool.query(query, params);
+		const hasMore = rows.length > safeLimit;
+		const slice = rows.slice(0, safeLimit);
+		const lastRow = slice.length > 0 ? slice[slice.length - 1] : null;
+		const nextCursor = hasMore && lastRow
+			? encodePostCursor({ id: lastRow.id, created_at: lastRow.follow_created_at })
+			: null;
+		const users = slice.map(normalizeUserRow);
+
+		if (withNextCursor) {
+			return { users, has_more: hasMore, next_cursor: nextCursor };
+		}
+		return users;
+	}
+
+	async getFollowers(userId, limit = 100, offset = 0, { cursor = null, withNextCursor = false } = {}) {
+		const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+		const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
+		const fetchLimit = safeLimit + 1;
+		let query;
+		let params;
+
+		if (decodedCursor) {
+			query = `SELECT u.*, f.created_at AS follow_created_at FROM follows f
+			 JOIN users u ON u.id = f.follower_id
+			 WHERE f.following_id = $1 AND (f.created_at < $2 OR (f.created_at = $2 AND f.follower_id < $3))
+			 ORDER BY f.created_at DESC, f.follower_id DESC
+			 LIMIT $4`;
+			params = [Number(userId), decodedCursor.createdAt, decodedCursor.id, fetchLimit];
+		} else {
+			const safeOffset = Math.max(Number(offset) || 0, 0);
+			query = `SELECT u.*, f.created_at AS follow_created_at FROM follows f
 			 JOIN users u ON u.id = f.follower_id
 			 WHERE f.following_id = $1
-			 ORDER BY f.created_at DESC
-				 LIMIT $2 OFFSET $3`,
-			[Number(userId), safeLimit, safeOffset],
-		);
-		return rows.map(normalizeUserRow);
+			 ORDER BY f.created_at DESC, f.follower_id DESC
+			 LIMIT $2 OFFSET $3`;
+			params = [Number(userId), fetchLimit, safeOffset];
+		}
+
+		const { rows } = await this.pool.query(query, params);
+		const hasMore = rows.length > safeLimit;
+		const slice = rows.slice(0, safeLimit);
+		const lastRow = slice.length > 0 ? slice[slice.length - 1] : null;
+		const nextCursor = hasMore && lastRow
+			? encodePostCursor({ id: lastRow.id, created_at: lastRow.follow_created_at })
+			: null;
+		const users = slice.map(normalizeUserRow);
+
+		if (withNextCursor) {
+			return { users, has_more: hasMore, next_cursor: nextCursor };
+		}
+		return users;
 	}
 
 	async getFollowIds(userId) {
