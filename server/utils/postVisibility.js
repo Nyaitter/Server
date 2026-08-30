@@ -33,26 +33,35 @@ function isPrivatePost(post, author = null) {
 }
 
 async function getAuthorsById(db, posts) {
-	const ids = [...new Set((posts || [])
-		.map(getPostAuthorId)
-		.filter((id) => id != null))];
-	if (ids.length === 0) return new Map();
+	const values = posts || [];
+	const byId = new Map();
+	const missingIds = [];
 
-	let authors = [];
-	const getAuthors = typeof db.getPostAuthorsByIds === 'function'
-		? db.getPostAuthorsByIds.bind(db)
-		: db.getUsersByIds?.bind(db);
-	if (getAuthors) {
-		try {
-			authors = (await getAuthors(ids)).filter(Boolean);
-		} catch (_) {}
+	for (const post of values) {
+		const authorId = getPostAuthorId(post);
+		if (authorId == null) continue;
+		if (post.author && post.author.id != null) {
+			byId.set(Number(post.author.id), post.author);
+		} else if (!byId.has(authorId)) {
+			missingIds.push(authorId);
+		}
 	}
 
-	const byId = new Map(authors.map((author) => [Number(author.id), author]));
-	const missingIds = ids.filter((id) => !byId.has(id));
-	if (missingIds.length > 0 && typeof db.getUserById === 'function') {
-		const completeAuthors = await Promise.all(missingIds.map((id) => db.getUserById(id)));
-		for (const author of completeAuthors.filter(Boolean)) byId.set(Number(author.id), author);
+	if (missingIds.length > 0) {
+		const getAuthors = typeof db.getPostAuthorsByIds === 'function'
+			? db.getPostAuthorsByIds.bind(db)
+			: db.getUsersByIds?.bind(db);
+		if (getAuthors) {
+			try {
+				const authors = (await getAuthors(missingIds)).filter(Boolean);
+				for (const author of authors) byId.set(Number(author.id), author);
+			} catch (_) {}
+		}
+		const stillMissing = missingIds.filter((id) => !byId.has(id));
+		if (stillMissing.length > 0 && typeof db.getUserById === 'function') {
+			const completeAuthors = await Promise.all(stillMissing.map((id) => db.getUserById(id)));
+			for (const author of completeAuthors.filter(Boolean)) byId.set(Number(author.id), author);
+		}
 	}
 	return byId;
 }
