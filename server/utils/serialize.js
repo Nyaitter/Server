@@ -45,8 +45,8 @@ function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = f
 	const cacheKey = `${id}:${includeSearchExclusion ? 'admin' : 'public'}`;
 
 	const groupBadges = Array.isArray(user.group_badges)
-		? user.group_badges.slice(0, 3)
-		: (Array.isArray(user.groupBadges) ? user.groupBadges.slice(0, 3) : []);
+		? user.group_badges.slice(0, 5)
+		: (Array.isArray(user.groupBadges) ? user.groupBadges.slice(0, 5) : []);
 	const brief = {
 		id: user.id,
 		nyaitter_id: getUserNyaitterId(user),
@@ -174,14 +174,14 @@ async function serializeUser(db, user, viewerId = null, publicUrl = null) {
 		: [];
 
 	let groupBadges = Array.isArray(user.group_badges)
-		? user.group_badges.slice(0, 3)
-		: (Array.isArray(accountState?.group_badges) ? accountState.group_badges.slice(0, 3) : null);
+		? user.group_badges.slice(0, 5)
+		: (Array.isArray(accountState?.group_badges) ? accountState.group_badges.slice(0, 5) : null);
 	if (!groupBadges && typeof db.getUserGroups === 'function') {
 		try {
 			const groups = await db.getUserGroups(id, { status: 'active', limit: 20 });
 			groupBadges = (groups || [])
 				.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
-				.slice(0, 3)
+				.slice(0, 5)
 				.map((g) => ({
 					id: String(g.id),
 					name: String(g.name || ''),
@@ -272,11 +272,10 @@ async function serializePublicProfile(
 	const mediaCount = stats?.mediaCount || 0;
 	const pinnedPostId = stats?.pinnedPostId || null;
 
-	let groupBadges = Array.isArray(user.group_badges) ? user.group_badges.slice(0, 3) : null;
+	let groupBadges = Array.isArray(user.group_badges) ? user.group_badges : null;
 	if (!groupBadges && Array.isArray(knownGroups)) {
 		groupBadges = knownGroups
 			.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
-			.slice(0, 3)
 			.map((g) => ({
 				id: String(g.id),
 				name: String(g.name || ''),
@@ -285,10 +284,9 @@ async function serializePublicProfile(
 	}
 	if (!groupBadges && typeof db.getUserGroups === 'function') {
 		try {
-			const groups = await db.getUserGroups(user.id, { status: 'active', limit: 20 });
+			const groups = await db.getUserGroups(user.id, { status: 'active', limit: 100 });
 			groupBadges = (groups || [])
 				.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
-				.slice(0, 3)
 				.map((g) => ({
 					id: String(g.id),
 					name: String(g.name || ''),
@@ -379,7 +377,7 @@ async function attachGroupBadgesToUsers(db, users) {
 					const groups = await db.getUserGroups(uid, { status: 'active', limit: 20 });
 					const badges = (groups || [])
 						.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
-						.slice(0, 3)
+						.slice(0, 5)
 						.map((g) => ({
 							id: String(g.id),
 							name: String(g.name || ''),
@@ -403,8 +401,8 @@ async function attachGroupBadgesToUsers(db, users) {
 		const uid = Number(user.id);
 		const badges = badgesMap.get(uid);
 		user.group_badges = Array.isArray(badges)
-			? badges.slice(0, 3)
-			: (Array.isArray(user.group_badges) ? user.group_badges.slice(0, 3) : []);
+			? badges.slice(0, 5)
+			: (Array.isArray(user.group_badges) ? user.group_badges.slice(0, 5) : []);
 	}
 	return users;
 }

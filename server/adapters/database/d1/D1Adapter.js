@@ -850,7 +850,7 @@ class D1Adapter extends DatabaseAdapter {
 			const res = await this._write('/groups/user-badges-batch', { user_ids: ids });
 			if (res && res.badges) {
 				for (const [uid, badges] of Object.entries(res.badges)) {
-					result.set(Number(uid), Array.isArray(badges) ? badges.slice(0, 3) : []);
+					result.set(Number(uid), Array.isArray(badges) ? badges.slice(0, 5) : []);
 				}
 				return result;
 			}
@@ -863,7 +863,7 @@ class D1Adapter extends DatabaseAdapter {
 				const groups = await this.getUserGroups(userId, { status: 'active', limit: 20 });
 				const badges = (groups || [])
 					.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
-					.slice(0, 3)
+					.slice(0, 5)
 					.map((g) => ({
 						id: String(g.id),
 						name: String(g.name || ''),

@@ -1753,7 +1753,7 @@ export default {
 				for (const row of results || []) {
 					const uid = Number(row.user_id);
 					if (!badges[uid]) badges[uid] = [];
-					if (badges[uid].length < 3) {
+					if (badges[uid].length < 5) {
 						badges[uid].push({
 							id: String(row.group_id),
 							name: row.name || '',
