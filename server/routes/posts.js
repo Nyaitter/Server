@@ -676,53 +676,55 @@ router.get({
 			}
 		}
 
-		if (!result && isDiscoverableMode) {
-			result = await getDiscoverableModePage(db, {
-				mode,
-				tab,
-				query: String(req.query.q || ''),
-				viewerId: currentUserId,
-				knownViewer,
-				limit,
-				offset,
-				beforeId,
-				cursor: rawCursor,
-				ngWords,
-			});
-			if (result?.ids) {
-				timelineCacheManager.setIds(cacheKey, result);
-			}
-		} else if (!result && mode === 'profile') {
-			const userId = safeParsePostId(req.query.user_id);
-			if (!userId) return res.status(400).json({ error: 'user_id is required' });
-			const subType = ['all', 'posts_only', 'replies_only'].includes(req.query.sub_type)
-				? req.query.sub_type
-				: 'all';
-			if (db.getProfilePostIds) {
-				result = await db.getProfilePostIds({ userId, subType, limit, offset, beforeId, cursor: rawCursor });
+		if (!result) {
+			if (isDiscoverableMode) {
+				result = await getDiscoverableModePage(db, {
+					mode,
+					tab,
+					query: String(req.query.q || ''),
+					viewerId: currentUserId,
+					knownViewer,
+					limit,
+					offset,
+					beforeId,
+					cursor: rawCursor,
+					ngWords,
+				});
+				if (result?.ids) {
+					timelineCacheManager.setIds(cacheKey, result);
+				}
+			} else if (mode === 'profile') {
+				const userId = safeParsePostId(req.query.user_id);
+				if (!userId) return res.status(400).json({ error: 'user_id is required' });
+				const subType = ['all', 'posts_only', 'replies_only'].includes(req.query.sub_type)
+					? req.query.sub_type
+					: 'all';
+				if (db.getProfilePostIds) {
+					result = await db.getProfilePostIds({ userId, subType, limit, offset, beforeId, cursor: rawCursor });
+				} else {
+					const posts = await db.getPostsByUserId(userId, offset + limit + 1, currentUserId);
+					const filtered = posts.filter((post) => (
+						(beforeId == null || Number(post.id) < beforeId) &&
+						(subType === 'posts_only' ? post.replyTo == null
+							: subType === 'replies_only' ? post.replyTo != null : true)
+					));
+					result = {
+						ids: filtered.slice(offset, offset + limit).map((post) => post.id),
+						has_more: filtered.length > offset + limit,
+					};
+				}
+				const pinId = safeParsePostId(req.query.pin_id);
+				if (beforeId == null && offset === 0 && pinId && !result.ids.includes(pinId)) result.ids.push(pinId);
+			} else if (mode === 'ids') {
+				const ids = String(req.query.ids || '')
+					.split(',')
+					.map(safeParsePostId)
+					.filter(Boolean)
+					.slice(offset, offset + limit);
+				result = { ids, has_more: false };
 			} else {
-				const posts = await db.getPostsByUserId(userId, offset + limit + 1, currentUserId);
-				const filtered = posts.filter((post) => (
-					(beforeId == null || Number(post.id) < beforeId) &&
-					(subType === 'posts_only' ? post.replyTo == null
-						: subType === 'replies_only' ? post.replyTo != null : true)
-				));
-				result = {
-					ids: filtered.slice(offset, offset + limit).map((post) => post.id),
-					has_more: filtered.length > offset + limit,
-				};
+				return res.status(400).json({ error: 'Unsupported post page mode' });
 			}
-			const pinId = safeParsePostId(req.query.pin_id);
-			if (beforeId == null && offset === 0 && pinId && !result.ids.includes(pinId)) result.ids.push(pinId);
-		} else if (mode === 'ids') {
-			const ids = String(req.query.ids || '')
-				.split(',')
-				.map(safeParsePostId)
-				.filter(Boolean)
-				.slice(offset, offset + limit);
-			result = { ids, has_more: false };
-		} else {
-			return res.status(400).json({ error: 'Unsupported post page mode' });
 		}
 
 		if (rawSinceId != null) {
