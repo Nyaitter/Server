@@ -139,12 +139,24 @@ class TimelineCacheManager {
 
 		const replyTargetId = Number(post.replyTo ?? post.reply_to);
 		if (isReply && Number.isInteger(replyTargetId) && replyTargetId > 0) {
+			let targetCount = null;
 			for (const entry of this.cache.values()) {
 				const cachedParent = entry.postsById?.get(replyTargetId);
 				if (cachedParent) {
-					const nextCount = (Number(cachedParent.reply_count ?? cachedParent.replyCount) || 0) + 1;
-					cachedParent.reply_count = nextCount;
-					cachedParent.replyCount = nextCount;
+					targetCount = (Number(cachedParent.reply_count ?? cachedParent.replyCount) || 0) + 1;
+					break;
+				}
+			}
+			if (targetCount !== null) {
+				for (const entry of this.cache.values()) {
+					const cachedParent = entry.postsById?.get(replyTargetId);
+					if (cachedParent) {
+						entry.postsById.set(replyTargetId, {
+							...cachedParent,
+							reply_count: targetCount,
+							replyCount: targetCount,
+						});
+					}
 				}
 			}
 		}
