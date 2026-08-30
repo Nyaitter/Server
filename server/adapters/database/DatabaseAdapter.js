@@ -475,7 +475,10 @@ class DatabaseAdapter {
 		throw new Error('toggleFollow() must be implemented');
 	}
 
-	
+	async toggleBlock(userId, targetUserId) {
+		throw new Error('toggleBlock() must be implemented');
+	}
+
 	async isFollowing(followerId, followingId) {
 		throw new Error('isFollowing() must be implemented');
 	}

@@ -791,6 +791,38 @@ router.post({
 	}
 });
 
+router.post({
+	path: '/:userId/block',
+	summary: 'ユーザーのブロック/ブロック解除（切り替え）',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
+	const db = getDbAdapter(req);
+	const userId = req.user.id;
+	const targetUserId = parseInt(req.params.userId, 10);
+
+	if (!Number.isInteger(targetUserId) || targetUserId <= 0) {
+		return res.status(400).json({ error: 'Invalid user id' });
+	}
+	if (userId === targetUserId) {
+		return res.status(400).json({ error: '自分自身をブロックすることはできません。' });
+	}
+
+	try {
+		const result = await db.toggleBlock(userId, targetUserId);
+		res.json({
+			success: true,
+			blocked: result.blocked,
+			block: result.block,
+			user_id: targetUserId,
+		});
+	} catch (err) {
+		console.error('[users] block error:', err);
+		res.status(400).json({
+			error: err.message || 'ブロック処理に失敗しました',
+		});
+	}
+});
+
 router.get({
 	path: '/:userId/:section(likes|stars)',
 	summary: 'ユーザーがいいね/スターした投稿一覧取得',

@@ -702,6 +702,35 @@ class D1Adapter extends DatabaseAdapter {
 		});
 	}
 
+	async toggleBlock(userId, targetUserId) {
+		const uid = requireId(userId, 'userId');
+		const tid = requireId(targetUserId, 'targetUserId');
+		try {
+			const res = await this._write(`/users/${tid}/block`, {
+				userId: uid,
+			});
+			if (res && typeof res.blocked === 'boolean') {
+				return res;
+			}
+		} catch (_) {
+			// Fallback to manual update below
+		}
+
+		const user = await this.getUser(uid);
+		if (!user) throw new Error('User not found');
+		const currentBlock = normalizeBlockList(user.block, uid);
+		const isBlocked = currentBlock.includes(tid);
+		const newBlock = isBlocked
+			? currentBlock.filter((id) => id !== tid)
+			: [...currentBlock, tid];
+		const normalized = normalizeBlockList(newBlock, uid);
+		await this.updateUserProfile(uid, { block: normalized });
+		return {
+			blocked: !isBlocked,
+			block: normalized,
+		};
+	}
+
 	async isFollowing(followerId, followingId) {
 		const result = await this._read(this._query(`/users/${requireId(followingId, 'followingId')}/is-following`, {
 			followerId: requireId(followerId, 'followerId'),
