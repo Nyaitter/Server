@@ -663,7 +663,20 @@ router.get({
 		let result;
 		if (cachedResult) {
 			result = cachedResult;
-		} else if (isDiscoverableMode) {
+		} else if (
+			isDiscoverableMode &&
+			(tab === 'all' || tab === 'foryou') &&
+			!req.query.q &&
+			!ngWordsKey &&
+			offset === 0
+		) {
+			const ringResult = timelineCacheManager.getPublicRingBufferPage(limit, beforeId);
+			if (ringResult && ringResult.ids.length > 0) {
+				result = ringResult;
+			}
+		}
+
+		if (!result && isDiscoverableMode) {
 			result = await getDiscoverableModePage(db, {
 				mode,
 				tab,
@@ -679,7 +692,7 @@ router.get({
 			if (result?.ids) {
 				timelineCacheManager.setIds(cacheKey, result);
 			}
-		} else if (mode === 'profile') {
+		} else if (!result && mode === 'profile') {
 			const userId = safeParsePostId(req.query.user_id);
 			if (!userId) return res.status(400).json({ error: 'user_id is required' });
 			const subType = ['all', 'posts_only', 'replies_only'].includes(req.query.sub_type)
@@ -783,6 +796,21 @@ router.get({
 		};
 
 		timelineCacheManager.setPayload(cacheKey, payload);
+
+		const isNdjson = req.headers.accept?.includes('application/x-ndjson') || req.query.stream === '1';
+		if (isNdjson) {
+			res.writeHead(200, {
+				'Content-Type': 'application/x-ndjson; charset=utf-8',
+				'Transfer-Encoding': 'chunked',
+				'Cache-Control': 'no-cache',
+			});
+			res.write(JSON.stringify({ type: 'meta', meta: payload.meta, has_more: payload.has_more, next_cursor: payload.next_cursor, context: payload.context }) + '\n');
+			for (const post of posts) {
+				res.write(JSON.stringify({ type: 'post', post }) + '\n');
+			}
+			return res.end();
+		}
+
 		res.json(payload);
 	} catch (err) {
 		console.error('[posts] page error:', err);

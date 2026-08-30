@@ -18,8 +18,35 @@ class TimelineCacheManager {
 		this.ttlMs = options.ttlMs ?? 600000;
 		this.maxEntries = options.maxEntries ?? 300;
 		this.maxTimelineSize = options.maxTimelineSize ?? 60;
+		this.ringBufferSize = options.ringBufferSize ?? 500;
 		// Map<string, { idsAsc: number[], idsSet: Set<number>, postsById: Map, has_more: boolean, next_cursor: string|null, expiresAt: number }>
 		this.cache = new Map();
+		// In-Memory Ring Buffer for Zero-Latency Public Timeline
+		this.publicRingBuffer = []; // array of { id: number, created_at: string }
+		this.publicRingSet = new Set();
+	}
+
+	getPublicRingBufferPage(limit = 30, beforeId = null) {
+		if (this.publicRingBuffer.length === 0) return null;
+		let list = this.publicRingBuffer;
+		if (beforeId != null) {
+			const idx = list.findIndex((p) => p.id === beforeId);
+			if (idx === -1) {
+				// beforeId is older than ring buffer
+				if (list.length > 0 && list[list.length - 1].id > beforeId) return null;
+				list = list.filter((p) => p.id < beforeId);
+			} else {
+				list = list.slice(idx + 1);
+			}
+		}
+		if (list.length === 0) return null;
+		const sliced = list.slice(0, limit);
+		const hasMore = list.length > limit || this.publicRingBuffer.length >= this.ringBufferSize;
+		return {
+			ids: sliced.map((p) => p.id),
+			has_more: hasMore,
+			next_cursor: sliced.length > 0 ? String(sliced[sliced.length - 1].id) : null,
+		};
 	}
 
 	getPayload(key) {
@@ -161,6 +188,18 @@ class TimelineCacheManager {
 		const groupId = post.groupId ?? post.group_id ?? null;
 		const isReply = Boolean(post.replyTo ?? post.reply_to);
 		const now = Date.now();
+
+		// Add to public Ring Buffer
+		if (!groupId && !isReply && !post.private) {
+			if (!this.publicRingSet.has(postId)) {
+				this.publicRingBuffer.unshift({ id: postId, created_at: post.createdAt || new Date(now).toISOString() });
+				this.publicRingSet.add(postId);
+				if (this.publicRingBuffer.length > this.ringBufferSize) {
+					const removed = this.publicRingBuffer.pop();
+					if (removed) this.publicRingSet.delete(removed.id);
+				}
+			}
+		}
 
 		const replyTargetId = Number(post.replyTo ?? post.reply_to);
 		if (isReply && Number.isInteger(replyTargetId) && replyTargetId > 0) {
