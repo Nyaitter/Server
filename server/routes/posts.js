@@ -671,7 +671,7 @@ router.get({
 			offset === 0
 		) {
 			const ringResult = timelineCacheManager.getPublicRingBufferPage(limit, beforeId);
-			if (ringResult && ringResult.ids.length > 0) {
+			if (ringResult && ringResult.ids.length >= limit) {
 				result = ringResult;
 			}
 		}

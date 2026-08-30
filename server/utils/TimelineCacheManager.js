@@ -26,6 +26,22 @@ class TimelineCacheManager {
 		this.publicRingSet = new Set();
 	}
 
+	seedPublicRingBuffer(postsOrIds) {
+		if (!Array.isArray(postsOrIds) || postsOrIds.length === 0) return;
+		for (const item of postsOrIds) {
+			const id = typeof item === 'object' && item !== null ? Number(item.id) : Number(item);
+			if (!Number.isSafeInteger(id) || id <= 0 || this.publicRingSet.has(id)) continue;
+			this.publicRingBuffer.push({ id, created_at: item?.createdAt || item?.created_at || new Date().toISOString() });
+			this.publicRingSet.add(id);
+		}
+		// Sort newest first
+		this.publicRingBuffer.sort((a, b) => b.id - a.id);
+		while (this.publicRingBuffer.length > this.ringBufferSize) {
+			const removed = this.publicRingBuffer.pop();
+			if (removed) this.publicRingSet.delete(removed.id);
+		}
+	}
+
 	getPublicRingBufferPage(limit = 30, beforeId = null) {
 		if (this.publicRingBuffer.length === 0) return null;
 		let list = this.publicRingBuffer;
@@ -33,11 +49,16 @@ class TimelineCacheManager {
 			const idx = list.findIndex((p) => p.id === beforeId);
 			if (idx === -1) {
 				// beforeId is older than ring buffer
-				if (list.length > 0 && list[list.length - 1].id > beforeId) return null;
+				if (list.length > 0 && list[list.length - 1].id >= beforeId) return null;
 				list = list.filter((p) => p.id < beforeId);
 			} else {
 				list = list.slice(idx + 1);
 			}
+		}
+		// Only return from ring buffer if we have enough items to fulfill the requested limit,
+		// or if we have accumulated a substantial buffer.
+		if (list.length < limit && this.publicRingBuffer.length < this.ringBufferSize) {
+			return null;
 		}
 		if (list.length === 0) return null;
 		const sliced = list.slice(0, limit);
@@ -137,6 +158,11 @@ class TimelineCacheManager {
 			next_cursor: next_cursor == null || next_cursor === '' ? null : String(next_cursor),
 			expiresAt: Date.now() + ttl,
 		});
+
+		// Auto seed ring buffer for public timelines
+		if (key.startsWith('timeline:all:') || key.startsWith('timeline:foryou:')) {
+			this.seedPublicRingBuffer(ids);
+		}
 	}
 
 	_appendPost(entry, postId, post, maxSize = this.maxTimelineSize) {
