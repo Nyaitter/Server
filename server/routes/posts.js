@@ -648,7 +648,11 @@ router.get({
 	const ngWords = getViewerNgWords(req);
 
 	const ngWordsKey = ngWords ? [...ngWords].sort().join(',') : '';
-	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawSinceId || 0}:${rawCursor || ''}`;
+	const userIdParam = req.query.user_id || req.query.userId || '';
+	const subTypeParam = req.query.sub_type || req.query.subType || '';
+	const pinIdParam = req.query.pin_id || req.query.pinId || '';
+	const idsParam = req.query.ids || '';
+	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${userIdParam}:${subTypeParam}:${pinIdParam}:${idsParam}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawSinceId || 0}:${rawCursor || ''}`;
 	const cachedPayload = timelineCacheManager.getPayload(cacheKey);
 	if (cachedPayload) {
 		return res.json(cachedPayload);
