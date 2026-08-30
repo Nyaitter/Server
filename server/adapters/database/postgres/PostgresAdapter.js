@@ -3095,7 +3095,7 @@ class PostgresAdapter extends DatabaseAdapter {
 					query = wrapCte(`SELECT p.* FROM posts p
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
 						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
-						  AND (p.created_at < $2 OR (p.created_at = $2 AND p.id < $3))
+						  AND (p.created_at, p.id) < ($2, $3)
 						ORDER BY p.created_at DESC, p.id DESC LIMIT $4`);
 					values = [validViewerId, decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 				} else if (normalizedBeforeId != null) {
@@ -3118,7 +3118,7 @@ class PostgresAdapter extends DatabaseAdapter {
 				if (decodedCursor) {
 					query = wrapCte(`SELECT p.* FROM posts p
 						WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL
-						  AND (p.created_at < $2 OR (p.created_at = $2 AND p.id < $3))
+						  AND (p.created_at, p.id) < ($2, $3)
 						ORDER BY p.created_at DESC, p.id DESC LIMIT $4`);
 					values = [ids, decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 				} else if (normalizedBeforeId != null) {
@@ -3137,7 +3137,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			if (decodedCursor) {
 				query = wrapCte(`SELECT p.* FROM posts p
 					WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
-					AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
+					AND (p.created_at, p.id) < ($1, $2) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
 				values = [decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 			} else if (normalizedBeforeId != null) {
 				query = wrapCte(`SELECT p.* FROM posts p
@@ -3153,7 +3153,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		} else if (decodedCursor) {
 			query = wrapCte(`SELECT p.* FROM posts p
 				WHERE p.group_id IS NULL AND p.reply_to IS NULL
-				AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
+				AND (p.created_at, p.id) < ($1, $2) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
 			values = [decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 		} else if (normalizedBeforeId != null) {
 			query = wrapCte(`SELECT p.* FROM posts p
