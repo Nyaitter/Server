@@ -39,6 +39,7 @@ const timelineCacheManager = require('../utils/TimelineCacheManager');
 const path = require('path');
 const fs = require('fs');
 const { isCrawler, generatePostOgpTags, generatePostHtml } = require('../services/OgpService');
+const { decodePostCursor } = require('../utils/postCursor');
 
 const api = require("../utils/ApiRegistry");
 const router = api.createRouter({
@@ -130,6 +131,30 @@ function contentLengthError(range) {
 function safeParsePostId(idStr) {
 	const n = parseInt(idStr, 10);
 	return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function resolvePaginationCursor(query = {}) {
+	const rawCursor = typeof query.cursor === 'string' && query.cursor.trim() ? query.cursor.trim() : null;
+	const rawBeforeId = typeof query.before_id === 'string' && query.before_id.trim() ? query.before_id.trim() : (query.before_id != null ? String(query.before_id).trim() : null);
+
+	let cursor = null;
+	let beforeId = null;
+
+	for (const candidate of [rawCursor, rawBeforeId]) {
+		if (!candidate) continue;
+		if (/^\d+$/.test(candidate) && Number.isSafeInteger(Number(candidate)) && Number(candidate) > 0) {
+			if (beforeId == null) beforeId = Number(candidate);
+		} else {
+			const decoded = decodePostCursor(candidate);
+			if (decoded) {
+				if (cursor == null) cursor = candidate;
+			} else if (Number.isSafeInteger(Number(candidate)) && Number(candidate) > 0) {
+				if (beforeId == null) beforeId = Number(candidate);
+			}
+		}
+	}
+
+	return { cursor, beforeId };
 }
 
 function getViewerNgWords(req) {
@@ -386,8 +411,7 @@ router.get({
 }, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const limit = Math.min(parseInt(req.query.limit, 10) || config.limits.timelinePageSize, 100);
-	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
-	const beforeId = safeParsePostId(req.query.before_id);
+	const { cursor: rawCursor, beforeId } = resolvePaginationCursor(req.query);
 	const rawSinceId = safeParsePostId(req.query.since_id || req.query.sinceId || req.query.after);
 	const offset = beforeId == null && rawSinceId == null && !rawCursor ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
 	const tab = req.query.tab || 'foryou';
@@ -498,8 +522,7 @@ router.get({
 	const db = getDbAdapter(req);
 	const q = req.query.q || '';
 	const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
-	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
-	const beforeId = safeParsePostId(req.query.before_id);
+	const { cursor: rawCursor, beforeId } = resolvePaginationCursor(req.query);
 	const offset = beforeId == null && !rawCursor ? (parseInt(req.query.offset, 10) || 0) : 0;
 
 	if (!q.trim()) {
@@ -562,8 +585,7 @@ router.get({
 }, optionalAuth, async (req, res) => {
 	const db = getDbAdapter(req);
 	const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
-	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
-	const beforeId = safeParsePostId(req.query.before_id);
+	const { cursor: rawCursor, beforeId } = resolvePaginationCursor(req.query);
 	const offset = beforeId == null && !rawCursor ? (parseInt(req.query.offset, 10) || 0) : 0;
 
 		try {
@@ -618,8 +640,7 @@ router.get({
 		'search',
 	].includes(mode);
 	const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
-	const rawCursor = req.query.cursor ? String(req.query.cursor).trim() : null;
-	const beforeId = safeParsePostId(req.query.before_id);
+	const { cursor: rawCursor, beforeId } = resolvePaginationCursor(req.query);
 	const rawSinceId = safeParsePostId(req.query.since_id || req.query.sinceId || req.query.after);
 	const offset = (beforeId == null && rawSinceId == null && !rawCursor) ? Math.max(parseInt(req.query.offset, 10) || 0, 0) : 0;
 	const currentUserId = req.user ? req.user.id : null;
