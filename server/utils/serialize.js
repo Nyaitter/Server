@@ -625,8 +625,13 @@ async function serializePostsBatch(
 
 	const allPosts = [...postsById.values()];
 	const knownAuthorsById = knownVisibilityContext?.authorsById instanceof Map
-		? knownVisibilityContext.authorsById
+		? new Map(knownVisibilityContext.authorsById)
 		: new Map();
+	for (const post of allPosts) {
+		if (post?.author && post.author.id != null && !knownAuthorsById.has(Number(post.author.id))) {
+			knownAuthorsById.set(Number(post.author.id), post.author);
+		}
+	}
 	const missingAuthorIds = [...new Set(allPosts
 		.map((post) => Number(post.userId))
 		.filter((authorId) => Number.isInteger(authorId) && !knownAuthorsById.has(authorId)))];

@@ -102,6 +102,22 @@ function normalizePostRow(row) {
 	const viewContent = row.view_content ?? row.viewContent ?? extractViewContent(row.content || '');
 	const replyControl = row.reply_control ?? row.replyControl ?? 'everyone';
 
+	let author = null;
+	if (row.author_id != null) {
+		author = normalizeUserRow({
+			id: row.author_id,
+			name: row.author_name,
+			scid: row.author_scid,
+			handle: row.author_handle,
+			icon_data: row.author_icon_data,
+			settings: row.author_settings,
+			block: row.author_block,
+			created_at: row.author_created_at,
+		});
+	} else if (row.author && typeof row.author === 'object') {
+		author = normalizeUserRow(row.author);
+	}
+
 	return {
 		id,
 		userId,
@@ -136,6 +152,7 @@ function normalizePostRow(row) {
 		replyCount: Math.max(0, Number(row.reply_count ?? row.replyCount) || 0),
 		...(row.liked_by_me !== undefined ? { liked_by_me: Boolean(row.liked_by_me) } : {}),
 		...(row.starred_by_me !== undefined ? { starred_by_me: Boolean(row.starred_by_me) } : {}),
+		...(author ? { author } : {}),
 		createdAt,
 		created_at: createdAt,
 	};
@@ -2001,11 +2018,34 @@ class PostgresAdapter extends DatabaseAdapter {
 		}));
 	}
 
+	_getGroupBadgesCache() {
+		if (!this._groupBadgesCache) {
+			this._groupBadgesCache = new MemoryBoundedCache({
+				maxSize: 2000,
+				ttlMs: 300000,
+			});
+		}
+		return this._groupBadgesCache;
+	}
+
 	async getUsersGroupBadgesBatch(userIds) {
 		const result = new Map();
 		const ids = [...new Set((userIds || []).map(Number).filter(Number.isInteger))];
 		if (ids.length === 0) return result;
-		ids.forEach((id) => result.set(id, []));
+
+		const cache = this._getGroupBadgesCache();
+		const missingIds = [];
+		for (const id of ids) {
+			const cached = cache?.get(id);
+			if (cached !== undefined) {
+				result.set(id, cached);
+			} else {
+				result.set(id, []);
+				missingIds.push(id);
+			}
+		}
+
+		if (missingIds.length === 0) return result;
 
 		const { rows } = await this.pool.query(
 			`WITH ranked_badges AS (
@@ -2027,9 +2067,12 @@ class PostgresAdapter extends DatabaseAdapter {
 			FROM ranked_badges
 			WHERE rn <= 5
 			ORDER BY user_id, rn ASC`,
-			[ids],
+			[missingIds],
 		);
 
+		for (const id of missingIds) {
+			result.set(id, []);
+		}
 		for (const row of rows) {
 			const userId = Number(row.user_id);
 			const list = result.get(userId) || [];
@@ -2039,6 +2082,9 @@ class PostgresAdapter extends DatabaseAdapter {
 				icon_data: row.icon_data,
 			});
 			result.set(userId, list);
+		}
+		for (const id of missingIds) {
+			cache?.set(id, result.get(id) || []);
 		}
 		return result;
 	}
@@ -2550,11 +2596,15 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (cached) return cached;
 
 		const { rows } = await this.pool.query(
-			'SELECT * FROM posts WHERE id = $1',
+			`SELECT p.*, u.id AS author_id, u.name AS author_name, u.scid AS author_scid, u.handle AS author_handle, u.icon_data AS author_icon_data, u.settings AS author_settings, u.block AS author_block, u.created_at AS author_created_at
+			 FROM posts p
+			 LEFT JOIN users u ON u.id = p.user_id
+			 WHERE p.id = $1`,
 			[postId],
 		);
 		const post = normalizePostRow(rows[0] || null);
 		if (post) {
+			if (post.author) this._setCachedUser(post.author);
 			cache?.set(postId, post);
 		}
 		return post;
@@ -2579,12 +2629,16 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		if (missingIds.length > 0) {
 			const { rows } = await this.pool.query(
-				'SELECT * FROM posts WHERE id = ANY($1::int[])',
+				`SELECT p.*, u.id AS author_id, u.name AS author_name, u.scid AS author_scid, u.handle AS author_handle, u.icon_data AS author_icon_data, u.settings AS author_settings, u.block AS author_block, u.created_at AS author_created_at
+				 FROM posts p
+				 LEFT JOIN users u ON u.id = p.user_id
+				 WHERE p.id = ANY($1::int[])`,
 				[missingIds],
 			);
 			for (const row of rows) {
 				const post = normalizePostRow(row);
 				if (post) {
+					if (post.author) this._setCachedUser(post.author);
 					cache?.set(post.id, post);
 					postMap.set(post.id, post);
 				}
@@ -2662,12 +2716,16 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			if (uncachedIds.length > 0) {
 				const { rows } = await this.pool.query(
-					'SELECT * FROM posts WHERE id = ANY($1::int[])',
+					`SELECT p.*, u.id AS author_id, u.name AS author_name, u.scid AS author_scid, u.handle AS author_handle, u.icon_data AS author_icon_data, u.settings AS author_settings, u.block AS author_block, u.created_at AS author_created_at
+					 FROM posts p
+					 LEFT JOIN users u ON u.id = p.user_id
+					 WHERE p.id = ANY($1::int[])`,
 					[uncachedIds],
 				);
 				for (const row of rows) {
 					const post = normalizePostRow(row);
 					if (post) {
+						if (post.author) this._setCachedUser(post.author);
 						cache?.set(post.id, post);
 						resolved.set(post.id, post);
 						if (depth < normalizedMaxDepth) {
@@ -3011,9 +3069,10 @@ class PostgresAdapter extends DatabaseAdapter {
 			: null;
 		const parsedViewerId = Number(viewerId);
 		const validViewerId = Number.isSafeInteger(parsedViewerId) && parsedViewerId > 0 ? parsedViewerId : null;
+		const authorSelect = `u.id AS author_id, u.name AS author_name, u.scid AS author_scid, u.handle AS author_handle, u.icon_data AS author_icon_data, u.settings AS author_settings, u.block AS author_block, u.created_at AS author_created_at`;
 		const postSelect = validViewerId == null
-			? 'p.*'
-			: `p.*,
+			? `p.*, ${authorSelect}`
+			: `p.*, ${authorSelect},
 				(EXISTS (SELECT 1 FROM likes l_viewer WHERE l_viewer.post_id = p.id AND l_viewer.user_id = ${validViewerId})) AS liked_by_me,
 				(EXISTS (SELECT 1 FROM stars s_viewer WHERE s_viewer.post_id = p.id AND s_viewer.user_id = ${validViewerId})) AS starred_by_me`;
 
@@ -3024,6 +3083,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			if (validViewerId != null) {
 				if (decodedCursor) {
 					query = `SELECT ${postSelect} FROM posts p
+						LEFT JOIN users u ON u.id = p.user_id
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
 						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
 						  AND (p.created_at < $2 OR (p.created_at = $2 AND p.id < $3))
@@ -3031,6 +3091,7 @@ class PostgresAdapter extends DatabaseAdapter {
 					values = [validViewerId, decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 				} else if (normalizedBeforeId != null) {
 					query = `SELECT ${postSelect} FROM posts p
+						LEFT JOIN users u ON u.id = p.user_id
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
 						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
 						  AND p.id < $2
@@ -3038,6 +3099,7 @@ class PostgresAdapter extends DatabaseAdapter {
 					values = [validViewerId, normalizedBeforeId, normalizedLimit + 1];
 				} else {
 					query = `SELECT ${postSelect} FROM posts p
+						LEFT JOIN users u ON u.id = p.user_id
 						WHERE p.group_id IS NULL AND p.reply_to IS NULL
 						  AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
 						ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`;
@@ -3048,48 +3110,70 @@ class PostgresAdapter extends DatabaseAdapter {
 				if (ids.length === 0) return { ids: [], posts: [], has_more: false, next_cursor: null };
 				if (decodedCursor) {
 					query = `SELECT ${postSelect} FROM posts p
+						LEFT JOIN users u ON u.id = p.user_id
 						WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL
 						  AND (p.created_at < $2 OR (p.created_at = $2 AND p.id < $3))
-						ORDER BY created_at DESC, id DESC LIMIT $4`;
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $4`;
 					values = [ids, decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 				} else if (normalizedBeforeId != null) {
-					query = `SELECT ${postSelect} FROM posts p WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL AND p.id < $2
-						ORDER BY created_at DESC, id DESC LIMIT $3`;
+					query = `SELECT ${postSelect} FROM posts p
+						LEFT JOIN users u ON u.id = p.user_id
+						WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL AND p.id < $2
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $3`;
 					values = [ids, normalizedBeforeId, normalizedLimit + 1];
 				} else {
-					query = `SELECT ${postSelect} FROM posts p WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL
-						ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`;
+					query = `SELECT ${postSelect} FROM posts p
+						LEFT JOIN users u ON u.id = p.user_id
+						WHERE p.user_id = ANY($1::int[]) AND p.group_id IS NULL AND p.reply_to IS NULL
+						ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`;
 					values = [ids, normalizedLimit + 1, normalizedOffset];
 				}
 			}
 		} else if (tab === 'announce') {
 			if (decodedCursor) {
-				query = `SELECT ${postSelect} FROM posts p WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
-					AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY created_at DESC, id DESC LIMIT $3`;
+				query = `SELECT ${postSelect} FROM posts p
+					LEFT JOIN users u ON u.id = p.user_id
+					WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
+					AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`;
 				values = [decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 			} else if (normalizedBeforeId != null) {
-				query = `SELECT ${postSelect} FROM posts p WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
-					AND id < $1 ORDER BY created_at DESC, id DESC LIMIT $2`;
+				query = `SELECT ${postSelect} FROM posts p
+					LEFT JOIN users u ON u.id = p.user_id
+					WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
+					AND p.id < $1 ORDER BY p.created_at DESC, p.id DESC LIMIT $2`;
 				values = [normalizedBeforeId, normalizedLimit + 1];
 			} else {
-				query = `SELECT ${postSelect} FROM posts p WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
-					ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2`;
+				query = `SELECT ${postSelect} FROM posts p
+					LEFT JOIN users u ON u.id = p.user_id
+					WHERE p.group_id IS NULL AND p.announcement = TRUE AND p.reply_to IS NULL
+					ORDER BY p.created_at DESC, p.id DESC LIMIT $1 OFFSET $2`;
 				values = [normalizedLimit + 1, normalizedOffset];
 			}
 		} else if (decodedCursor) {
-			query = `SELECT ${postSelect} FROM posts p WHERE p.group_id IS NULL AND p.reply_to IS NULL
+			query = `SELECT ${postSelect} FROM posts p
+				LEFT JOIN users u ON u.id = p.user_id
+				WHERE p.group_id IS NULL AND p.reply_to IS NULL
 				AND (p.created_at < $1 OR (p.created_at = $1 AND p.id < $2)) ORDER BY p.created_at DESC, p.id DESC LIMIT $3`;
 			values = [decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
 		} else if (normalizedBeforeId != null) {
-			query = `SELECT ${postSelect} FROM posts p WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.id < $1 ORDER BY p.created_at DESC, p.id DESC LIMIT $2`;
+			query = `SELECT ${postSelect} FROM posts p
+				LEFT JOIN users u ON u.id = p.user_id
+				WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.id < $1 ORDER BY p.created_at DESC, p.id DESC LIMIT $2`;
 			values = [normalizedBeforeId, normalizedLimit + 1];
 		} else {
-			query = `SELECT ${postSelect} FROM posts p WHERE p.group_id IS NULL AND p.reply_to IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT $1 OFFSET $2`;
+			query = `SELECT ${postSelect} FROM posts p
+				LEFT JOIN users u ON u.id = p.user_id
+				WHERE p.group_id IS NULL AND p.reply_to IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT $1 OFFSET $2`;
 			values = [normalizedLimit + 1, normalizedOffset];
 		}
 
 		const { rows } = await this.pool.query(query, values);
 		const normalizedRows = rows.map(normalizePostRow);
+		for (const post of normalizedRows) {
+			if (post?.author) {
+				this._setCachedUser(post.author);
+			}
+		}
 		const posts = normalizedRows.slice(0, normalizedLimit);
 		const ids = posts.map((post) => Number(post.id));
 		const lastPost = posts.length > 0 ? posts[posts.length - 1] : null;
