@@ -3600,9 +3600,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const normalized = normalizePostRow(detail);
 		return {
 			...normalized,
-			author: detail.author_id == null
-				? null
-				: { id: Number(detail.author_id), name: detail.author_name || '', scid: detail.author_scid || null },
+			author: normalized.author,
 			like_count: Number(metric?.like_count || 0),
 			star_count: Number(metric?.star_count || 0),
 			liked_by_me: Boolean(metric?.liked_by_me),

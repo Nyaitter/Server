@@ -552,6 +552,20 @@ function normalizePostRow(row) {
 		...(row.reply_count !== undefined ? { reply_count: Number(row.reply_count) || 0 } : {}),
 		...(row.liked_by_me !== undefined ? { liked_by_me: Boolean(row.liked_by_me) } : {}),
 		...(row.starred_by_me !== undefined ? { starred_by_me: Boolean(row.starred_by_me) } : {}),
+		author: row.author_id != null
+			? normalizeUserRow({
+				id: row.author_id,
+				name: row.author_name,
+				scid: row.author_scid,
+				handle: row.author_handle,
+				icon_data: row.author_icon_data,
+				verify: row.author_verify,
+				admin: row.author_admin,
+				settings: row.author_settings,
+				block: row.author_block,
+				created_at: row.author_created_at,
+			})
+			: null,
 		createdAt: row.created_at,
 		created_at: row.created_at,
 	};
@@ -2755,6 +2769,13 @@ export default {
 						author.id AS author_id,
 						author.name AS author_name,
 						author.scid AS author_scid,
+						author.handle AS author_handle,
+						author.icon_data AS author_icon_data,
+						author.verify AS author_verify,
+						author.admin AS author_admin,
+						author.settings AS author_settings,
+						author.block AS author_block,
+						author.created_at AS author_created_at,
 						COALESCE((SELECT COUNT(*) FROM likes WHERE post_id = p.id), 0) AS like_count,
 						COALESCE((SELECT COUNT(*) FROM stars WHERE post_id = p.id), 0) AS star_count,
 						EXISTS(SELECT 1 FROM likes WHERE user_id = ? AND post_id = p.id) AS liked_by_me,
@@ -2781,11 +2802,10 @@ export default {
 							: { id: detail.parent_author_id, name: detail.parent_author_name || '' },
 					};
 
+				const normalized = normalizePostRow(detail);
 				return json({
-					...normalizePostRow(detail),
-					author: detail.author_id == null
-						? null
-						: { id: detail.author_id, name: detail.author_name || '', scid: detail.author_scid || null },
+					...normalized,
+					author: normalized.author,
 					like_count: Number(detail.like_count || 0),
 					star_count: Number(detail.star_count || 0),
 					liked_by_me: Boolean(detail.liked_by_me),
