@@ -34,10 +34,13 @@ function getImageOptions(options = {}) {
     getInteger(options.minWebpQuality, 60, { min: 30, max: 90 }),
   );
 
+  const maxFrames = getInteger(options.maxFrames, 100, { min: 1, max: 300 });
+
   return {
     maxWidth: getInteger(options.maxWidth, 2560, { min: 1, max: 8192 }),
     maxHeight: getInteger(options.maxHeight, 2560, { min: 1, max: 8192 }),
     maxPixels: getInteger(options.maxPixels, 40_000_000, { min: 1_000_000, max: 100_000_000 }),
+    maxFrames,
     webpQuality,
     minWebpQuality,
     maxOutputBytes: maxOutputSizeMB * 1024 * 1024,
@@ -84,6 +87,7 @@ async function readFileToBuffer(file, maxBytes) {
 function createPipeline(input, options) {
   return sharp(input, {
     animated: true,
+    pages: options.maxFrames || 100,
     limitInputPixels: options.maxPixels,
     failOn: 'error',
   })

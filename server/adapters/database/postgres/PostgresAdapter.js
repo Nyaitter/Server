@@ -901,39 +901,40 @@ class PostgresAdapter extends DatabaseAdapter {
 		const decodedCursor = typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null;
 		const targetId = decodedCursor ? Number(decodedCursor.id) : null;
 		const digits = q.replace(/^#/, '').replace(/\D/g, '');
+		const pattern = `%${q}%`;
 
-		const { rows } = await this.pool.query(
-			`SELECT *
-			 FROM users
-			 ORDER BY id ASC LIMIT 1000`,
-		);
+		let sql = `SELECT * FROM users WHERE (name ILIKE $1 OR scid ILIKE $1 OR handle ILIKE $1 OR bio ILIKE $1`;
+		const values = [pattern];
 
-		const normalizedQ = q.toLowerCase();
-		const matched = [];
-		for (const row of rows) {
-			const user = normalizeUserRow(row);
-			if (targetId != null && Number(user.id) <= targetId) continue;
-			const nyaitterId = String(user.nyaitter_id || user.id || '').toLowerCase();
-			const scid = String(user.scid || '').toLowerCase();
-			const name = String(user.name || '').toLowerCase();
-			const profile = String(user.me || '').toLowerCase();
-			const idStr = String(user.id || '');
+		if (digits) {
+			values.push(`%${digits}%`);
+			sql += ` OR CAST(id AS TEXT) LIKE $${values.length}`;
+		}
+		sql += `)`;
 
-			if (
-				(digits && idStr.includes(digits)) ||
-				nyaitterId.includes(normalizedQ) ||
-				isFuzzyMatch(scid, normalizedQ, 0.8) ||
-				isFuzzyMatch(name, normalizedQ, 0.8) ||
-				isFuzzyMatch(profile, normalizedQ, 0.8)
-			) {
-				matched.push(user);
+		if (targetId != null) {
+			values.push(targetId);
+			sql += ` AND id > $${values.length}`;
+		}
+
+		values.push(safeLimit + 1);
+		const limitIdx = values.length;
+
+		let offsetSql = '';
+		if (targetId == null) {
+			const safeOffset = Math.max(Number(offset) || 0, 0);
+			if (safeOffset > 0) {
+				values.push(safeOffset);
+				offsetSql = ` OFFSET $${values.length}`;
 			}
 		}
 
-		const safeOffset = decodedCursor ? 0 : Math.max(Number(offset) || 0, 0);
-		const window = matched.slice(safeOffset, safeOffset + safeLimit + 1);
-		const slice = window.slice(0, safeLimit);
-		const hasMore = window.length > safeLimit;
+		sql += ` ORDER BY id ASC LIMIT $${limitIdx}${offsetSql}`;
+
+		const { rows } = await this.pool.query(sql, values);
+		const users = rows.map(normalizeUserRow);
+		const hasMore = users.length > safeLimit;
+		const slice = users.slice(0, safeLimit);
 		const lastUser = slice.length > 0 ? slice[slice.length - 1] : null;
 		const nextCursor = hasMore && lastUser
 			? encodePostCursor({ id: lastUser.id, created_at: lastUser.created_at || new Date(0).toISOString() })
@@ -3438,52 +3439,40 @@ class PostgresAdapter extends DatabaseAdapter {
 			? Number(beforeId)
 			: null;
 
-		// 検索候補を広めに取得して80%あいまい判定を適用
-		const fetchLimit = Math.max(200, (normalizedOffset + normalizedLimit) * 3);
-		const { rows } = decodedCursor
-			? await this.pool.query(
-				`SELECT id, content, view_content, tags, created_at FROM posts
-				 WHERE group_id IS NULL
-				   AND (created_at, id) < ($1, $2)
-				 ORDER BY created_at DESC, id DESC LIMIT $3`,
-				[decodedCursor.createdAt, decodedCursor.id, fetchLimit],
-			)
-			: normalizedBeforeId != null
-			? await this.pool.query(
-				`SELECT id, content, view_content, tags, created_at FROM posts
-				 WHERE group_id IS NULL AND id < $1
-				 ORDER BY created_at DESC, id DESC LIMIT $2`,
-				[normalizedBeforeId, fetchLimit],
-			)
-			: await this.pool.query(
-				`SELECT id, content, view_content, tags, created_at FROM posts
-				 WHERE group_id IS NULL
-				 ORDER BY created_at DESC, id DESC LIMIT $1`,
-				[fetchLimit],
-			);
+		const pattern = `%${q}%`;
+		const clauses = ['group_id IS NULL', '(view_content ILIKE $1 OR content ILIKE $1 OR tags::text ILIKE $1)'];
+		const values = [pattern];
 
-		const matched = [];
-		for (const row of rows) {
-			const targetText = String(row.view_content || extractViewContent(row.content || '')).toLowerCase();
-			const contentText = String(row.content || '').toLowerCase();
-			const rawTags = parseJsonSafe(row.tags, []);
-			const tags = Array.isArray(rawTags) ? rawTags : [];
-			if (
-				isFuzzyMatch(targetText, q, 0.8) ||
-				isFuzzyMatch(contentText, q, 0.8) ||
-				tags.some((tag) => isFuzzyMatch(String(tag), q, 0.8))
-			) {
-				matched.push(Number(row.id));
-			}
+		if (decodedCursor) {
+			values.push(decodedCursor.createdAt, decodedCursor.id);
+			clauses.push(`(created_at, id) < ($${values.length - 1}, $${values.length})`);
+		} else if (normalizedBeforeId != null) {
+			values.push(normalizedBeforeId);
+			clauses.push(`id < $${values.length}`);
 		}
 
-		const window = matched.slice(normalizedOffset, normalizedOffset + normalizedLimit + 1);
-		const ids = window.slice(0, normalizedLimit);
+		values.push(normalizedLimit + 1);
+		const limitIdx = values.length;
+
+		let offsetSql = '';
+		if (normalizedBeforeId == null && !decodedCursor && normalizedOffset > 0) {
+			values.push(normalizedOffset);
+			offsetSql = ` OFFSET $${values.length}`;
+		}
+
+		const sql = `SELECT id, created_at FROM posts WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT $${limitIdx}${offsetSql}`;
+		const { rows } = await this.pool.query(sql, values);
+
+		const hasMore = rows.length > normalizedLimit;
+		const slice = rows.slice(0, normalizedLimit);
+		const ids = slice.map((r) => Number(r.id));
+		const lastRow = slice.length > 0 ? slice[slice.length - 1] : null;
+
 		return {
 			ids,
-			has_more: window.length > normalizedLimit,
-			next_cursor: window.length > normalizedLimit && ids.length > 0
-				? (encodePostCursor({ id: ids[ids.length - 1], created_at: rows.find((row) => Number(row.id) === ids[ids.length - 1])?.created_at }) || ids[ids.length - 1])
+			has_more: hasMore,
+			next_cursor: hasMore && lastRow
+				? (encodePostCursor({ id: Number(lastRow.id), created_at: lastRow.created_at }) || ids[ids.length - 1])
 				: null,
 		};
 	}

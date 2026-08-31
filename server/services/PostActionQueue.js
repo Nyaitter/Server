@@ -2,16 +2,13 @@
 
 const crypto = require('crypto');
 
-/**
- * ポスト操作をHTTPレスポンスの外側で順次実行するプロセス内キュー。
- * DB更新の重複を避けるため、失敗したジョブの自動再試行は行わない。
- */
 class PostActionQueue {
-  constructor({ maxPendingJobs = 1000 } = {}) {
+  constructor({ maxPendingJobs = 1000, concurrency = 5 } = {}) {
     this.maxPendingJobs = maxPendingJobs;
+    this.concurrency = Math.max(1, Math.min(concurrency, 20));
     this.queue = [];
     this.head = 0;
-    this.processing = false;
+    this.activeWorkers = 0;
     this.stopped = false;
   }
 
@@ -36,7 +33,7 @@ class PostActionQueue {
 
     const actionId = crypto.randomUUID();
     this.queue.push({ actionId, type: String(type || 'post'), run });
-    this._startProcessing();
+    this._dispatch();
     return actionId;
   }
 
@@ -46,23 +43,10 @@ class PostActionQueue {
     this.head = 0;
   }
 
-  _startProcessing() {
-    if (this.processing || this.stopped) return;
-    this.processing = true;
-    void this._processQueue()
-      .catch((error) => {
-        console.error('[post-actions] queue stopped unexpectedly:', error.message);
-      })
-      .finally(() => {
-        this.processing = false;
-        if (!this.stopped && this.length > 0) this._startProcessing();
-      });
-  }
-
-  async _processQueue() {
-    while (!this.stopped && this.head < this.queue.length) {
+  _dispatch() {
+    while (!this.stopped && this.activeWorkers < this.concurrency && this.head < this.queue.length) {
       const job = this.queue[this.head];
-      this.queue[this.head] = null; // Clear reference for GC
+      this.queue[this.head] = null;
       this.head += 1;
 
       // Periodic compact to release memory
@@ -72,20 +56,30 @@ class PostActionQueue {
       }
 
       if (job) {
-        try {
-          await job.run();
-        } catch (error) {
-          console.error(
-            `[post-actions] ${job.type} action=${job.actionId} failed:`,
-            error.message,
-          );
-        }
+        this.activeWorkers += 1;
+        this._runJob(job);
       }
     }
 
     if (this.head >= this.queue.length) {
       this.queue.length = 0;
       this.head = 0;
+    }
+  }
+
+  async _runJob(job) {
+    try {
+      await job.run();
+    } catch (error) {
+      console.error(
+        `[post-actions] ${job.type} action=${job.actionId} failed:`,
+        error.message,
+      );
+    } finally {
+      this.activeWorkers = Math.max(0, this.activeWorkers - 1);
+      if (!this.stopped && this.head < this.queue.length) {
+        this._dispatch();
+      }
     }
   }
 }

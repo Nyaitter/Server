@@ -23,12 +23,21 @@ class ConnectionManager {
     // 生のセッショントークンを保持せず、Push購読に保存されている値と同じハッシュだけを紐付ける。
     this.sessionHashBySocket = new WeakMap();
     this.maxConnectionsPerUser = 20; // 1ユーザーあたりの最大WebSocket接続数
+    this.maxSocketBufferSize = 1024 * 1024; // 1MB 送信バッファ上限
+    this._heartbeatTimer = null;
   }
 
   register(userId, socket, sessionTokenHash = null) {
     const normalizedUserId = Number(userId);
     if (!Number.isInteger(normalizedUserId) || normalizedUserId < 0 || !socket) {
       return;
+    }
+
+    socket.isAlive = true;
+    if (typeof socket.on === 'function') {
+      socket.on('pong', () => {
+        socket.isAlive = true;
+      });
     }
 
     if (!this.connectionsByUser.has(normalizedUserId)) {
@@ -106,6 +115,15 @@ class ConnectionManager {
     for (const socket of Array.from(sockets)) {
       if (!socket || socket.readyState !== 1) {
         this.unregister(normalizedUserId, socket);
+        continue;
+      }
+
+      if (socket.bufferedAmount > this.maxSocketBufferSize) {
+        console.warn(`[realtime] Client buffer exceeded (${socket.bufferedAmount} bytes), terminating stalled socket for user ${normalizedUserId}`);
+        this.unregister(normalizedUserId, socket);
+        try {
+          socket.terminate();
+        } catch (_) {}
         continue;
       }
 
@@ -299,7 +317,38 @@ class ConnectionManager {
     return closed;
   }
 
+  startHeartbeat(intervalMs = 30000) {
+    if (this._heartbeatTimer) return;
+    this._heartbeatTimer = setInterval(() => {
+      for (const [userId, sockets] of this.connectionsByUser.entries()) {
+        for (const socket of Array.from(sockets)) {
+          if (!socket || socket.readyState !== 1 || socket.isAlive === false) {
+            this.unregister(userId, socket);
+            try { socket.terminate(); } catch (_) {}
+            continue;
+          }
+          socket.isAlive = false;
+          try {
+            socket.ping();
+          } catch (_) {
+            this.unregister(userId, socket);
+            try { socket.terminate(); } catch (_) {}
+          }
+        }
+      }
+    }, intervalMs);
+    this._heartbeatTimer.unref?.();
+  }
+
+  stopHeartbeat() {
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer);
+      this._heartbeatTimer = null;
+    }
+  }
+
   closeAll(code = 1001, reason = 'Server shutting down') {
+    this.stopHeartbeat();
     for (const sockets of this.connectionsByUser.values()) {
       for (const socket of sockets) {
         try {

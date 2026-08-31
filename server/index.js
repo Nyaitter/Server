@@ -122,6 +122,7 @@ if (userFilesEndpoint && !userFilesPort) {
 }
 
 const realtimeConnections = new ConnectionManager();
+realtimeConnections.startHeartbeat(30000);
 const realtimeServer = new WebSocketServer({
     noServer: true,
     maxPayload: 8 * 1024,
@@ -164,6 +165,23 @@ if (config.federation?.publicUrl) {
     } catch (_) {}
 }
 
+const wsUpgradeAttempts = new Map();
+function checkWsUpgradeRateLimit(ip) {
+    const now = Date.now();
+    const entry = wsUpgradeAttempts.get(ip) || { count: 0, resetTime: now + 60000 };
+    if (now >= entry.resetTime) {
+        entry.count = 0;
+        entry.resetTime = now + 60000;
+    }
+    entry.count += 1;
+    wsUpgradeAttempts.set(ip, entry);
+    if (wsUpgradeAttempts.size > 10000) {
+        const oldest = wsUpgradeAttempts.keys().next().value;
+        if (oldest) wsUpgradeAttempts.delete(oldest);
+    }
+    return entry.count <= 60; // Max 60 upgrade attempts per minute per IP
+}
+
 function isAllowedRealtimeOrigin(request) {
     const origin = request.headers.origin;
     if (!origin) return true;
@@ -197,6 +215,10 @@ async function handleRealtimeUpgrade(request, socket, head) {
     }
     if (parsedUrl.pathname !== apiPath('/realtime')) {
         return socket.destroy();
+    }
+    const clientIp = request.socket?.remoteAddress || 'unknown';
+    if (!checkWsUpgradeRateLimit(clientIp)) {
+        return rejectRealtimeUpgrade(socket, 429, 'Too Many Requests');
     }
     if (!isAllowedRealtimeOrigin(request)) {
         return rejectRealtimeUpgrade(socket, 403, 'Forbidden');

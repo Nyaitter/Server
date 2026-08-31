@@ -11,15 +11,10 @@ function getClientIp(req) {
     const cfIp = req.headers['cf-connecting-ip'];
     if (typeof cfIp === 'string' && cfIp.trim()) return cfIp.trim();
 
+    if (req.ip) return req.ip;
+
     const xRealIp = req.headers['x-real-ip'];
     if (typeof xRealIp === 'string' && xRealIp.trim()) return xRealIp.trim();
-
-    const xForwardedFor = req.headers['x-forwarded-for'];
-    if (typeof xForwardedFor === 'string' && xForwardedFor.trim()) {
-      const ips = xForwardedFor.split(',');
-      const clientIp = ips[0]?.trim();
-      if (clientIp) return clientIp;
-    }
   }
   return req.ip || req.socket?.remoteAddress || 'unknown';
 }
