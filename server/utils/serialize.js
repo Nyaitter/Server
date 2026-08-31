@@ -212,7 +212,8 @@ async function serializeUser(db, user, viewerId = null, publicUrl = null) {
 	if (!groupBadges && typeof db.getUsersGroupBadgesBatch === 'function') {
 		try {
 			const badgeMap = await db.getUsersGroupBadgesBatch([id]);
-			groupBadges = (badgeMap.get(Number(id)) || []).slice(0, 5);
+			const fetched = (badgeMap.get(Number(id)) || []).slice(0, 5);
+			if (fetched.length > 0) groupBadges = fetched;
 		} catch (_) {}
 	}
 	if (!groupBadges && typeof db.getUserGroups === 'function') {
@@ -316,18 +317,20 @@ async function serializePublicProfile(
 
 	let groupBadges = Array.isArray(user.group_badges) && user.group_badges.length > 0 ? user.group_badges : null;
 	if (!groupBadges && Array.isArray(knownGroups) && knownGroups.length > 0) {
-		groupBadges = knownGroups
+		const filtered = knownGroups
 			.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
 			.map((g) => ({
 				id: String(g.id),
 				name: String(g.name || ''),
 				icon_data: g.icon_data || g.iconData,
 			}));
+		if (filtered.length > 0) groupBadges = filtered;
 	}
 	if (!groupBadges && typeof db.getUsersGroupBadgesBatch === 'function') {
 		try {
 			const badgeMap = await db.getUsersGroupBadgesBatch([user.id]);
-			groupBadges = badgeMap.get(Number(user.id)) || [];
+			const fetched = badgeMap.get(Number(user.id)) || [];
+			if (fetched.length > 0) groupBadges = fetched;
 		} catch (_) {}
 	}
 	if (!groupBadges && typeof db.getUserGroups === 'function') {
