@@ -786,6 +786,8 @@ router.get({
 					name: user.name || '',
 					scid: user.scid || null,
 					icon_data: user.icon_data || null,
+					admin: !!user.admin,
+					verify: !!user.verify,
 					group_badges: user.group_badges || [],
 				})),
 			},

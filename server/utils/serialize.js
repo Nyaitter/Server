@@ -42,14 +42,19 @@ function clearImmutablePostCache() {
 function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = false } = {}) {
 	if (!user) return null;
 	const id = Number(user.id);
-	const cacheKey = `${id}:${includeSearchExclusion ? 'admin' : 'public'}`;
-	if (Number.isSafeInteger(id) && id > 0 && userBriefCache.has(cacheKey)) {
-		return userBriefCache.get(cacheKey);
-	}
-
 	const groupBadges = Array.isArray(user.group_badges)
 		? user.group_badges.slice(0, 5)
 		: (Array.isArray(user.groupBadges) ? user.groupBadges.slice(0, 5) : []);
+
+	const cacheKey = `${id}:${includeSearchExclusion ? 'admin' : 'public'}`;
+	if (Number.isSafeInteger(id) && id > 0 && userBriefCache.has(cacheKey)) {
+		const cached = userBriefCache.get(cacheKey);
+		// If cached entry has valid badges or user has no new badges, return cached
+		if (cached && (cached.group_badges?.length > 0 || groupBadges.length === 0)) {
+			return cached;
+		}
+	}
+
 	const brief = {
 		id: user.id,
 		nyaitter_id: getUserNyaitterId(user),
@@ -57,9 +62,9 @@ function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = f
 		scid: user.scid || null,
 		icon_data: user.icon_data || null,
 		icon_available: Boolean(user.icon_data || user.scid),
-		admin: !!user.admin,
-		verify: !!user.verify,
-		is_imposter: !!user.settings?.imposter?.parent_id,
+		admin: Boolean(user.admin),
+		verify: Boolean(user.verify),
+		is_imposter: Boolean(user.settings?.imposter?.parent_id),
 		group_badges: groupBadges,
 		...(includeSearchExclusion ? { shadow: !!user.shadow } : {}),
 	};
