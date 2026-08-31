@@ -20,10 +20,12 @@ function invalidateUserBriefCache(userId) {
 	const id = Number(userId);
 	userBriefCache.delete(`${id}:public`);
 	userBriefCache.delete(`${id}:admin`);
+	userGroupBadgesCache.delete(id);
 }
 
 function clearUserBriefCache() {
 	userBriefCache.clear();
+	userGroupBadgesCache.clear();
 }
 
 const IMMUTABLE_POST_CACHE_LIMIT = 10000;
@@ -49,9 +51,14 @@ function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = f
 	const cacheKey = `${id}:${includeSearchExclusion ? 'admin' : 'public'}`;
 	const cached = Number.isSafeInteger(id) && id > 0 ? userBriefCache.get(cacheKey) : null;
 
-	const effectiveBadges = userBadges !== null
-		? userBadges
-		: (Array.isArray(cached?.group_badges) ? cached.group_badges : []);
+	let effectiveBadges = [];
+	if (userBadges !== null && userBadges.length > 0) {
+		effectiveBadges = userBadges;
+	} else if (Array.isArray(cached?.group_badges) && cached.group_badges.length > 0) {
+		effectiveBadges = cached.group_badges;
+	} else if (userBadges !== null) {
+		effectiveBadges = userBadges;
+	}
 
 	const brief = {
 		id: user.id,
@@ -358,7 +365,7 @@ async function fetchPostsByIds(db, postIds) {
 }
 
 const userGroupBadgesCache = new Map();
-const BADGES_CACHE_TTL_MS = 1800000;
+const BADGES_CACHE_TTL_MS = 60000;
 const MAX_BADGES_CACHE_ENTRIES = 5000;
 
 function pruneUserGroupBadgesCache(now = Date.now()) {

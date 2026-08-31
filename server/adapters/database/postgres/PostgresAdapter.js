@@ -2025,7 +2025,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!this._groupBadgesCache) {
 			this._groupBadgesCache = new MemoryBoundedCache({
 				maxSize: 2000,
-				ttlMs: 300000,
+				ttlMs: 30000,
 			});
 		}
 		return this._groupBadgesCache;
@@ -2175,6 +2175,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			[String(membershipData.groupId), Number(membershipData.userId), membershipData.roleId ?? null,
 				String(membershipData.status || 'active'), joinedAt, now],
 		);
+		this._groupBadgesCache?.delete(Number(membershipData.userId));
 		return normalizeGroupMembershipRow(rows[0] || null);
 	}
 
@@ -2194,6 +2195,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const { rows } = await this.pool.query(
 			`UPDATE group_memberships SET ${sets.join(', ')} WHERE group_id = $${values.length - 1} AND user_id = $${values.length} RETURNING *`, values,
 		);
+		this._groupBadgesCache?.delete(Number(userId));
 		return normalizeGroupMembershipRow(rows[0] || null);
 	}
 

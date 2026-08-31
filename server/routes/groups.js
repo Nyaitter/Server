@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const express = require('express');
 const config = require('../config');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
-const { serializePostsByIds, serializeNotification } = require('../utils/serialize');
+const { serializePostsByIds, serializeNotification, invalidateUserBriefCache } = require('../utils/serialize');
 const { getPublicUrl } = require('../utils/nyaitterAddress');
 const { createNotificationIfAllowed } = require('../services/NotificationDeliveryService');
 const { resolvePostingUser } = require('../services/auth/PostAsUserService');
@@ -219,6 +219,7 @@ router.post({
       category,
       ownerId: req.user.id,
     });
+    invalidateUserBriefCache(req.user.id);
 
     res.status(201).json({ group: groupPayload(group) });
   } catch (error) {
@@ -345,6 +346,7 @@ router.patch({
       return res.status(400).json({ error: '更新内容が正しくありません。' });
     }
     const updated = await getDb(req).updateGroup(group.id, fields);
+    invalidateUserBriefCache(req.user.id);
     res.json({ group: groupPayload(updated) });
   } catch (error) {
     errorResponse(res, error, 'update error');
@@ -374,6 +376,8 @@ router.post({
     if (!changed) return res.status(404).json({ error: 'グループが見つかりません。' });
     await db.updateGroupMembership(group.id, newOwnerId, { roleId: ownerRole.id });
     await db.updateGroupMembership(group.id, req.user.id, { roleId: adminRole.id });
+    invalidateUserBriefCache(req.user.id);
+    invalidateUserBriefCache(newOwnerId);
     res.json({ group: groupPayload(changed) });
   } catch (error) {
     errorResponse(res, error, 'transfer owner error');
@@ -390,6 +394,7 @@ router.delete({
     if (!group) return;
     if (!isOwner(group, req.user.id)) return res.status(403).json({ error: 'グループを削除できるのはオーナーのみです。' });
     const deleted = await getDb(req).deleteGroup(group.id);
+    invalidateUserBriefCache(req.user.id);
     res.json({ success: Boolean(deleted) });
   } catch (error) {
     errorResponse(res, error, 'delete error');
@@ -434,6 +439,7 @@ router.post({
     const memberRole = await getDefaultMemberRoleOrThrow(db, group.id);
     const membership = await db.createGroupMembership({ groupId: group.id, userId: req.user.id, roleId: memberRole.id, status: 'active', joinedAt: new Date().toISOString() });
     await cancelPendingGroupJoinRequests(db, group.id, req.user.id);
+    invalidateUserBriefCache(req.user.id);
     res.status(201).json({ membership: membershipPayload(membership), joined: true });
   } catch (error) {
     errorResponse(res, error, 'join error');
@@ -452,6 +458,7 @@ router.post({
     const membership = await getDb(req).getGroupMembership(group.id, req.user.id);
     if (!membership || membership.status !== 'active') return res.status(404).json({ error: '参加状態が見つかりません。' });
     const updated = await getDb(req).updateGroupMembership(group.id, req.user.id, { status: 'pending', roleId: null, joinedAt: null });
+    invalidateUserBriefCache(req.user.id);
     res.json({ success: true, membership: membershipPayload(updated) });
   } catch (error) {
     errorResponse(res, error, 'leave error');
@@ -537,6 +544,7 @@ router.post({
         const memberRole = await getDefaultMemberRoleOrThrow(db, group.id);
         await db.createGroupMembership({ groupId: group.id, userId: applicantId, roleId: memberRole.id, status: 'active', joinedAt: new Date().toISOString() });
       }
+      invalidateUserBriefCache(applicantId);
     }
     const updated = await db.updateGroupJoinRequest(request.id, { status: decision === 'approve' ? 'approved' : 'declined', reviewedBy: req.user.id });
     res.json({ join_request: updated });
