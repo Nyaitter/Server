@@ -218,6 +218,8 @@ router.post({
       visibility,
       category,
       ownerId: req.user.id,
+      iconData: req.body?.icon_data ?? req.body?.iconData ?? null,
+      headerImage: req.body?.header_image ?? req.body?.headerImage ?? null,
     });
     invalidateUserBriefCache(req.user.id);
 

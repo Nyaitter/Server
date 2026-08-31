@@ -1348,13 +1348,13 @@ class InMemoryAdapter extends DatabaseAdapter {
 					group: this.groups.get(id),
 					membership: this.groupMemberships.get(this._groupMemberKey(id, userId)),
 				}))
-				.filter(({ group, membership }) => group && !group.deletedAt && membership?.status === 'active' && Boolean(group.iconData) && (group.visibility === 'open' || group.visibility === 'open_invite'))
+				.filter(({ group, membership }) => group && !group.deletedAt && !group.deleted_at && membership?.status === 'active' && Boolean(group.iconData || group.icon_data) && (group.visibility === 'open' || group.visibility === 'open_invite'))
 				.sort((a, b) => String(b.membership.joinedAt || '').localeCompare(String(a.membership.joinedAt || '')))
 				.slice(0, 5)
 				.map(({ group }) => ({
 					id: String(group.id),
 					name: String(group.name || ''),
-					icon_data: group.iconData,
+					icon_data: group.iconData || group.icon_data,
 				}));
 			result.set(userId, activeGroupsWithIcons);
 		}

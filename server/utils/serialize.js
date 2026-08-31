@@ -44,16 +44,20 @@ function clearImmutablePostCache() {
 function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = false } = {}) {
 	if (!user) return null;
 	const id = Number(user.id);
-	const userBadges = Array.isArray(user.group_badges)
+	const userBadges = Array.isArray(user.group_badges) && user.group_badges.length > 0
 		? user.group_badges.slice(0, 5)
-		: (Array.isArray(user.groupBadges) ? user.groupBadges.slice(0, 5) : null);
+		: (Array.isArray(user.groupBadges) && user.groupBadges.length > 0 ? user.groupBadges.slice(0, 5) : null);
 
 	const cacheKey = `${id}:${includeSearchExclusion ? 'admin' : 'public'}`;
 	const cached = Number.isSafeInteger(id) && id > 0 ? userBriefCache.get(cacheKey) : null;
+	const groupCacheEntry = Number.isSafeInteger(id) && id > 0 ? userGroupBadgesCache.get(id) : null;
+	const groupCacheBadges = groupCacheEntry && groupCacheEntry.expiresAt > Date.now() ? groupCacheEntry.badges : null;
 
 	let effectiveBadges = [];
 	if (userBadges !== null && userBadges.length > 0) {
 		effectiveBadges = userBadges;
+	} else if (Array.isArray(groupCacheBadges) && groupCacheBadges.length > 0) {
+		effectiveBadges = groupCacheBadges.slice(0, 5);
 	} else if (Array.isArray(cached?.group_badges) && cached.group_badges.length > 0) {
 		effectiveBadges = cached.group_badges;
 	} else if (userBadges !== null) {
@@ -202,9 +206,15 @@ async function serializeUser(db, user, viewerId = null, publicUrl = null) {
 		})
 		: [];
 
-	let groupBadges = Array.isArray(user.group_badges)
+	let groupBadges = Array.isArray(user.group_badges) && user.group_badges.length > 0
 		? user.group_badges.slice(0, 5)
-		: (Array.isArray(accountState?.group_badges) ? accountState.group_badges.slice(0, 5) : null);
+		: (Array.isArray(accountState?.group_badges) && accountState.group_badges.length > 0 ? accountState.group_badges.slice(0, 5) : null);
+	if (!groupBadges && typeof db.getUsersGroupBadgesBatch === 'function') {
+		try {
+			const badgeMap = await db.getUsersGroupBadgesBatch([id]);
+			groupBadges = (badgeMap.get(Number(id)) || []).slice(0, 5);
+		} catch (_) {}
+	}
 	if (!groupBadges && typeof db.getUserGroups === 'function') {
 		try {
 			const groups = await db.getUserGroups(id, { status: 'active', limit: 20 });
@@ -219,6 +229,9 @@ async function serializeUser(db, user, viewerId = null, publicUrl = null) {
 		} catch (_) {
 			groupBadges = [];
 		}
+	}
+	if (groupBadges && groupBadges.length > 0) {
+		userGroupBadgesCache.set(Number(id), { badges: groupBadges, expiresAt: Date.now() + BADGES_CACHE_TTL_MS });
 	}
 
 	return {
@@ -301,8 +314,8 @@ async function serializePublicProfile(
 	const mediaCount = stats?.mediaCount || 0;
 	const pinnedPostId = stats?.pinnedPostId || null;
 
-	let groupBadges = Array.isArray(user.group_badges) ? user.group_badges : null;
-	if (!groupBadges && Array.isArray(knownGroups)) {
+	let groupBadges = Array.isArray(user.group_badges) && user.group_badges.length > 0 ? user.group_badges : null;
+	if (!groupBadges && Array.isArray(knownGroups) && knownGroups.length > 0) {
 		groupBadges = knownGroups
 			.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
 			.map((g) => ({
@@ -310,6 +323,12 @@ async function serializePublicProfile(
 				name: String(g.name || ''),
 				icon_data: g.icon_data || g.iconData,
 			}));
+	}
+	if (!groupBadges && typeof db.getUsersGroupBadgesBatch === 'function') {
+		try {
+			const badgeMap = await db.getUsersGroupBadgesBatch([user.id]);
+			groupBadges = badgeMap.get(Number(user.id)) || [];
+		} catch (_) {}
 	}
 	if (!groupBadges && typeof db.getUserGroups === 'function') {
 		try {
@@ -324,6 +343,9 @@ async function serializePublicProfile(
 		} catch (_) {
 			groupBadges = [];
 		}
+	}
+	if (groupBadges && groupBadges.length > 0) {
+		userGroupBadgesCache.set(Number(user.id), { badges: groupBadges, expiresAt: Date.now() + BADGES_CACHE_TTL_MS });
 	}
 
 	return {
