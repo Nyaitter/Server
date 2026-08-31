@@ -682,13 +682,15 @@ async function serializePostsBatch(
 		? new Map(knownVisibilityContext.authorsById)
 		: new Map();
 	for (const post of allPosts) {
-		if (post?.author && post.author.id != null && !knownAuthorsById.has(Number(post.author.id))) {
-			knownAuthorsById.set(Number(post.author.id), post.author);
+		const authorObj = post?.author || post?.user;
+		const authorId = Number(authorObj?.id ?? post?.userId ?? post?.user_id ?? post?.userid);
+		if (authorObj && Number.isInteger(authorId) && authorId > 0 && !knownAuthorsById.has(authorId)) {
+			knownAuthorsById.set(authorId, authorObj);
 		}
 	}
 	const missingAuthorIds = [...new Set(allPosts
-		.map((post) => Number(post.userId))
-		.filter((authorId) => Number.isInteger(authorId) && !knownAuthorsById.has(authorId)))];
+		.map((post) => Number(post?.userId ?? post?.user_id ?? post?.userid ?? post?.author?.id ?? post?.user?.id))
+		.filter((authorId) => Number.isInteger(authorId) && authorId > 0 && !knownAuthorsById.has(authorId)))];
 	const [additionalUsers, metrics] = await Promise.all([
 		fetchUsersByIds(db, missingAuthorIds),
 		fetchPostMetrics(db, allPosts, currentUserId, knownViewer),
@@ -828,7 +830,8 @@ async function serializePostsBatch(
 		// 同じ再帰経路だけを追跡することで、各ノードでSetを複製する必要をなくす。
 		visitingPostIds.add(postId);
 		const metric = metricsByPostId.get(postId) || {};
-		const author = usersById.get(Number(post.userId)) || null;
+		const authorId = Number(post.userId ?? post.user_id ?? post.userid ?? post.author?.id ?? post.user?.id);
+		const author = usersById.get(authorId) || post.author || post.user || null;
 		const replyToId = post.replyTo ?? post.reply_to ?? post.reply_id;
 		const replyToPost = depth < 2 && replyToId != null
 			? composeReference(replyToId, depth)

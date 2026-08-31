@@ -256,7 +256,8 @@ function collectPostContext(posts) {
 	const visit = (post) => {
 		if (!post || visited.has(post.id)) return;
 		visited.add(post.id);
-		if (post.author?.id != null) authors.set(Number(post.author.id), post.author);
+		const authorObj = post.author || post.user;
+		if (authorObj?.id != null) authors.set(Number(authorObj.id), authorObj);
 		for (const match of String(post.content || '').matchAll(/@(\d+)/g)) {
 			mentionedIds.add(Number(match[1]));
 		}
