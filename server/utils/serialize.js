@@ -42,18 +42,16 @@ function clearImmutablePostCache() {
 function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = false } = {}) {
 	if (!user) return null;
 	const id = Number(user.id);
-	const groupBadges = Array.isArray(user.group_badges)
+	const userBadges = Array.isArray(user.group_badges)
 		? user.group_badges.slice(0, 5)
-		: (Array.isArray(user.groupBadges) ? user.groupBadges.slice(0, 5) : []);
+		: (Array.isArray(user.groupBadges) ? user.groupBadges.slice(0, 5) : null);
 
 	const cacheKey = `${id}:${includeSearchExclusion ? 'admin' : 'public'}`;
-	if (Number.isSafeInteger(id) && id > 0 && userBriefCache.has(cacheKey)) {
-		const cached = userBriefCache.get(cacheKey);
-		// If cached entry has valid badges or user has no new badges, return cached
-		if (cached && (cached.group_badges?.length > 0 || groupBadges.length === 0)) {
-			return cached;
-		}
-	}
+	const cached = Number.isSafeInteger(id) && id > 0 ? userBriefCache.get(cacheKey) : null;
+
+	const effectiveBadges = userBadges !== null
+		? userBadges
+		: (Array.isArray(cached?.group_badges) ? cached.group_badges : []);
 
 	const brief = {
 		id: user.id,
@@ -65,7 +63,7 @@ function serializeUserBrief(user, publicUrl = null, { includeSearchExclusion = f
 		admin: Boolean(user.admin),
 		verify: Boolean(user.verify),
 		is_imposter: Boolean(user.settings?.imposter?.parent_id),
-		group_badges: groupBadges,
+		group_badges: effectiveBadges,
 		...(includeSearchExclusion ? { shadow: !!user.shadow } : {}),
 	};
 
@@ -117,6 +115,7 @@ async function serializeNotifications(db, notifications, publicUrl = null, optio
 	]);
 	const fromUsersById = new Map(preloadedUsersById);
 	for (const user of fromUsers) fromUsersById.set(Number(user.id), user);
+	await attachGroupBadgesToUsers(db, Array.from(fromUsersById.values()));
 	const targetPostsById = new Map(preloadedPostsById);
 	for (const post of targetPosts || []) targetPostsById.set(Number(post.id), post);
 
@@ -824,7 +823,6 @@ async function serializePostsBatch(
 		if (cachedBase && cachedBase.updatedAt === postUpdatedAt) {
 			base = cachedBase;
 		} else {
-			const brief = getBriefUser(author);
 			base = {
 				id: post.id,
 				userid: post.userId,
@@ -837,8 +835,6 @@ async function serializePostsBatch(
 				attachments: post.attachments || [],
 				reply_id: post.replyTo || null,
 				created_at: post.createdAt,
-				user: brief,
-				author: brief,
 				updatedAt: postUpdatedAt,
 			};
 			if (depth === 0 && Number.isSafeInteger(postId) && postId > 0) {
@@ -875,8 +871,11 @@ async function serializePostsBatch(
 			}
 		}
 
+		const brief = getBriefUser(author);
 		const serialized = {
 			...base,
+			user: brief,
+			author: brief,
 			reply_control: effectiveReplyControl,
 			can_reply: canReply,
 			private: isPrivatePost(post, author),
@@ -975,6 +974,7 @@ async function serializePostsByIds(
 module.exports = {
 	serializeUser,
 	serializeUserBrief,
+	attachGroupBadgesToUsers,
 	invalidateUserBriefCache,
 	clearUserBriefCache,
 	invalidateImmutablePostCache,

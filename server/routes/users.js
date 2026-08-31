@@ -6,6 +6,7 @@ const { isWithinRange, describeIntegerRange } = require('../utils/settingFormats
 const {
 	serializeUser,
 	serializeUserBrief,
+	attachGroupBadgesToUsers,
 	invalidateUserBriefCache,
 	serializePublicProfile,
 	serializePostsByIds,
@@ -405,6 +406,7 @@ router.get({
 		const hasMore = Array.isArray(result) ? users.length > limit : !!result?.has_more;
 		const nextCursor = result?.next_cursor || null;
 		const slice = Array.isArray(result) ? users.slice(0, limit) : users;
+		await attachGroupBadgesToUsers(db, slice);
 		res.json({
 			users: slice.map((user) => serializeUserCard(user, getPublicUrl(req), {
 				includeSearchExclusion: Boolean(req.user?.admin),
@@ -443,6 +445,7 @@ router.get({
 			}
 			selected = candidates.slice(0, 3);
 		}
+		await attachGroupBadgesToUsers(db, selected);
 		res.json({ users: selected.map((user) => serializeUserCard(user, getPublicUrl(req), {
 			includeSearchExclusion: Boolean(req.user?.admin),
 		})) });
@@ -555,10 +558,11 @@ router.get({
 	}
 
 	try {
-					const users = await db.getUsersByIds(ids);
-			res.json({ users: users.map((user) => serializeUserCard(user, getPublicUrl(req), {
-				includeSearchExclusion: Boolean(req.user?.admin),
-			})) });
+		const users = await db.getUsersByIds(ids);
+		await attachGroupBadgesToUsers(db, users);
+		res.json({ users: users.map((user) => serializeUserCard(user, getPublicUrl(req), {
+			includeSearchExclusion: Boolean(req.user?.admin),
+		})) });
 
 	} catch (err) {
 		console.error('[users] batch error:', err);
@@ -885,6 +889,7 @@ router.get({
 		const hasMore = Array.isArray(result) ? users.length > limit : !!result?.has_more;
 		const nextCursor = result?.next_cursor || null;
 		const slice = Array.isArray(result) ? users.slice(0, limit) : users;
+		await attachGroupBadgesToUsers(db, slice);
 		res.json({
 			followers: slice.map((u) => serializeUserBrief(u)),
 			has_more: hasMore,
@@ -920,6 +925,7 @@ router.get({
 		const hasMore = Array.isArray(result) ? users.length > limit : !!result?.has_more;
 		const nextCursor = result?.next_cursor || null;
 		const slice = Array.isArray(result) ? users.slice(0, limit) : users;
+		await attachGroupBadgesToUsers(db, slice);
 		res.json({
 			following: slice.map((u) => serializeUserBrief(u)),
 			has_more: hasMore,
