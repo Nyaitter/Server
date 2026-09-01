@@ -55,14 +55,15 @@ router.post({
 	}
 
 	const db = getDbAdapter(req);
-	const rawOptionIds = req.body.option_ids ?? req.body.optionIds;
+	const body = req.body || {};
+	const rawOptionIds = body.option_ids ?? body.optionIds;
 	const optionIds = Array.isArray(rawOptionIds)
 		? rawOptionIds.map(Number).filter(Number.isInteger)
 		: (Number.isInteger(Number(rawOptionIds)) ? [Number(rawOptionIds)] : []);
 
-	const otherText = typeof req.body.other_text === 'string'
-		? req.body.other_text
-		: (typeof req.body.otherText === 'string' ? req.body.otherText : null);
+	const otherText = typeof body.other_text === 'string'
+		? body.other_text
+		: (typeof body.otherText === 'string' ? body.otherText : null);
 
 	try {
 		const poll = await db.votePoll({

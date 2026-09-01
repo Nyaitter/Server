@@ -176,7 +176,8 @@ router.get({
 	const userId = req.user.id;
 	const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
 	const offset = parseInt(req.query.offset, 10) || 0;
-	const since = req.query.since ? new Date(req.query.since) : null;
+	const rawSince = req.query.since ? new Date(req.query.since) : null;
+	const since = rawSince && !Number.isNaN(rawSince.getTime()) ? rawSince : null;
 
 	try {
 		let notifications = await db.getNotifications(userId, limit, offset);

@@ -42,6 +42,7 @@ function getInteger(value, fallback, { min, max }) {
 
 function getImageOptions(options = {}) {
   const maxOutputSizeMB = getInteger(options.maxOutputSizeMB, 5, { min: 1, max: 20 });
+  const maxInputSizeMB = getInteger(options.maxInputSizeMB, 20, { min: 1, max: 50 });
   const webpQuality = getInteger(options.webpQuality, 82, { min: 40, max: 95 });
   const minWebpQuality = Math.min(
     webpQuality,
@@ -57,6 +58,7 @@ function getImageOptions(options = {}) {
     maxFrames,
     webpQuality,
     minWebpQuality,
+    maxInputBytes: maxInputSizeMB * 1024 * 1024,
     maxOutputBytes: maxOutputSizeMB * 1024 * 1024,
   };
 }
@@ -148,7 +150,7 @@ async function normalizeImageUpload(params, configuredOptions = {}) {
   if (!isSupportedImage(effectiveContentType)) return params;
 
   const options = getImageOptions(configuredOptions);
-  const input = await readFileToBuffer(params.file, options.maxOutputBytes);
+  const input = await readFileToBuffer(params.file, options.maxInputBytes);
   if (input.length === 0) {
     throw new ImageUploadError('Image must not be empty', 400);
   }
