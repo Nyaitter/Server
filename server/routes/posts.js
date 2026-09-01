@@ -1493,6 +1493,12 @@ router.post({
 			return res.status(404).json({ error: 'Post not found' });
 		}
 		const repost = await db.repostPost(userId, postId);
+		timelineCacheManager.onPostCreated(repost);
+		const newRepostCount = (Number(original.repost_count ?? original.repostCount) || 0) + 1;
+		timelineCacheManager.updatePostMetrics(postId, {
+			repost_count: newRepostCount,
+			repostCount: newRepostCount,
+		});
 		res.status(201).json({
 			success: true,
 			post: await serializePost(db, repost, userId, 0, getPublicUrl(req)),

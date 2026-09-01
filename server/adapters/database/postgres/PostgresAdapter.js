@@ -885,7 +885,9 @@ class PostgresAdapter extends DatabaseAdapter {
 						now,
 					],
 				);
-				return normalizeUserRow(rows[0]);
+				const user = normalizeUserRow(rows[0]);
+				if (user) this._setCachedUser(user);
+				return user;
 			} catch (error) {
 				if (error.code === '23505') continue;
 				throw error;
@@ -1398,6 +1400,10 @@ class PostgresAdapter extends DatabaseAdapter {
 					'UPDATE posts SET attachments = $2::jsonb WHERE id = $1',
 					[row.id, JSON.stringify(attachments)],
 				);
+				const cachedPost = this._getPostCache()?.get(row.id);
+				if (cachedPost) {
+					this._getPostCache()?.set(row.id, { ...cachedPost, attachments });
+				}
 				updatedCount += 1;
 			}
 			return updatedCount;
@@ -1929,6 +1935,9 @@ class PostgresAdapter extends DatabaseAdapter {
 			`UPDATE groups SET ${sets.join(', ')} WHERE id = $${values.length} AND deleted_at IS NULL RETURNING *`,
 			values,
 		);
+		if (rows[0]) {
+			this._groupBadgesCache?.clear();
+		}
 		return normalizeGroupRow(rows[0] || null);
 	}
 
@@ -1954,8 +1963,13 @@ class PostgresAdapter extends DatabaseAdapter {
 				await client.query('DELETE FROM reposts WHERE post_id = ANY($1::int[])', [postIds]);
 				await client.query('DELETE FROM pinned_posts WHERE post_id = ANY($1::int[])', [postIds]);
 				await client.query('DELETE FROM posts WHERE id = ANY($1::int[])', [postIds]);
+				for (const pId of postIds) {
+					this._getPostCache()?.delete(pId);
+					this._getPostMetricsCache()?.delete(pId);
+				}
 			}
 
+			this._groupBadgesCache?.clear();
 			return normalizeGroupRow(rows[0]);
 		});
 	}
@@ -1966,6 +1980,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			 WHERE id = $2 AND deleted_at IS NULL RETURNING *`,
 			[Number(newOwnerId), String(groupId)],
 		);
+		this._groupBadgesCache?.delete(Number(newOwnerId));
 		return normalizeGroupRow(rows[0] || null);
 	}
 
@@ -2459,12 +2474,40 @@ class PostgresAdapter extends DatabaseAdapter {
 						: null,
 				].filter(Boolean));
 				if (post.replyTo) {
-					this._getPostMetricsCache()?.delete(Number(post.replyTo));
-					this._getPostCache()?.delete(Number(post.replyTo));
+					const parentId = Number(post.replyTo);
+					const cachedParent = this._getPostCache()?.get(parentId);
+					if (cachedParent) {
+						const replyCount = (Number(cachedParent.reply_count ?? cachedParent.replyCount) || 0) + 1;
+						this._getPostCache()?.set(parentId, {
+							...cachedParent,
+							reply_count: replyCount,
+							replyCount,
+						});
+					}
+					const cachedMetrics = this._getPostMetricsCache()?.get(parentId);
+					if (cachedMetrics) {
+						this._updateCachedPostMetrics(parentId, {
+							reply_count: (Number(cachedMetrics.reply_count) || 0) + 1,
+						});
+					}
 				}
 				if (post.repostTo) {
-					this._getPostMetricsCache()?.delete(Number(post.repostTo));
-					this._getPostCache()?.delete(Number(post.repostTo));
+					const parentId = Number(post.repostTo);
+					const cachedParent = this._getPostCache()?.get(parentId);
+					if (cachedParent) {
+						const repostCount = (Number(cachedParent.repost_count ?? cachedParent.repostCount) || 0) + 1;
+						this._getPostCache()?.set(parentId, {
+							...cachedParent,
+							repost_count: repostCount,
+							repostCount,
+						});
+					}
+					const cachedMetrics = this._getPostMetricsCache()?.get(parentId);
+					if (cachedMetrics) {
+						this._updateCachedPostMetrics(parentId, {
+							repost_count: (Number(cachedMetrics.repost_count) || 0) + 1,
+						});
+					}
 				}
 				this._getPostCache()?.set(post.id, post);
 			}
@@ -2984,6 +3027,7 @@ class PostgresAdapter extends DatabaseAdapter {
 	async deletePost(postId, userId) {
 		const targetId = Number(postId);
 		this._getPostCache()?.delete(targetId);
+		this._getPostMetricsCache()?.delete(targetId);
 		return this._withTransaction(async (client) => {
 			const { rows } = await client.query('SELECT user_id, reply_to, repost_to FROM posts WHERE id = $1 FOR UPDATE', [targetId]);
 			if (!rows[0] || Number(rows[0].user_id) !== Number(userId)) {
@@ -2991,15 +3035,35 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 			const post = rows[0];
 			if (post.reply_to) {
-				await client.query('UPDATE posts SET reply_count = GREATEST(0, reply_count - 1) WHERE id = $1', [Number(post.reply_to)]);
-				this._getPostMetricsCache()?.delete(Number(post.reply_to));
-				this._getPostCache()?.delete(Number(post.reply_to));
+				const parentId = Number(post.reply_to);
+				await client.query('UPDATE posts SET reply_count = GREATEST(0, reply_count - 1) WHERE id = $1', [parentId]);
+				const cachedParent = this._getPostCache()?.get(parentId);
+				if (cachedParent) {
+					const replyCount = Math.max(0, (Number(cachedParent.reply_count ?? cachedParent.replyCount) || 0) - 1);
+					this._getPostCache()?.set(parentId, { ...cachedParent, reply_count: replyCount, replyCount });
+				}
+				const cachedMetrics = this._getPostMetricsCache()?.get(parentId);
+				if (cachedMetrics) {
+					this._updateCachedPostMetrics(parentId, {
+						reply_count: Math.max(0, (Number(cachedMetrics.reply_count) || 0) - 1),
+					});
+				}
 			}
 			if (post.repost_to) {
-				await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [Number(post.repost_to)]);
-				await client.query('DELETE FROM reposts WHERE user_id = $1 AND post_id = $2', [Number(userId), Number(post.repost_to)]);
-				this._getPostMetricsCache()?.delete(Number(post.repost_to));
-				this._getPostCache()?.delete(Number(post.repost_to));
+				const parentId = Number(post.repost_to);
+				await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [parentId]);
+				await client.query('DELETE FROM reposts WHERE user_id = $1 AND post_id = $2', [Number(userId), parentId]);
+				const cachedParent = this._getPostCache()?.get(parentId);
+				if (cachedParent) {
+					const repostCount = Math.max(0, (Number(cachedParent.repost_count ?? cachedParent.repostCount) || 0) - 1);
+					this._getPostCache()?.set(parentId, { ...cachedParent, repost_count: repostCount, repostCount });
+				}
+				const cachedMetrics = this._getPostMetricsCache()?.get(parentId);
+				if (cachedMetrics) {
+					this._updateCachedPostMetrics(parentId, {
+						repost_count: Math.max(0, (Number(cachedMetrics.repost_count) || 0) - 1),
+					});
+				}
 			}
 			await client.query('UPDATE posts SET repost_to = NULL WHERE repost_to = $1', [targetId]);
 			await client.query('DELETE FROM likes WHERE post_id = $1', [targetId]);
@@ -3014,22 +3078,43 @@ class PostgresAdapter extends DatabaseAdapter {
 	async adminDeletePost(postId) {
 		const targetId = Number(postId);
 		this._getPostCache()?.delete(targetId);
+		this._getPostMetricsCache()?.delete(targetId);
 		return this._withTransaction(async (client) => {
 			const { rows } = await client.query('SELECT user_id, reply_to, repost_to FROM posts WHERE id = $1 FOR UPDATE', [targetId]);
 			if (rows[0]) {
 				const post = rows[0];
 				if (post.reply_to) {
-					await client.query('UPDATE posts SET reply_count = GREATEST(0, reply_count - 1) WHERE id = $1', [Number(post.reply_to)]);
-					this._getPostMetricsCache()?.delete(Number(post.reply_to));
-					this._getPostCache()?.delete(Number(post.reply_to));
+					const parentId = Number(post.reply_to);
+					await client.query('UPDATE posts SET reply_count = GREATEST(0, reply_count - 1) WHERE id = $1', [parentId]);
+					const cachedParent = this._getPostCache()?.get(parentId);
+					if (cachedParent) {
+						const replyCount = Math.max(0, (Number(cachedParent.reply_count ?? cachedParent.replyCount) || 0) - 1);
+						this._getPostCache()?.set(parentId, { ...cachedParent, reply_count: replyCount, replyCount });
+					}
+					const cachedMetrics = this._getPostMetricsCache()?.get(parentId);
+					if (cachedMetrics) {
+						this._updateCachedPostMetrics(parentId, {
+							reply_count: Math.max(0, (Number(cachedMetrics.reply_count) || 0) - 1),
+						});
+					}
 				}
 				if (post.repost_to) {
-					await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [Number(post.repost_to)]);
+					const parentId = Number(post.repost_to);
+					await client.query('UPDATE posts SET repost_count = GREATEST(0, repost_count - 1) WHERE id = $1', [parentId]);
 					if (post.user_id) {
-						await client.query('DELETE FROM reposts WHERE user_id = $1 AND post_id = $2', [Number(post.user_id), Number(post.repost_to)]);
+						await client.query('DELETE FROM reposts WHERE user_id = $1 AND post_id = $2', [Number(post.user_id), parentId]);
 					}
-					this._getPostMetricsCache()?.delete(Number(post.repost_to));
-					this._getPostCache()?.delete(Number(post.repost_to));
+					const cachedParent = this._getPostCache()?.get(parentId);
+					if (cachedParent) {
+						const repostCount = Math.max(0, (Number(cachedParent.repost_count ?? cachedParent.repostCount) || 0) - 1);
+						this._getPostCache()?.set(parentId, { ...cachedParent, repost_count: repostCount, repostCount });
+					}
+					const cachedMetrics = this._getPostMetricsCache()?.get(parentId);
+					if (cachedMetrics) {
+						this._updateCachedPostMetrics(parentId, {
+							repost_count: Math.max(0, (Number(cachedMetrics.repost_count) || 0) - 1),
+						});
+					}
 				}
 			}
 			await client.query('UPDATE posts SET repost_to = NULL WHERE repost_to = $1', [Number(postId)]);
@@ -4263,7 +4348,23 @@ class PostgresAdapter extends DatabaseAdapter {
 					now,
 				],
 			);
-			return normalizePostRow(created[0]);
+			const post = normalizePostRow(created[0]);
+			if (post) {
+				this._getPostCache()?.set(post.id, post);
+			}
+			const parentId = Number(postId);
+			const cachedParent = this._getPostCache()?.get(parentId);
+			if (cachedParent) {
+				const repostCount = (Number(cachedParent.repost_count ?? cachedParent.repostCount) || 0) + 1;
+				this._getPostCache()?.set(parentId, { ...cachedParent, repost_count: repostCount, repostCount });
+			}
+			const cachedMetrics = this._getPostMetricsCache()?.get(parentId);
+			if (cachedMetrics) {
+				this._updateCachedPostMetrics(parentId, {
+					repost_count: (Number(cachedMetrics.repost_count) || 0) + 1,
+				});
+			}
+			return post;
 		});
 	}
 
@@ -4786,6 +4887,8 @@ class PostgresAdapter extends DatabaseAdapter {
 				this._followCache?.delete(u1);
 				this._followCache?.delete(u2);
 			}
+
+			this._updateCachedUser(u1, { block: normalized });
 
 			return {
 				blocked: !isBlocked,

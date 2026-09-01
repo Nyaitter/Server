@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const express = require('express');
 const config = require('../config');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
-const { serializePostsByIds, serializeNotification, invalidateUserBriefCache } = require('../utils/serialize');
+const { serializePostsByIds, serializeNotification, invalidateUserBriefCache, clearUserBriefCache } = require('../utils/serialize');
 const { getPublicUrl } = require('../utils/nyaitterAddress');
 const { createNotificationIfAllowed } = require('../services/NotificationDeliveryService');
 const { resolvePostingUser } = require('../services/auth/PostAsUserService');
@@ -348,7 +348,7 @@ router.patch({
       return res.status(400).json({ error: '更新内容が正しくありません。' });
     }
     const updated = await getDb(req).updateGroup(group.id, fields);
-    invalidateUserBriefCache(req.user.id);
+    clearUserBriefCache();
     res.json({ group: groupPayload(updated) });
   } catch (error) {
     errorResponse(res, error, 'update error');
@@ -396,7 +396,7 @@ router.delete({
     if (!group) return;
     if (!isOwner(group, req.user.id)) return res.status(403).json({ error: 'グループを削除できるのはオーナーのみです。' });
     const deleted = await getDb(req).deleteGroup(group.id);
-    invalidateUserBriefCache(req.user.id);
+    clearUserBriefCache();
     res.json({ success: Boolean(deleted) });
   } catch (error) {
     errorResponse(res, error, 'delete error');
@@ -689,6 +689,7 @@ router.patch({
     if (!role) return res.status(400).json({ error: 'ロールが正しくありません。' });
     const updated = await db.updateGroupMembership(group.id, memberId, { roleId: role.id });
     if (!updated) return res.status(404).json({ error: 'メンバーが見つかりません。' });
+    invalidateUserBriefCache(memberId);
     res.json({ membership: membershipPayload(updated) });
   } catch (error) {
     errorResponse(res, error, 'member update error');
@@ -722,6 +723,7 @@ router.post({
       ? await db.updateGroupMembership(group.id, memberId, { status: 'banned', roleId: null, joinedAt: null })
       : await db.createGroupMembership({ groupId: group.id, userId: memberId, roleId: null, status: 'banned', joinedAt: null });
     await cancelPendingGroupJoinRequests(db, group.id, memberId);
+    invalidateUserBriefCache(memberId);
     res.json({ membership: membershipPayload(updated) });
   } catch (error) {
     errorResponse(res, error, 'member ban error');
@@ -743,6 +745,7 @@ router.post({
     const membership = await db.getGroupMembership(group.id, memberId);
     if (!membership || membership.status !== 'banned') return res.status(404).json({ error: '禁止状態のメンバーが見つかりません。' });
     const updated = await db.updateGroupMembership(group.id, memberId, { status: 'pending', roleId: null, joinedAt: null });
+    invalidateUserBriefCache(memberId);
     res.json({ membership: membershipPayload(updated) });
   } catch (error) {
     errorResponse(res, error, 'member unban error');

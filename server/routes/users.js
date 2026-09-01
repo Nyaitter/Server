@@ -8,11 +8,13 @@ const {
 	serializeUserBrief,
 	attachGroupBadgesToUsers,
 	invalidateUserBriefCache,
+	updateUserBriefCache,
 	serializePublicProfile,
 	serializePostsByIds,
 	serializePostsBatch,
 	serializeNotification,
 } = require('../utils/serialize');
+const timelineCacheManager = require('../utils/TimelineCacheManager');
 const { getPublicUrl, getUserNyaitterId } = require('../utils/nyaitterAddress');
 const {
 	createPostVisibilityContext,
@@ -732,6 +734,7 @@ router.put({
 			return res.status(404).json({ error: 'User not found' });
 		}
 		invalidateUserBriefCache(userId);
+		timelineCacheManager.updatePostAuthor(userId, { shadow: Boolean(shadow) });
 
 		try {
 			const LogHubManager = require('../services/managementTool/LogHubManager');
@@ -813,6 +816,8 @@ router.post({
 
 	try {
 		const result = await db.toggleBlock(userId, targetUserId);
+		invalidateUserBriefCache(userId);
+		invalidateUserBriefCache(targetUserId);
 		res.json({
 			success: true,
 			blocked: result.blocked,
@@ -1041,6 +1046,15 @@ router.post({
 				reassignedUserId,
 			);
 			const completedUser = await db.finishAccountOperation(reassignedUserId, 'reassigning') || updated;
+			invalidateUserBriefCache(userId);
+			invalidateUserBriefCache(reassignedUserId);
+			updateUserBriefCache(completedUser, getPublicUrl(req));
+			timelineCacheManager.updatePostAuthor(reassignedUserId, {
+				handle: completedUser.handle,
+				name: completedUser.name,
+				icon_data: completedUser.icon_data,
+				nyaitter_id: getUserNyaitterId(completedUser),
+			});
 			const notification = await db.createNotification({
 				userId: reassignedUserId,
 				type: 'admin_notice',
@@ -1098,6 +1112,7 @@ router.delete({
 		await db.invalidateAllSessions(req.user.id);
 		const deleted = await db.deleteAccount(req.user.id);
 		if (!deleted) throw new Error('Account deletion did not complete');
+		invalidateUserBriefCache(req.user.id);
 		await deleteStoredAccountAttachments(storage, attachmentKeys);
 		res.clearCookie('nyaitter_session');
 		res.clearCookie('nyaitter_accounts');
@@ -1138,6 +1153,13 @@ router.put({
 			return res.status(404).json({ error: 'User not found' });
 		}
 		invalidateUserBriefCache(userId);
+		updateUserBriefCache(updated, getPublicUrl(req));
+		timelineCacheManager.updatePostAuthor(userId, {
+			name: updated.name,
+			bio: updated.bio,
+			icon_data: updated.icon_data,
+			header_image: updated.header_image,
+		});
 		res.json({
 			user: await serializeUser(db, updated, userId, getPublicUrl(req)),
 		});
@@ -1175,6 +1197,11 @@ router.put({
 			return res.status(404).json({ error: 'User not found' });
 		}
 		invalidateUserBriefCache(userId);
+		updateUserBriefCache(updated, getPublicUrl(req));
+		timelineCacheManager.updatePostAuthor(userId, {
+			verify: updated.verify,
+			admin: updated.admin,
+		});
 
 		try {
 			const LogHubManager = require('../services/managementTool/LogHubManager');

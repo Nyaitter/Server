@@ -37,6 +37,23 @@ function invalidateImmutablePostCache(postId) {
 	immutablePostCache.delete(id);
 }
 
+function updateUserBriefCache(user, publicUrl = null) {
+	if (!user || user.id == null) return;
+	const id = Number(user.id);
+	if (!Number.isSafeInteger(id) || id <= 0) return;
+	serializeUserBrief(user, publicUrl, { includeSearchExclusion: false });
+	serializeUserBrief(user, publicUrl, { includeSearchExclusion: true });
+}
+
+function updateImmutablePostCache(postId, patch = {}) {
+	if (postId == null || !patch) return;
+	const id = Number(postId);
+	const cached = immutablePostCache.get(id);
+	if (cached) {
+		immutablePostCache.set(id, { ...cached, ...patch });
+	}
+}
+
 function clearImmutablePostCache() {
 	immutablePostCache.clear();
 }
@@ -1011,8 +1028,10 @@ module.exports = {
 	serializeUserBrief,
 	attachGroupBadgesToUsers,
 	invalidateUserBriefCache,
+	updateUserBriefCache,
 	clearUserBriefCache,
 	invalidateImmutablePostCache,
+	updateImmutablePostCache,
 	clearImmutablePostCache,
 	serializePublicProfile,
 	serializeNotification,

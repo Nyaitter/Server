@@ -204,6 +204,27 @@ class TimelineCacheManager {
 		}
 	}
 
+	updatePostAuthor(userId, authorPatch = {}) {
+		const targetUserId = Number(userId);
+		if (!Number.isInteger(targetUserId) || targetUserId <= 0 || !authorPatch) return;
+		for (const entry of this.cache.values()) {
+			if (entry.postsById) {
+				for (const [postId, post] of entry.postsById) {
+					const authorId = Number(post.userId ?? post.user_id ?? post.author?.id ?? post.user?.id);
+					if (authorId === targetUserId) {
+						const updatedAuthor = post.author ? { ...post.author, ...authorPatch } : undefined;
+						const updatedUser = post.user ? { ...post.user, ...authorPatch } : undefined;
+						entry.postsById.set(postId, {
+							...post,
+							...(updatedAuthor ? { author: updatedAuthor } : {}),
+							...(updatedUser ? { user: updatedUser } : {}),
+						});
+					}
+				}
+			}
+		}
+	}
+
 	/**
 	 * Appends new post ID to top-page timeline caches using push() - O(1) complexity.
 	 */
