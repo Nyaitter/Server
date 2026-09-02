@@ -226,6 +226,12 @@ async function serializeUser(db, user, viewerId = null, publicUrl = null) {
 	let groupBadges = Array.isArray(user.group_badges) && user.group_badges.length > 0
 		? user.group_badges.slice(0, 5)
 		: (Array.isArray(accountState?.group_badges) && accountState.group_badges.length > 0 ? accountState.group_badges.slice(0, 5) : null);
+	if (!groupBadges) {
+		const cached = userGroupBadgesCache.get(Number(id));
+		if (cached && cached.expiresAt > Date.now()) {
+			groupBadges = cached.badges.slice(0, 5);
+		}
+	}
 	if (!groupBadges && typeof db.getUsersGroupBadgesBatch === 'function') {
 		try {
 			const badgeMap = await db.getUsersGroupBadgesBatch([id]);
@@ -342,6 +348,12 @@ async function serializePublicProfile(
 				icon_data: g.icon_data || g.iconData,
 			}));
 		if (filtered.length > 0) groupBadges = filtered;
+	}
+	if (!groupBadges) {
+		const cached = userGroupBadgesCache.get(Number(user.id));
+		if (cached && cached.expiresAt > Date.now()) {
+			groupBadges = cached.badges;
+		}
 	}
 	if (!groupBadges && typeof db.getUsersGroupBadgesBatch === 'function') {
 		try {

@@ -776,6 +776,34 @@ export default {
 				});
 			}
 
+			if (method === 'POST' && pathname === '/sessions/users-by-tokens') {
+				const body = await request.json().catch(() => ({}));
+				const tokens = Array.isArray(body?.tokens) ? body.tokens.map(String).filter(Boolean) : [];
+				if (tokens.length === 0) return json([]);
+				const placeholders = tokens.map(() => '?').join(',');
+				const now = new Date().toISOString();
+				const { results } = await db.prepare(
+					`SELECT s.session_id, s.token, s.user_id, s.ip_hash, s.ip_masked,
+							s.user_agent, s.expires_at, s.created_at,
+							u.*
+					 FROM sessions s INNER JOIN users u ON u.id = s.user_id
+					 WHERE s.token IN (${placeholders}) AND s.expires_at > ?`
+				).bind(...tokens, now).all();
+				return json((results || []).map((row) => ({
+					session: {
+						id: row.session_id,
+						token: row.token,
+						userId: row.user_id,
+						expiresAt: row.expires_at,
+						createdAt: row.created_at,
+						ipHash: row.ip_hash,
+						ipMasked: row.ip_masked,
+						userAgent: row.user_agent,
+					},
+					user: normalizeUserRow(row),
+				})));
+			}
+
 			if (method === 'POST' && pathname === '/sessions/invalidate') {
 				const body = await request.json();
 				const token = String(body.token || '');
@@ -1117,6 +1145,14 @@ export default {
 
 			if (method === 'GET' && pathname === '/users') {
 				const { results } = await db.prepare('SELECT * FROM users ORDER BY id ASC').all();
+				return json((results || []).map(normalizeUserRow));
+			}
+
+			if (method === 'GET' && pathname === '/users/imposters') {
+				const { results } = await db.prepare(`SELECT * FROM users
+					WHERE auth_provider = 'imposter'
+					   OR (settings IS NOT NULL AND json_valid(settings) = 1 AND json_extract(settings, '$.imposter') IS NOT NULL)
+					ORDER BY id ASC`).all();
 				return json((results || []).map(normalizeUserRow));
 			}
 
@@ -1919,6 +1955,83 @@ export default {
 					FROM group_memberships gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = ? AND gm.status = ? AND g.deleted_at IS NULL
 					ORDER BY gm.joined_at DESC, g.created_at DESC LIMIT ? OFFSET ?`).bind(userId, status, limit, offset).all();
 				return json((results || []).map((row) => ({ ...normalizeGroupRow(row), membership: normalizeGroupMembershipRow({ group_id: row.id, user_id: userId, role_id: row.membership_role_id, status: row.membership_status, joined_at: row.membership_joined_at }) })));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/mutual-groups$/)) {
+				const userId1 = Number(pathname.split('/')[2]);
+				const userId2 = Number(url.searchParams.get('targetUserId') || 0);
+				const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 100), 200));
+				const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+				if (!userId1 || !userId2) return json([]);
+				const { results } = await db.prepare(`SELECT g.*,
+					(SELECT COUNT(*) FROM group_memberships count_gm WHERE count_gm.group_id = g.id AND count_gm.status = 'active') AS member_count
+					FROM groups g
+					JOIN group_memberships gm1 ON gm1.group_id = g.id AND gm1.user_id = ? AND gm1.status = 'active'
+					JOIN group_memberships gm2 ON gm2.group_id = g.id AND gm2.user_id = ? AND gm2.status = 'active'
+					WHERE g.deleted_at IS NULL
+					ORDER BY g.created_at DESC LIMIT ? OFFSET ?`).bind(userId1, userId2, limit, offset).all();
+				return json((results || []).map(normalizeGroupRow));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/bootstrap$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const notifLimit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 200), 200));
+
+				const [
+					followsRes,
+					likesRes,
+					starsRes,
+					pinnedRes,
+					notifsRes,
+					unreadCountRes,
+					badgesRes,
+				] = await db.batch([
+					db.prepare('SELECT following_id FROM follows WHERE follower_id = ? ORDER BY created_at DESC, following_id ASC').bind(userId),
+					db.prepare('SELECT post_id FROM likes WHERE user_id = ? ORDER BY created_at DESC').bind(userId),
+					db.prepare('SELECT post_id FROM stars WHERE user_id = ? ORDER BY created_at DESC').bind(userId),
+					db.prepare('SELECT post_id FROM pinned_posts WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').bind(userId),
+					db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?').bind(userId, notifLimit),
+					db.prepare('SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read = 0').bind(userId),
+					db.prepare(`SELECT g.id, g.name, g.icon_data
+						FROM group_memberships gm
+						JOIN groups g ON g.id = gm.group_id
+						WHERE gm.user_id = ? AND gm.status = 'active'
+						  AND g.deleted_at IS NULL AND g.icon_data IS NOT NULL AND g.icon_data <> ''
+						  AND g.visibility IN ('open', 'open_invite')
+						ORDER BY gm.joined_at DESC, g.created_at DESC
+						LIMIT 5`).bind(userId),
+				]);
+
+				const notifications = (notifsRes?.results || []).map((r) => ({
+					id: Number(r.id),
+					userId: Number(r.user_id),
+					user_id: Number(r.user_id),
+					type: r.type,
+					fromUserId: r.from_user_id != null ? Number(r.from_user_id) : null,
+					from_user_id: r.from_user_id != null ? Number(r.from_user_id) : null,
+					postId: r.post_id != null ? Number(r.post_id) : null,
+					post_id: r.post_id != null ? Number(r.post_id) : null,
+					target: parseJson(r.target, null),
+					message: r.message || null,
+					read: Boolean(r.read),
+					clicked: Boolean(r.clicked),
+					createdAt: toIsoString(r.created_at),
+					created_at: toIsoString(r.created_at),
+				}));
+
+				return json({
+					follow: (followsRes?.results || []).map((r) => Number(r.following_id)).filter(Number.isInteger),
+					like: (likesRes?.results || []).map((r) => Number(r.post_id)).filter(Number.isInteger),
+					star: (starsRes?.results || []).map((r) => Number(r.post_id)).filter(Number.isInteger),
+					pin: pinnedRes?.results?.[0]?.post_id != null ? Number(pinnedRes.results[0].post_id) : null,
+					unreadCount: Number(unreadCountRes?.results?.[0]?.count || 0),
+					group_badges: (badgesRes?.results || []).map((gb) => ({
+						id: String(gb.id),
+						name: String(gb.name || ''),
+						icon_data: gb.icon_data,
+					})),
+					notifications,
+				});
 			}
 
 			if (method === 'GET' && pathname.match(/^\/groups\/[^/]+\/roles$/)) {

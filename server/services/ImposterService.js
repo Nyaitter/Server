@@ -102,6 +102,9 @@ function toImposterSettings(parentId, members = []) {
 }
 
 async function listImposters(db) {
+  if (typeof db.getImposterUsers === 'function') {
+    return db.getImposterUsers();
+  }
   const users = await db.getAllUsers();
   return (users || []).filter(isImposter);
 }
@@ -124,25 +127,9 @@ async function listAccessibleImposters(db, operatorId) {
   const effectiveParentId = operatorMetadata?.parent_id || normalizedOperatorId;
 
   const imposters = await listImposters(db);
-  const allUsers = await db.getAllUsers();
-  const existingUserIds = new Set((allUsers || []).map((u) => Number(u.id)));
-
   const accessible = [];
   for (const imposter of imposters) {
-    let metadata = getImposterMetadata(imposter);
-
-    // 自己修復:
-    // もしインポスターの parent_id が現在のDBに存在せず孤立しており、かつ操作者が通常アカウントの場合
-    if (metadata && !existingUserIds.has(metadata.parent_id) && operatorUser && operatorUser.auth_provider !== 'imposter') {
-      metadata.parent_id = effectiveParentId;
-      const updatedSettings = {
-        ...parseSettingsSafe(imposter.settings),
-        imposter: toImposterSettings(effectiveParentId, metadata.members),
-      };
-      imposter.settings = updatedSettings;
-      void db.updateUserProfile?.(imposter.id, { settings: updatedSettings }).catch(() => {});
-    }
-
+    const metadata = getImposterMetadata(imposter);
     if (metadata && (metadata.parent_id === effectiveParentId || canOperateImposter(imposter, normalizedOperatorId))) {
       accessible.push(imposter);
     }
@@ -155,29 +142,26 @@ async function listAccessibleImpostersForOperators(db, operatorIds) {
   const normalizedOperatorIds = [...new Set((operatorIds || []).map(normalizeUserId).filter(Boolean))];
   if (normalizedOperatorIds.length === 0) return new Map();
 
-  const allUsers = await db.getAllUsers();
-  const usersById = new Map((allUsers || []).map((user) => [Number(user.id), user]));
-  const imposters = (allUsers || []).filter(isImposter);
-  const existingUserIds = new Set(usersById.keys());
+  const imposters = await listImposters(db);
   const result = new Map();
+  if (!imposters || imposters.length === 0) {
+    for (const operatorId of normalizedOperatorIds) {
+      result.set(operatorId, []);
+    }
+    return result;
+  }
+
+  const operators = await db.getUsersByIds(normalizedOperatorIds);
+  const operatorMap = new Map(operators.map((user) => [Number(user.id), user]));
 
   for (const operatorId of normalizedOperatorIds) {
-    const operatorUser = usersById.get(operatorId) || await db.getUserById(operatorId);
+    const operatorUser = operatorMap.get(operatorId) || await db.getUserById(operatorId);
     const operatorMetadata = getImposterMetadata(operatorUser);
     const effectiveParentId = operatorMetadata?.parent_id || operatorId;
     const accessible = [];
 
     for (const imposter of imposters) {
       const metadata = getImposterMetadata(imposter);
-      if (metadata && !existingUserIds.has(metadata.parent_id) && operatorUser && operatorUser.auth_provider !== 'imposter') {
-        metadata.parent_id = effectiveParentId;
-        const updatedSettings = {
-          ...parseSettingsSafe(imposter.settings),
-          imposter: toImposterSettings(effectiveParentId, metadata.members),
-        };
-        imposter.settings = updatedSettings;
-        void db.updateUserProfile?.(imposter.id, { settings: updatedSettings }).catch(() => {});
-      }
       if (metadata && (metadata.parent_id === effectiveParentId || canOperateImposter(imposter, operatorId))) {
         accessible.push(imposter);
       }

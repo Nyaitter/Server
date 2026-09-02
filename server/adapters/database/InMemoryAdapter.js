@@ -897,6 +897,40 @@ class InMemoryAdapter extends DatabaseAdapter {
 		);
 	}
 
+	async getImposterUsers() {
+		return Array.from(this.users.values())
+			.filter((u) => u && (u.auth_provider === 'imposter' || (u.settings && u.settings.imposter)))
+			.map((user) => this._normalizeUserBlockList(user));
+	}
+
+	async getUsersAndSessionsByTokens(tokens) {
+		const safeTokens = [...new Set((tokens || []).map(String).filter(Boolean))];
+		if (safeTokens.length === 0) return [];
+		const now = Date.now();
+		const results = [];
+		for (const token of safeTokens) {
+			const session = this.sessions.get(token);
+			if (session && new Date(session.expiresAt).getTime() > now) {
+				const user = this.users.get(Number(session.userId));
+				if (user) {
+					results.push({
+						session: {
+							id: session.id,
+							token: session.token,
+							userId: Number(user.id),
+							expiresAt: typeof session.expiresAt === 'string' ? session.expiresAt : session.expiresAt.toISOString(),
+							ipHash: session.ipHash || null,
+							ipMasked: session.ipMasked || '不明なIPアドレス',
+							userAgent: session.userAgent || '不明な端末',
+						},
+						user: this._normalizeUserBlockList(user),
+					});
+				}
+			}
+		}
+		return results;
+	}
+
 	async createSession(userId, meta = {}) {
 		const token = typeof meta.token === 'string' && meta.token
 			? meta.token
@@ -1336,6 +1370,25 @@ class InMemoryAdapter extends DatabaseAdapter {
 			.sort((a, b) => String(b.membership.joinedAt || '').localeCompare(String(a.membership.joinedAt || '')))
 			.slice(start, end)
 			.map(({ group, membership }) => ({ ...this._cloneGroup(group), membership: this._cloneGroupMembership(membership) }));
+	}
+
+	async getMutualUserGroups(userId1, userId2, { limit = 100, offset = 0 } = {}) {
+		const u1 = Number(userId1);
+		const u2 = Number(userId2);
+		if (!Number.isSafeInteger(u1) || !Number.isSafeInteger(u2) || u1 <= 0 || u2 <= 0) return [];
+		if (u1 === u2) return this.getUserGroups(u1, { status: 'active', limit, offset });
+
+		const u1Groups = this.groupIdsByUser.get(u1) || new Set();
+		const u2Groups = this.groupIdsByUser.get(u2) || new Set();
+		const start = Math.max(0, Number(offset) || 0);
+		const end = start + Math.max(1, Math.min(Number(limit) || 100, 200));
+
+		return [...u1Groups]
+			.filter((id) => u2Groups.has(id))
+			.map((id) => this.groups.get(id))
+			.filter((group) => group && !group.deletedAt && !group.deleted_at)
+			.slice(start, end)
+			.map((group) => this._cloneGroup(group));
 	}
 
 	async getUsersGroupBadgesBatch(userIds) {

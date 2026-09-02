@@ -643,6 +643,24 @@ class D1Adapter extends DatabaseAdapter {
 		return Array.isArray(users) ? users.map(normalizeUser).filter(Boolean) : [];
 	}
 
+	async getImposterUsers() {
+		const users = await this._read('/users/imposters', { cacheSeconds: 0 });
+		return Array.isArray(users) ? users.map(normalizeUser).filter(Boolean) : [];
+	}
+
+	async getUsersAndSessionsByTokens(tokens) {
+		const safeTokens = [...new Set((tokens || []).map(String).filter(Boolean))];
+		if (safeTokens.length === 0) return [];
+		const result = await this._read('/sessions/users-by-tokens', {
+			body: { tokens: safeTokens },
+			cacheSeconds: 0,
+		});
+		return Array.isArray(result) ? result.map((item) => ({
+			session: item.session,
+			user: normalizeUser(item.user),
+		})).filter((item) => item.session && item.user) : [];
+	}
+
 	async getUserStatus(userId) {
 		return this._read(`/users/${requireId(userId, 'userId')}/status`, { cacheSeconds: 0 });
 	}
@@ -867,6 +885,56 @@ class D1Adapter extends DatabaseAdapter {
 			status, limit: this._limit(limit, 100, 200), offset: Math.max(0, Number(offset) || 0),
 		}), { cacheSeconds: 0 });
 		return Array.isArray(groups) ? groups.map((group) => ({ ...normalizeGroup(group), membership: normalizeGroupMembership(group.membership) })) : [];
+	}
+
+	async getMutualUserGroups(userId1, userId2, { limit = 100, offset = 0 } = {}) {
+		const u1 = requireId(userId1, 'userId1');
+		const u2 = requireId(userId2, 'userId2');
+		if (u1 === u2) return this.getUserGroups(u1, { status: 'active', limit, offset });
+		const groups = await this._read(this._query(`/users/${u1}/mutual-groups`, {
+			targetUserId: u2,
+			limit: this._limit(limit, 100, 200),
+			offset: Math.max(0, Number(offset) || 0),
+		}), { cacheSeconds: 0 });
+		return Array.isArray(groups) ? groups.map(normalizeGroup) : [];
+	}
+
+	async getUserBootstrapData(userId, notificationLimit = 200) {
+		const targetId = requireId(userId, 'userId');
+		const limit = this._limit(notificationLimit, 200, 200);
+		try {
+			const data = await this._read(this._query(`/users/${targetId}/bootstrap`, { limit }), { cacheSeconds: 0 });
+			if (data && typeof data === 'object') {
+				return {
+					follow: Array.isArray(data.follow) ? data.follow.map(Number).filter(Number.isInteger) : [],
+					like: Array.isArray(data.like) ? data.like.map(Number).filter(Number.isInteger) : [],
+					star: Array.isArray(data.star) ? data.star.map(Number).filter(Number.isInteger) : [],
+					pin: data.pin != null ? Number(data.pin) : null,
+					unreadCount: Number(data.unreadCount || data.unread_count || 0),
+					group_badges: Array.isArray(data.group_badges) ? data.group_badges : [],
+					notifications: Array.isArray(data.notifications) ? data.notifications : [],
+					notificationUsers: Array.isArray(data.notificationUsers) ? data.notificationUsers.map(normalizeUser).filter(Boolean) : [],
+					notificationPosts: Array.isArray(data.notificationPosts) ? data.notificationPosts.map(normalizePost).filter(Boolean) : [],
+				};
+			}
+		} catch (_) {}
+
+		const [follow, like, star, pin, notifs, unreadCount, groupBadgesMap] = await Promise.all([
+			this.getFollowIds(targetId),
+			this.getLikeIds(targetId),
+			this.getStarIds(targetId),
+			this.getPinnedPostId(targetId),
+			this.getNotifications(targetId, limit),
+			this.getUnreadNotificationCount(targetId),
+			this.getUsersGroupBadgesBatch([targetId]),
+		]);
+		return {
+			follow, like, star, pin, unreadCount,
+			group_badges: groupBadgesMap.get(targetId) || [],
+			notifications: notifs,
+			notificationUsers: [],
+			notificationPosts: [],
+		};
 	}
 
 	async getUsersGroupBadgesBatch(userIds) {

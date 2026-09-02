@@ -568,7 +568,9 @@ class PostgresAdapter extends DatabaseAdapter {
 			'SELECT * FROM users WHERE LOWER(scid) = LOWER($1) LIMIT 1',
 			[String(scid)],
 		);
-		return normalizeUserRow(rows[0]);
+		const user = normalizeUserRow(rows[0]);
+		if (user) this._setCachedUser(user);
+		return user;
 	}
 
 	_setCachedUser(user) {
@@ -596,6 +598,26 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 		}
 		return this._userCache;
+	}
+
+	_getProfileStatsCache() {
+		if (!this._profileStatsCache) {
+			this._profileStatsCache = new MemoryBoundedCache({
+				maxSize: 3000,
+				ttlMs: 30000,
+			});
+		}
+		return this._profileStatsCache;
+	}
+
+	_invalidateProfileStatsCache(userId) {
+		if (this._profileStatsCache) {
+			if (userId != null) {
+				this._profileStatsCache.delete(Number(userId));
+			} else {
+				this._profileStatsCache.clear();
+			}
+		}
 	}
 
 	async getUserById(id) {
@@ -690,6 +712,7 @@ class PostgresAdapter extends DatabaseAdapter {
 				this._followCache.clear();
 			}
 		}
+		this._invalidateProfileStatsCache(userId);
 	}
 
 	async getUserByExternalId(authProvider, externalId) {
@@ -698,7 +721,9 @@ class PostgresAdapter extends DatabaseAdapter {
 			'SELECT * FROM users WHERE auth_provider = $1 AND external_id = $2 LIMIT 1',
 			[String(authProvider), String(externalId)],
 		);
-		return normalizeUserRow(rows[0]);
+		const user = normalizeUserRow(rows[0]);
+		if (user) this._setCachedUser(user);
+		return user;
 	}
 
 	async getUserAuthProviders(userId) {
@@ -950,6 +975,16 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	async getAllUsers() {
 		const { rows } = await this.pool.query('SELECT * FROM users ORDER BY id ASC');
+		return rows.map(normalizeUserRow);
+	}
+
+	async getImposterUsers() {
+		const { rows } = await this.pool.query(
+			`SELECT * FROM users
+			 WHERE auth_provider = 'imposter'
+			    OR (settings IS NOT NULL AND jsonb_typeof(settings) = 'object' AND settings ? 'imposter')
+			 ORDER BY id ASC`,
+		);
 		return rows.map(normalizeUserRow);
 	}
 
@@ -2036,6 +2071,30 @@ class PostgresAdapter extends DatabaseAdapter {
 		}));
 	}
 
+	async getMutualUserGroups(userId1, userId2, { limit = 100, offset = 0 } = {}) {
+		const u1 = Number(userId1);
+		const u2 = Number(userId2);
+		if (!Number.isSafeInteger(u1) || !Number.isSafeInteger(u2) || u1 <= 0 || u2 <= 0) return [];
+		if (u1 === u2) return this.getUserGroups(u1, { status: 'active', limit, offset });
+
+		const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 200));
+		const safeOffset = Math.max(0, Number(offset) || 0);
+		const { rows } = await this.pool.query(
+			`SELECT g.*, (
+				SELECT COUNT(*)::int FROM group_memberships count_gm
+				WHERE count_gm.group_id = g.id AND count_gm.status = 'active'
+			) AS member_count
+			FROM groups g
+			JOIN group_memberships gm1 ON gm1.group_id = g.id AND gm1.user_id = $1 AND gm1.status = 'active'
+			JOIN group_memberships gm2 ON gm2.group_id = g.id AND gm2.user_id = $2 AND gm2.status = 'active'
+			WHERE g.deleted_at IS NULL
+			ORDER BY g.created_at DESC
+			LIMIT $3 OFFSET $4`,
+			[u1, u2, safeLimit, safeOffset],
+		);
+		return rows.map(normalizeGroupRow);
+	}
+
 	_getGroupBadgesCache() {
 		if (!this._groupBadgesCache) {
 			this._groupBadgesCache = new MemoryBoundedCache({
@@ -2513,6 +2572,9 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 			return post;
 		});
+		if (createdPost?.userId) {
+			this._invalidateProfileStatsCache(createdPost.userId);
+		}
 		return createdPost;
 	}
 
@@ -3071,6 +3133,9 @@ class PostgresAdapter extends DatabaseAdapter {
 			await client.query('DELETE FROM reposts WHERE post_id = $1', [targetId]);
 			await client.query('DELETE FROM pinned_posts WHERE post_id = $1', [targetId]);
 			const result = await client.query('DELETE FROM posts WHERE id = $1', [targetId]);
+			if (result.rowCount > 0 && userId) {
+				this._invalidateProfileStatsCache(userId);
+			}
 			return result.rowCount > 0;
 		});
 	}
@@ -3079,10 +3144,12 @@ class PostgresAdapter extends DatabaseAdapter {
 		const targetId = Number(postId);
 		this._getPostCache()?.delete(targetId);
 		this._getPostMetricsCache()?.delete(targetId);
+		let authorId = null;
 		return this._withTransaction(async (client) => {
 			const { rows } = await client.query('SELECT user_id, reply_to, repost_to FROM posts WHERE id = $1 FOR UPDATE', [targetId]);
 			if (rows[0]) {
 				const post = rows[0];
+				authorId = post.user_id ? Number(post.user_id) : null;
 				if (post.reply_to) {
 					const parentId = Number(post.reply_to);
 					await client.query('UPDATE posts SET reply_count = GREATEST(0, reply_count - 1) WHERE id = $1', [parentId]);
@@ -3123,6 +3190,9 @@ class PostgresAdapter extends DatabaseAdapter {
 			await client.query('DELETE FROM reposts WHERE post_id = $1', [Number(postId)]);
 			await client.query('DELETE FROM pinned_posts WHERE post_id = $1', [Number(postId)]);
 			const result = await client.query('DELETE FROM posts WHERE id = $1', [Number(postId)]);
+			if (result.rowCount > 0 && authorId) {
+				this._invalidateProfileStatsCache(authorId);
+			}
 			return result.rowCount > 0;
 		});
 	}
@@ -4287,6 +4357,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 			return { pinned: true };
 		});
+		this._invalidateProfileStatsCache(userId);
 		return result;
 	}
 
@@ -4852,6 +4923,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			else followCache.follows.delete(u2);
 			this._followCache.set(u1, followCache);
 		}
+		this._invalidateProfileStatsCache(u1);
+		this._invalidateProfileStatsCache(u2);
 		return result;
 	}
 
@@ -4889,6 +4962,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 
 			this._updateCachedUser(u1, { block: normalized });
+			this._invalidateProfileStatsCache(u1);
+			this._invalidateProfileStatsCache(u2);
 
 			return {
 				blocked: !isBlocked,
@@ -4907,28 +4982,45 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	async getPublicProfileStats(userId) {
 		const targetUserId = Number(userId);
+		if (!Number.isSafeInteger(targetUserId) || targetUserId <= 0) {
+			return {
+				followingCount: 0, followerCount: 0, postCount: 0, mediaCount: 0, pinnedPostId: null,
+				following_count: 0, follower_count: 0, post_count: 0, media_count: 0, pinned_post_id: null,
+			};
+		}
+
+		const cache = this._getProfileStatsCache();
+		const cached = cache?.get(targetUserId);
+		if (cached) return cached;
+
 		const { rows } = await this.pool.query(
 			`SELECT
-				(SELECT COUNT(*) FROM follows WHERE follower_id = $1) AS following_count,
-				(SELECT COUNT(*) FROM follows WHERE following_id = $1) AS follower_count,
-				(SELECT COUNT(*) FROM posts WHERE user_id = $1 AND group_id IS NULL) AS post_count,
-				(SELECT COUNT(*) FROM posts WHERE user_id = $1 AND group_id IS NULL AND jsonb_array_length(COALESCE(attachments, '[]'::jsonb)) > 0) AS media_count,
+				(SELECT COUNT(*)::int FROM follows WHERE follower_id = $1) AS following_count,
+				(SELECT COUNT(*)::int FROM follows WHERE following_id = $1) AS follower_count,
+				(SELECT COUNT(*)::int FROM posts WHERE user_id = $1 AND group_id IS NULL) AS post_count,
+				(SELECT COUNT(*)::int FROM posts
+					WHERE user_id = $1 AND group_id IS NULL
+						AND attachments IS NOT NULL
+						AND jsonb_typeof(attachments) = 'array'
+						AND jsonb_array_length(attachments) > 0) AS media_count,
 				(SELECT post_id FROM pinned_posts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1) AS pinned_post_id`,
 			[targetUserId],
 		);
 		const row = rows[0] || {};
-		return {
-			followingCount: Number(row.following_count || 0),
-			followerCount: Number(row.follower_count || 0),
-			postCount: Number(row.post_count || 0),
-			mediaCount: Number(row.media_count || 0),
+		const stats = {
+			followingCount: Math.max(0, Number(row.following_count) || 0),
+			followerCount: Math.max(0, Number(row.follower_count) || 0),
+			postCount: Math.max(0, Number(row.post_count) || 0),
+			mediaCount: Math.max(0, Number(row.media_count) || 0),
 			pinnedPostId: row.pinned_post_id != null ? Number(row.pinned_post_id) : null,
-			following_count: Number(row.following_count || 0),
-			follower_count: Number(row.follower_count || 0),
-			post_count: Number(row.post_count || 0),
-			media_count: Number(row.media_count || 0),
+			following_count: Math.max(0, Number(row.following_count) || 0),
+			follower_count: Math.max(0, Number(row.follower_count) || 0),
+			post_count: Math.max(0, Number(row.post_count) || 0),
+			media_count: Math.max(0, Number(row.media_count) || 0),
 			pinned_post_id: row.pinned_post_id != null ? Number(row.pinned_post_id) : null,
 		};
+		cache?.set(targetUserId, stats);
+		return stats;
 	}
 
 	async getFollowing(userId, limit = 100, offset = 0, { cursor = null, withNextCursor = false } = {}) {
@@ -5612,33 +5704,6 @@ class PostgresAdapter extends DatabaseAdapter {
 			notificationUsers: rawUsers.map(normalizeUserRow).filter(Boolean),
 			notificationPosts: rawPosts.filter(Boolean),
 		};
-	}
-
-	async getPublicProfileStats(userId) {
-		const { rows } = await this.pool.query(
-			`SELECT
-				(SELECT COUNT(*)::int FROM follows WHERE follower_id = $1) AS following_count,
-				(SELECT COUNT(*)::int FROM follows WHERE following_id = $1) AS follower_count,
-				(SELECT COUNT(*)::int FROM posts WHERE user_id = $1) AS post_count,
-				(SELECT COUNT(*)::int FROM posts
-					WHERE user_id = $1
-						AND attachments IS NOT NULL
-						AND jsonb_typeof(attachments) = 'array'
-						AND jsonb_array_length(attachments) > 0) AS media_count,
-				(SELECT post_id FROM pinned_posts
-					WHERE user_id = $1
-					ORDER BY created_at DESC LIMIT 1) AS pinned_post_id`,
-			[Number(userId)],
-		);
-		const stats = rows[0] || {};
-		const result = {
-			followingCount: Math.max(0, Number(stats.following_count) || 0),
-			followerCount: Math.max(0, Number(stats.follower_count) || 0),
-			postCount: Math.max(0, Number(stats.post_count) || 0),
-			mediaCount: Math.max(0, Number(stats.media_count) || 0),
-			pinnedPostId: stats.pinned_post_id == null ? null : Number(stats.pinned_post_id),
-		};
-		return result;
 	}
 
 	// ==================== Rankings ====================

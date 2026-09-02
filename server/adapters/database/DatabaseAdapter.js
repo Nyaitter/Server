@@ -129,6 +129,14 @@ class DatabaseAdapter {
 		throw new Error('getAllUsers() must be implemented');
 	}
 
+	async getImposterUsers() {
+		throw new Error('getImposterUsers() must be implemented');
+	}
+
+	async getUsersAndSessionsByTokens(tokens) {
+		throw new Error('getUsersAndSessionsByTokens() must be implemented');
+	}
+
 	
 	async getUserStatus(userId) {
 		throw new Error('getUserStatus() must be implemented');
@@ -194,7 +202,9 @@ class DatabaseAdapter {
 	async transferGroupOwnership(groupId, newOwnerId) { throw new Error('transferGroupOwnership() must be implemented'); }
 	async getGroupsByVisibility(params = {}) { throw new Error('getGroupsByVisibility() must be implemented'); }
 	async getUserGroups(userId, params = {}) { throw new Error('getUserGroups() must be implemented'); }
+	async getMutualUserGroups(userId1, userId2, params = {}) { throw new Error('getMutualUserGroups() must be implemented'); }
 	async getUsersGroupBadgesBatch(userIds) { throw new Error('getUsersGroupBadgesBatch() must be implemented'); }
+	async getUserBootstrapData(userId, notificationLimit = 200) { throw new Error('getUserBootstrapData() must be implemented'); }
 	async createGroupRole(roleData) { throw new Error('createGroupRole() must be implemented'); }
 	async getGroupRoles(groupId) { throw new Error('getGroupRoles() must be implemented'); }
 	async updateGroupRole(roleId, fields) { throw new Error('updateGroupRole() must be implemented'); }

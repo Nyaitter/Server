@@ -500,17 +500,41 @@ router.get({
 			return res.status(404).json({ error: 'User not found' });
 		}
 
-			const viewerId = req.user ? req.user.id : null;
-			let groups = [];
-			let targetGroups = null;
-			if (viewerId != null) {
-				const targetGroupsPromise = db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 });
-				const viewerGroupsPromise = viewerId === userId
-					? targetGroupsPromise
-					: db.getUserGroups(viewerId, { status: 'active', limit: 200, offset: 0 });
+		const viewerId = req.user ? req.user.id : null;
+		let groups = [];
+		let targetGroups = null;
+
+		if (viewerId != null) {
+			if (viewerId === userId) {
+				targetGroups = await db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 });
+				groups = targetGroups.map((group) => ({
+					id: String(group.id),
+					name: group.name || '',
+					description: group.description || '',
+					icon_data: group.iconData ?? group.icon_data ?? null,
+					header_image: group.headerImage ?? group.header_image ?? null,
+					visibility: group.visibility || 'open',
+					member_count: Math.max(0, Number(group.memberCount ?? group.member_count) || 0),
+				}));
+			} else if (typeof db.getMutualUserGroups === 'function') {
+				const [mutualGroups, fetchedTargetGroups] = await Promise.all([
+					db.getMutualUserGroups(userId, viewerId, { limit: 200, offset: 0 }),
+					db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 }),
+				]);
+				targetGroups = fetchedTargetGroups;
+				groups = mutualGroups.map((group) => ({
+					id: String(group.id),
+					name: group.name || '',
+					description: group.description || '',
+					icon_data: group.iconData ?? group.icon_data ?? null,
+					header_image: group.headerImage ?? group.header_image ?? null,
+					visibility: group.visibility || 'open',
+					member_count: Math.max(0, Number(group.memberCount ?? group.member_count) || 0),
+				}));
+			} else {
 				const [viewerGroups, fetchedTargetGroups] = await Promise.all([
-					viewerGroupsPromise,
-					targetGroupsPromise,
+					db.getUserGroups(viewerId, { status: 'active', limit: 200, offset: 0 }),
+					db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 }),
 				]);
 				targetGroups = fetchedTargetGroups;
 				const targetGroupIds = new Set(targetGroups.map((group) => String(group.id)));
@@ -526,18 +550,21 @@ router.get({
 						member_count: Math.max(0, Number(group.memberCount ?? group.member_count) || 0),
 					}));
 			}
-			if (targetGroups === null && typeof db.getUserGroups === 'function') {
-				targetGroups = await db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 });
-			}
-			const profile = await serializePublicProfile(
-				db,
-				user,
-				viewerId,
-				getPublicUrl(req),
-				req.user?.visibilityUser || null,
-				targetGroups,
-			);
-			res.json({ user: { ...profile, groups } });
+		}
+
+		if (targetGroups === null && typeof db.getUserGroups === 'function') {
+			targetGroups = await db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 });
+		}
+
+		const profile = await serializePublicProfile(
+			db,
+			user,
+			viewerId,
+			getPublicUrl(req),
+			req.user?.visibilityUser || req.user || null,
+			targetGroups,
+		);
+		res.json({ user: { ...profile, groups } });
 	} catch (err) {
 		console.error('[users] profile error:', err);
 		res.status(500).json({ error: 'プロフィール取得に失敗しました' });
