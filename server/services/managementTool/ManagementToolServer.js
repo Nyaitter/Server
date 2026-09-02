@@ -79,9 +79,8 @@ class ManagementToolServer {
 
     // 認証ミドルウェア
     const requireAuth = async (req, res, next) => {
-      // パスワードまたは認証が未設定の場合はローカル管理を許可
       const nmtPassword = process.env.NMT_PASSWORD || this.config.password;
-      if (!nmtPassword && process.env.NODE_ENV !== 'production') {
+      if (!nmtPassword) {
         req.adminUser = { id: 1, name: 'Admin', admin: true };
         return next();
       }
@@ -119,17 +118,18 @@ class ManagementToolServer {
     // ── Auth APIs ──
     this.app.get('/api/auth/me', (req, res) => {
       const nmtPassword = process.env.NMT_PASSWORD || this.config.password;
+      if (!nmtPassword) {
+        return res.json({ authenticated: true, user: { id: 1, name: 'Admin' }, requiresPassword: false });
+      }
+
       const authHeader = req.headers.authorization || '';
       const token = authHeader.replace(/^Bearer\s+/i, '').trim();
       const session = token ? this.sessions.get(token) : null;
 
       if (session && (!session.expiresAt || session.expiresAt > Date.now())) {
-        return res.json({ authenticated: true, user: session.user, requiresPassword: Boolean(nmtPassword) });
+        return res.json({ authenticated: true, user: session.user, requiresPassword: true });
       }
-      if (!nmtPassword && process.env.NODE_ENV !== 'production') {
-        return res.json({ authenticated: true, user: { id: 1, name: 'Local Admin' }, requiresPassword: false });
-      }
-      return res.json({ authenticated: false, requiresPassword: Boolean(nmtPassword) });
+      return res.json({ authenticated: false, requiresPassword: true });
     });
 
     this.app.post('/api/auth/login', (req, res) => {
