@@ -65,7 +65,7 @@ const { isCrawler, generatePostOgpTags, generatePostHtml } = require('./services
 const LogHubManager = require('./services/managementTool/LogHubManager');
 const ErrorManager = require('./services/managementTool/ErrorManager');
 
-// NyaitterServer 本体の全標準出力を NMT Unified Logs にフック
+// NyaitterServer の標準出力を NMT ログ監視に連携（NMT プロセスには干渉しない）
 LogHubManager.hookServerProcess('server');
 
 let embeddedMailServer = null;
@@ -86,7 +86,7 @@ if (process.env.DEV_BYPASS_AUTH === 'true') {
 const app = express();
 app.disable('x-powered-by');
 
-const PORT = config.server.port;
+const PORT = Number(process.env.PORT) || config.server.port || 3000;
 const API_ENDPOINT = config.server.apiEndpoint;
 const apiPath = (suffix = '') => {
     const normalizedSuffix = String(suffix || '').replace(/^\/+/, '');
@@ -527,51 +527,17 @@ if (userFilesEndpoint && userFilesPort) {
 
 let postShareServer = null;
 
-let managementToolServer = null;
-
-// ── Request Monitoring Hook (NMT) ──────────────────────────────────────────────
-app.use((req, res, next) => {
-    if (!config.nmt?.enabled) return next();
-    const start = Date.now();
-    res.on('finish', () => {
-        const duration = Date.now() - start;
-        if (managementToolServer) {
-            managementToolServer.recordRequest(req, res, duration);
-        }
-    });
-    next();
-});
-
 // ── Error & 404 Handlers ───────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
     console.error('[server] Unhandled error:', err);
-    if (managementToolServer) {
-        managementToolServer.recordError(err, {
-            method: req.method,
-            url: req.originalUrl || req.url,
-            userId: req.user?.id || null,
-            ip: req.headers['cf-connecting-ip'] || req.ip,
-            userAgent: req.headers['user-agent'],
-            requestId: req.id || undefined,
-        });
-    } else {
-        const errorContext = {
-            method: req.method,
-            url: req.originalUrl || req.url,
-            userId: req.user?.id || null,
-            ip: req.headers['cf-connecting-ip'] || req.ip,
-            userAgent: req.headers['user-agent'],
-            requestId: req.id || undefined,
-        };
-        ErrorManager.recordExternalError(err, errorContext);
-        LogHubManager.appendExternalLog({
-            type: 'error',
-            level: 'error',
-            source: 'nyaitter-server',
-            message: `${req.method} ${req.originalUrl || req.url} - ${err.message}`,
-            details: { stack: err.stack, userId: req.user?.id || null },
-        });
-    }
+    ErrorManager.recordExternalError(err, {
+        method: req.method,
+        url: req.originalUrl || req.url,
+        userId: req.user?.id || null,
+        ip: req.headers['cf-connecting-ip'] || req.ip,
+        userAgent: req.headers['user-agent'],
+        requestId: req.id || undefined,
+    });
 
     const status = err.status || 500;
     const isDev = process.env.NODE_ENV === 'development';
@@ -660,7 +626,6 @@ async function startServer() {
     }
     app.locals.dbAdapter = dbAdapter;
     app.locals.storageAdapter = storageAdapter;
-    managementToolServer?.setDbAdapter(dbAdapter);
     const userFileEndpoint = config.userFiles?.endpoint || null;
 const postShareUrl = config.postShareUrl
     ? config.postShareUrl
@@ -669,23 +634,6 @@ const postShareUrl = config.postShareUrl
         : null);
 const turnstileSiteKey = config.turnstile?.siteKey || '';
 
-managementToolServer?.setServerControls({
-        shutdownFn: shutdown,
-        getStatusFn: () => ({
-            pid: process.pid,
-            port: PORT,
-            databaseAdapter: config.database.adapter,
-            storageAdapter: config.storage?.adapter || 'local',
-            startedAt: new Date().toISOString(),
-            client_config: {
-                user_file_endpoint: userFileEndpoint,
-                post_share_url: postShareUrl,
-                turnstile_site_key: turnstileSiteKey,
-                resource_links: config.client?.resourceLinks || [],
-                widget_links: config.client?.widgetLinks || [],
-            },
-        }),
-    });
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
     pollExpirationScheduler = startPollExpirationScheduler(dbAdapter, realtimeConnections, pushNotificationService);
     operatorControl = await startOperatorControlServer({
@@ -705,15 +653,6 @@ managementToolServer?.setServerControls({
                 widget_links: config.client?.widgetLinks || [],
             },
         }),
-        managers: {
-            errorManager:        managementToolServer?.errorManager        || null,
-            securityManager:     managementToolServer?.securityManager     || null,
-            notificationManager: managementToolServer?.notificationManager || null,
-            approvalManager:     managementToolServer?.approvalManager     || null,
-            pushNotificationService,
-            adminAuditFn:        () => managementToolServer?.adminManager?.getAuditLogs?.() || [],
-            logHub:              managementToolServer?.logHub              || null,
-        },
     });
     console.log(`[operator-control] Listening on ${operatorControl.socketPath}`);
 
@@ -761,6 +700,11 @@ managementToolServer?.setServerControls({
         }
 
         console.log('[server] Ready. DB Adapter initialized.');
+        try {
+            const dataDir = path.resolve(__dirname, '../data');
+            if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+            fs.writeFileSync(path.join(dataDir, 'server.pid'), String(process.pid), 'utf8');
+        } catch (_) {}
     });
 }
 
@@ -796,43 +740,11 @@ async function shutdown(signal) {
         postActionQueue.stop();
         postEventOutbox?.stop();
         realtimeConnections.closeAll();
-        // NMT は独立プロセスとして稼働し続けるためここでは stop しない
-        if (managementToolServer) {
-            managementToolServer = null;
-        }
-        if (operatorControl) {
-            await operatorControl.close();
-            operatorControl = null;
-        }
-        if (embeddedMailServer) {
-            await embeddedMailServer.close();
-            embeddedMailServer = null;
-        }
-        await new Promise((resolve) => {
-            if (!httpServer.listening) return resolve();
-            httpServer.close(() => resolve());
-        });
-        await new Promise((resolve) => {
-            if (!userFilesServer?.listening) return resolve();
-            userFilesServer.close(() => resolve());
-        });
-        userFilesServer = null;
-        await new Promise((resolve) => {
-            if (!postShareServer?.listening) return resolve();
-            postShareServer.close(() => resolve());
-        });
-        postShareServer = null;
-
-        if (dbAdapter && typeof dbAdapter.disconnect === 'function') {
-            await dbAdapter.disconnect();
-            console.log('[server] Database adapter disconnected.');
-        }
-
-        if (storageAdapter && typeof storageAdapter.disconnect === 'function') {
-            await storageAdapter.disconnect?.();
-        }
-
         console.log('[server] Graceful shutdown complete. Exiting.');
+        try {
+            const pidFile = path.resolve(__dirname, '../data/server.pid');
+            if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
+        } catch (_) {}
         process.exit(0);
     } catch (err) {
         console.error('[server] Error during shutdown:', err);
@@ -848,34 +760,12 @@ process.on('uncaughtException', (err) => {
         return;
     }
     console.error('[server] Uncaught Exception:', err);
-    if (managementToolServer) {
-        managementToolServer.recordError(err, { source: 'uncaughtException' });
-    } else {
-        ErrorManager.recordExternalError(err, { source: 'uncaughtException' });
-        LogHubManager.appendExternalLog({
-            type: 'error',
-            level: 'error',
-            source: 'uncaughtException',
-            message: `Uncaught Exception: ${err.message}`,
-            details: { stack: err.stack },
-        });
-    }
+    ErrorManager.recordExternalError(err, { source: 'uncaughtException' });
     shutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason) => {
     console.error('[server] Unhandled Rejection:', reason);
     const err = reason instanceof Error ? reason : new Error(String(reason));
-    if (managementToolServer) {
-        managementToolServer.recordError(err, { source: 'unhandledRejection' });
-    } else {
-        ErrorManager.recordExternalError(err, { source: 'unhandledRejection' });
-        LogHubManager.appendExternalLog({
-            type: 'error',
-            level: 'error',
-            source: 'unhandledRejection',
-            message: `Unhandled Rejection: ${err.message}`,
-            details: { stack: err.stack },
-        });
-    }
+    ErrorManager.recordExternalError(err, { source: 'unhandledRejection' });
 });

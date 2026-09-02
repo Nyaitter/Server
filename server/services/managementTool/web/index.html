@@ -7,349 +7,239 @@
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <!-- メインコンソール -->
-  <div id="app-container" class="app-screen">
+  <div id="app">
+    <!-- ヘッダー -->
     <header class="navbar">
-      <div class="nav-brand">Nyaitter Management Console</div>
-      <div class="nav-user" style="display:flex; align-items:center; gap:0.6rem;">
-        <button id="nav-approvals-btn" class="btn btn-secondary btn-sm hidden" style="color:#e3b341; border-color:#e3b341; font-size:11px;">
-          Requests <span id="pending-approvals-badge" class="badge" style="background:#e3b341; color:#0d1117;">0</span>
-        </button>
-        <button id="nav-notifications-btn" class="btn btn-secondary btn-sm" title="Notifications">
-          Notifications <span id="unread-notifications-badge" class="badge badge-danger hidden">0</span>
-        </button>
-        <span id="current-admin-name" style="font-weight:600;">Admin</span>
-        <button id="logout-btn" class="btn btn-secondary btn-sm">Logout</button>
+      <div class="nav-brand">
+        <span class="logo-icon">🐾</span>
+        <span class="logo-text">Nyaitter Management Tool</span>
+        <span id="server-status-pill" class="status-pill status-offline">サーバー停止中</span>
+      </div>
+      <div class="nav-actions">
+        <button id="refresh-all-btn" class="btn btn-secondary btn-sm" title="データを再読み込み">更新</button>
+        <button id="logout-btn" class="btn btn-secondary btn-sm hidden">ログアウト</button>
       </div>
     </header>
 
-    <div class="tabs-bar">
-      <button class="tab-btn active" data-tab="errors-tab">
-        Errors <span id="open-error-badge" class="badge hidden">0</span>
+    <!-- タブナビゲーション -->
+    <nav class="tabs-nav">
+      <button class="tab-btn active" data-tab="status">
+        <span class="tab-icon">📊</span> ステータス
       </button>
-      <button class="tab-btn" data-tab="logs-tab">Logs</button>
-      <button class="tab-btn" data-tab="admins-tab">Admins</button>
-      <button class="tab-btn" data-tab="security-tab">
-        Security <span id="security-alert-badge" class="badge badge-danger hidden">0</span>
+      <button class="tab-btn" data-tab="logs">
+        <span class="tab-icon">📝</span> ログ
       </button>
-      <button class="tab-btn" data-tab="server-tab">Server</button>
-      <button class="tab-btn" data-tab="settings-tab">Settings</button>
-    </div>
+      <button class="tab-btn" data-tab="errors">
+        <span class="tab-icon">🚨</span> エラー
+        <span id="errors-count-badge" class="badge badge-danger hidden">0</span>
+      </button>
+      <button class="tab-btn" data-tab="settings">
+        <span class="tab-icon">⚙️</span> 設定
+      </button>
+    </nav>
 
+    <!-- メインコンテンツ -->
     <main class="container">
-      <!-- 1. Errors -->
-      <section id="errors-tab" class="tab-pane active">
-        <div class="toolbar">
-          <div class="toolbar-group">
-            <select id="error-filter-status" class="form-control">
-              <option value="all">All Status</option>
-              <option value="open" selected>Open</option>
-              <option value="resolved">Resolved</option>
-              <option value="ignored">Ignored</option>
-            </select>
-            <input type="text" id="error-search-input" class="form-control" placeholder="Filter errors...">
-          </div>
-          <button id="refresh-errors-btn" class="btn btn-secondary btn-sm">Refresh</button>
-        </div>
-
-        <div id="errors-list" class="list-container">
-          <div class="empty-state">Loading...</div>
-        </div>
-      </section>
-
-      <!-- 1.5. Unified Real-time Logs -->
-      <section id="logs-tab" class="tab-pane">
-        <div class="panel">
-          <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
-            <div style="display:flex; align-items:center; gap:0.6rem;">
-              <h3>Live Stream Logs</h3>
-              <span id="ws-status-badge" class="tag tag-resolved" style="font-size:10px;">LIVE</span>
+      <!-- 1. ステータス -->
+      <section id="tab-status" class="tab-content active">
+        <div class="cards-grid">
+          <div class="card">
+            <div class="card-header">
+              <h3>NyaitterServer</h3>
+              <span id="server-badge" class="badge badge-offline">Offline</span>
             </div>
-            <div style="display:flex; align-items:center; gap:0.4rem;">
-              <button id="clear-unified-logs-btn" class="btn btn-secondary btn-sm" style="font-size:11px;">Clear</button>
-              <button id="reconnect-ws-btn" class="btn btn-secondary btn-sm" style="font-size:11px;">Reconnect</button>
-            </div>
-          </div>
-
-          <!-- フィルターバー -->
-          <div class="toolbar" style="margin-top:0.6rem; padding:0.6rem; background:#161b22; border-radius:6px; flex-wrap:wrap; gap:0.8rem;">
-            <div style="display:flex; align-items:center; gap:0.8rem; font-size:12px;">
-              <label class="checkbox-inline" style="color:var(--secondary-text-color);">
-                <input type="checkbox" id="filter-log-system"> System
-              </label>
-              <label class="checkbox-inline" style="color:#f85149; font-weight:600;">
-                <input type="checkbox" id="filter-log-error" checked> Error
-              </label>
-              <label class="checkbox-inline" style="color:#e3b341; font-weight:600;">
-                <input type="checkbox" id="filter-log-security" checked> Security
-              </label>
-              <label class="checkbox-inline" style="color:#58a6ff; font-weight:600;">
-                <input type="checkbox" id="filter-log-ai" checked> AI Actions
-              </label>
-              <label class="checkbox-inline" style="color:#a371f7; font-weight:600;">
-                <input type="checkbox" id="filter-log-admin" checked> Admin
-              </label>
-              <label class="checkbox-inline" style="color:#3fb950; font-weight:600;">
-                <input type="checkbox" id="filter-log-moderation" checked> AutoMod / Mod
-              </label>
-            </div>
-
-            <div style="display:flex; align-items:center; gap:0.4rem; margin-left:auto;">
-              <input type="text" id="unified-log-search" class="form-control" placeholder="Search logs..." style="width:160px; font-size:11px;">
-              <select id="unified-log-level" class="form-control" style="width:auto; font-size:11px;">
-                <option value="all">All Levels</option>
-                <option value="error">Error</option>
-                <option value="warn">Warn</option>
-                <option value="info">Info</option>
-              </select>
-            </div>
-          </div>
-
-          <!-- ログ表示コンテナ -->
-          <div id="unified-logs-container" class="code-box" style="height:500px; overflow-y:auto; margin-top:0.8rem; font-size:11px; line-height:1.5; font-family:monospace; background:#0d1117;">
-            <div class="empty-state">Waiting for logs...</div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 2. Admins -->
-      <section id="admins-tab" class="tab-pane">
-        <div class="panel">
-          <div class="panel-header">
-            <h3>Current Admins</h3>
-          </div>
-          <div id="admins-list" class="admin-grid">
-            <div class="empty-state">Loading...</div>
-          </div>
-        </div>
-
-        <div class="panel" style="margin-top: 1rem;">
-          <div class="panel-header">
-            <h3>User Search & Admin Grant</h3>
-          </div>
-          <div class="toolbar">
-            <input type="text" id="user-search-input" class="form-control" placeholder="User ID, SCID, or Name">
-            <button id="user-search-btn" class="btn btn-primary btn-sm">Search</button>
-          </div>
-          <div id="user-search-results" class="list-container" style="margin-top: 0.5rem;"></div>
-        </div>
-
-        <div class="panel" style="margin-top: 1rem;">
-          <div class="panel-header">
-            <h3>Audit Logs</h3>
-          </div>
-          <div id="admin-audit-logs" class="table-container"></div>
-        </div>
-      </section>
-
-      <!-- 3. Security -->
-      <section id="security-tab" class="tab-pane">
-        <div class="toolbar">
-          <select id="security-filter-severity" class="form-control">
-            <option value="all">All Severities</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-          <button id="refresh-security-btn" class="btn btn-secondary btn-sm">Refresh</button>
-        </div>
-
-        <div class="panel-header" style="margin-top: 0.5rem;">
-          <h3>Suspicious Events</h3>
-        </div>
-        <div id="security-events-list" class="list-container">
-          <div class="empty-state">Loading...</div>
-        </div>
-
-        <div class="panel-header" style="margin-top: 1.5rem;">
-          <h3>Recent Access Logs</h3>
-        </div>
-        <div id="recent-access-table" class="table-container">
-          <div class="empty-state">Loading...</div>
-        </div>
-      </section>
-
-      <!-- 4. Settings -->
-      <section id="settings-tab" class="tab-pane">
-        <div class="panel">
-          <div class="panel-header">
-            <h3>動作プリセット (Operating Preset)</h3>
-          </div>
-          <form id="settings-preset-form">
-            <div class="preset-selector" style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.8rem; margin-bottom:1rem;">
-              <label class="preset-card" id="preset-card-record">
-                <input type="radio" name="nmt-mode" value="record_only" id="mode-record-only">
-                <div class="preset-card-title">📝 記録のみ</div>
-                <div class="preset-card-desc">エラー検知時のログ保存と履歴記録のみ行います。AI解析・自動修正は実行しません。</div>
-              </label>
-              <label class="preset-card" id="preset-card-analysis">
-                <input type="radio" name="nmt-mode" value="analysis_only" id="mode-analysis-only">
-                <div class="preset-card-title">🔍 自動で解析</div>
-                <div class="preset-card-desc">エラー検知時にAIがファイルを読み取り専用で調査し、原因特定と修正案のレポートを作成します。</div>
-              </label>
-              <label class="preset-card" id="preset-card-auto">
-                <input type="radio" name="nmt-mode" value="auto" id="mode-auto">
-                <div class="preset-card-title">⚡ 自動 (Autonomous)</div>
-                <div class="preset-card-desc">AIが問題ファイルの修正、Issue/PR作成、セキュリティ昇格、報告書作成、サーバー再起動まで自律対応します。</div>
-              </label>
-            </div>
-
-            <!-- 自動モード時専用：ガイドライン設定 -->
-            <div id="guidelines-group" class="form-group" style="margin-top:1rem;">
-              <label for="setting-guidelines" style="font-weight:600;">開発ガイドライン / AI指示プロンプト (任意)</label>
-              <p style="font-size:11px; color:var(--secondary-text-color); margin-bottom:0.4rem;">
-                自動モードでAIがコード修正や報告書を作成する際に遵守すべきルールや追加指示を設定できます。
-              </p>
-              <textarea id="setting-guidelines" class="form-control" rows="4" placeholder="例：ai-rule.md のコーディング規約を厳守すること。テスト用ファイルをリポジトリ内に作成・残置しないこと。"></textarea>
-            </div>
-
-            <div class="form-group" style="margin-top:1rem;">
-              <label for="setting-ai-model">AI Model</label>
-              <select id="setting-ai-model" class="form-control"></select>
-            </div>
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.8rem;">
-              <div class="form-group">
-                <label for="setting-gemini-key">Gemini API Key</label>
-                <input type="password" id="setting-gemini-key" class="form-control" placeholder="Optional">
+            <div class="card-body">
+              <div class="metric-row">
+                <span class="metric-label">プロセス状態</span>
+                <span id="server-process-status" class="metric-value">停止中</span>
               </div>
-              <div class="form-group">
-                <label for="setting-openai-key">OpenAI API Key</label>
-                <input type="password" id="setting-openai-key" class="form-control" placeholder="Optional">
+              <div class="metric-row">
+                <span class="metric-label">プロセスID (PID)</span>
+                <span id="server-pid" class="metric-value">-</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">ポート番号</span>
+                <span id="server-port" class="metric-value">3000</span>
               </div>
             </div>
+          </div>
 
-            <button type="submit" class="btn btn-primary btn-sm" style="margin-top:0.5rem;">Save Preset &amp; AI Settings</button>
-          </form>
+          <div class="card">
+            <div class="card-header">
+              <h3>NMT 管理ツール</h3>
+              <span class="badge badge-online">Online</span>
+            </div>
+            <div class="card-body">
+              <div class="metric-row">
+                <span class="metric-label">プロセスID (PID)</span>
+                <span id="nmt-pid" class="metric-value">-</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">稼働時間</span>
+                <span id="nmt-uptime" class="metric-value">-</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">ポート番号</span>
+                <span id="nmt-port" class="metric-value">4040</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3>データベース</h3>
+              <span id="db-badge" class="badge badge-neutral">-</span>
+            </div>
+            <div class="card-body">
+              <div class="metric-row">
+                <span class="metric-label">接続状態</span>
+                <span id="db-status" class="metric-value">-</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">エラー情報</span>
+                <span id="db-error" class="metric-value text-muted">なし</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3>システムリソース</h3>
+              <span class="badge badge-neutral">Node.js</span>
+            </div>
+            <div class="card-body">
+              <div class="metric-row">
+                <span class="metric-label">NMT メモリ使用量</span>
+                <span id="sys-memory" class="metric-value">- MB</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">NMT CPU 使用率</span>
+                <span id="sys-cpu" class="metric-value">- %</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">Node バージョン</span>
+                <span id="sys-node" class="metric-value">-</span>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div class="panel" style="margin-top: 1rem;">
+        <!-- サーバー操作コントロール -->
+        <div class="panel control-panel">
           <div class="panel-header">
-            <h3>GitHub &amp; Git Integration</h3>
+            <h3>プロセス操作</h3>
           </div>
-          <form id="settings-github-form">
-            <p style="font-size:11px; color:var(--secondary-text-color); margin-bottom:0.6rem;">
-              GitHub Token を設定すると、自動モード時にAIが自律的に Issue や Pull Request を作成します。また、コミット時のユーザー情報を設定できます。
-            </p>
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.8rem;">
-              <div class="form-group">
-                <label for="setting-github-token">GitHub Token</label>
-                <input type="password" id="setting-github-token" class="form-control" placeholder="ghp_...">
-              </div>
-              <div class="form-group">
-                <label for="setting-github-repo">Repository (owner/repo)</label>
-                <input type="text" id="setting-github-repo" class="form-control" placeholder="Nyaitter/Server">
-              </div>
-            </div>
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.8rem; margin-top:0.6rem;">
-              <div class="form-group">
-                <label for="setting-git-author-name">Commit Author Name</label>
-                <input type="text" id="setting-git-author-name" class="form-control" placeholder="nyantorusabu">
-              </div>
-              <div class="form-group">
-                <label for="setting-git-author-email">Commit Author Email</label>
-                <input type="email" id="setting-git-author-email" class="form-control" placeholder="nyantorusabu@outlook.jp">
-              </div>
-            </div>
-            <button type="submit" class="btn btn-primary btn-sm" style="margin-top:0.5rem;">Save GitHub &amp; Git Settings</button>
-          </form>
-        </div>
-
-        <div class="panel" style="margin-top: 1rem;">
-          <div class="panel-header">
-            <h3>Safety Guardrails</h3>
-          </div>
-          <form id="settings-guardrails-form">
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="guard-git-tracked" checked>
-                Restrict to Git-tracked files
-              </label>
-            </div>
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="guard-syntax-validation" checked>
-                Automated syntax validation &amp; rollback
-              </label>
-            </div>
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="guard-block-env" checked>
-                Block .env and sensitive credential modifications
-              </label>
-            </div>
-            <div class="form-group">
-              <label class="checkbox-inline">
-                <input type="checkbox" id="guard-block-commands" checked>
-                Block dangerous shell commands
-              </label>
-            </div>
-            <button type="submit" class="btn btn-primary btn-sm">Save Guardrails</button>
-          </form>
-        </div>
-
-        <div class="panel" style="margin-top: 1rem;">
-          <div class="panel-header">
-            <h3>Notifications &amp; Alerts</h3>
-          </div>
-          <div>
-            <p style="font-size:12px; color:var(--secondary-text-color); margin-bottom:0.6rem;">
-              Receive desktop browser alerts for errors, approval requests, and security events.
-            </p>
-            <button id="enable-browser-notifications-btn" class="btn btn-secondary btn-sm">
-              Enable Browser Notifications
+          <div class="panel-body control-actions">
+            <button id="btn-server-restart" class="btn btn-primary">
+              <span class="btn-icon">🔄</span> サーバー再起動
+            </button>
+            <button id="btn-server-stop" class="btn btn-danger">
+              <span class="btn-icon">⏹️</span> サーバー停止
+            </button>
+            <button id="btn-server-start" class="btn btn-success">
+              <span class="btn-icon">▶️</span> サーバー起動
+            </button>
+            <button id="btn-nmt-restart" class="btn btn-warning">
+              <span class="btn-icon">🔁</span> NMT 再起動
             </button>
           </div>
+          <div id="control-message" class="alert hidden"></div>
         </div>
       </section>
 
-      <!-- 5. Server Management -->
-      <section id="server-tab" class="tab-pane">
-        <!-- サーバー状態 & 操作 -->
-        <div class="panel">
-          <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
-            <h3>Server Status & Control</h3>
-            <div>
-              <button id="nmt-restart-btn" class="btn btn-secondary btn-sm" style="color:#58a6ff; border-color:#58a6ff; margin-right:0.4rem;">Restart NMT</button>
-              <button id="server-restart-btn" class="btn btn-secondary btn-sm" style="color:#e3b341; border-color:#e3b341;">Restart Server</button>
-              <button id="server-stop-btn" class="btn btn-secondary btn-sm" style="color:#f85149; border-color:#f85149; margin-left:0.4rem;">Stop Server</button>
+      <!-- 2. ログ -->
+      <section id="tab-logs" class="tab-content">
+        <div class="panel logs-panel">
+          <div class="panel-header logs-toolbar">
+            <div class="toolbar-left">
+              <span id="ws-status" class="status-indicator live">LIVE</span>
+              <select id="log-level-filter" class="select-control">
+                <option value="all">すべてのレベル</option>
+                <option value="info">INFO</option>
+                <option value="warn">WARN</option>
+                <option value="error">ERROR</option>
+              </select>
+              <input type="text" id="log-search-input" class="input-control" placeholder="ログを検索...">
+            </div>
+            <div class="toolbar-right">
+              <label class="checkbox-label">
+                <input type="checkbox" id="log-autoscroll" checked> 自動スクロール
+              </label>
+              <button id="btn-clear-logs" class="btn btn-secondary btn-sm">ログ消去</button>
             </div>
           </div>
-          <div id="server-status-grid" class="admin-grid" style="margin-top:0.6rem;">
-            <div class="empty-state">Loading status...</div>
+          <div id="terminal-logs" class="terminal-container">
+            <div class="empty-state">ログを待機中...</div>
           </div>
         </div>
+      </section>
 
-        <!-- .env & config.json エディタ -->
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
-          <div class="panel">
-            <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
-              <h3>.env Editor</h3>
-              <button id="save-env-btn" class="btn btn-primary btn-sm">Save .env</button>
+      <!-- 3. エラー -->
+      <section id="tab-errors" class="tab-content">
+        <div class="panel">
+          <div class="panel-header errors-toolbar">
+            <div class="toolbar-left">
+              <select id="error-status-filter" class="select-control">
+                <option value="all">すべての状態</option>
+                <option value="open" selected>未解決のみ</option>
+                <option value="resolved">解決済み</option>
+                <option value="ignored">無視</option>
+              </select>
+              <input type="text" id="error-search-input" class="input-control" placeholder="エラーを検索...">
             </div>
-            <textarea id="server-env-editor" class="form-control code-box" style="height:320px; width:100%; margin-top:0.6rem; font-family:monospace; resize:vertical; font-size:12px;"></textarea>
+            <div class="toolbar-right">
+              <button id="btn-clear-errors" class="btn btn-secondary btn-sm">全件消去</button>
+              <button id="btn-refresh-errors" class="btn btn-secondary btn-sm">更新</button>
+            </div>
           </div>
+          <div id="errors-list" class="errors-container">
+            <div class="empty-state">エラーはありません</div>
+          </div>
+        </div>
+      </section>
 
-          <div class="panel">
-            <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
-              <h3>config.json Editor</h3>
-              <button id="save-config-json-btn" class="btn btn-primary btn-sm">Save config.json</button>
+      <!-- 4. 設定 -->
+      <section id="tab-settings" class="tab-content">
+        <div class="panel settings-panel">
+          <div class="panel-header settings-toolbar">
+            <div class="settings-tabs">
+              <button class="subtab-btn active" data-subtab="env">.env 環境変数</button>
+              <button class="subtab-btn" data-subtab="config">config.json 設定</button>
             </div>
-            <textarea id="server-config-json-editor" class="form-control code-box" style="height:320px; width:100%; margin-top:0.6rem; font-family:monospace; resize:vertical; font-size:12px;"></textarea>
+            <div class="toolbar-right">
+              <button id="btn-save-settings" class="btn btn-primary btn-sm">設定を保存</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div id="subtab-env" class="subtab-content active">
+              <textarea id="env-editor" class="code-editor" spellcheck="false" placeholder=".env の内容を読み込み中..."></textarea>
+            </div>
+            <div id="subtab-config" class="subtab-content">
+              <textarea id="config-editor" class="code-editor" spellcheck="false" placeholder="config.json の内容を読み込み中..."></textarea>
+            </div>
+            <div id="settings-message" class="alert hidden"></div>
           </div>
         </div>
       </section>
     </main>
-  </div>
 
-  <!-- Detail Modal -->
-  <div id="detail-modal" class="modal-overlay hidden">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3 id="modal-title">Detail</h3>
-        <button id="modal-close-btn" class="modal-close-btn">&times;</button>
+    <!-- ログインモーダル -->
+    <div id="login-modal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>管理者ログイン</h3>
+        </div>
+        <div class="modal-body">
+          <form id="login-form">
+            <div class="form-group">
+              <label for="login-password">パスワード</label>
+              <input type="password" id="login-password" class="input-control" placeholder="NMT パスワードを入力" autofocus>
+            </div>
+            <div id="login-error" class="alert alert-danger hidden"></div>
+            <button type="submit" class="btn btn-primary btn-block">ログイン</button>
+          </form>
+        </div>
       </div>
-      <div id="modal-body" class="modal-body"></div>
-      <div class="modal-footer" id="modal-footer"></div>
     </div>
   </div>
 

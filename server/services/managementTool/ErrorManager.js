@@ -2,361 +2,29 @@
 
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
-const { execFile } = require('child_process');
-const { sendNmtEvent } = require('../../utils/nmtEventBridge');
 
 const MAX_ERROR_RECORDS = 500;
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const ERRORS_FILE = path.join(DATA_DIR, 'nmt-errors.json');
-const DISMISSED_ERRORS_FILE = path.join(DATA_DIR, 'nmt-errors-dismissed.json');
-const PROJECT_ROOT = path.resolve(__dirname, '../../../');
-
-function execGit(args, cwd = PROJECT_ROOT) {
-  return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout: 30000 }, (error, stdout, stderr) => {
-      if (error) {
-        error.stderr = stderr;
-        return reject(error);
-      }
-      resolve(stdout.trim());
-    });
-  });
-}
 
 class ErrorManager {
-  constructor({ aiService, config = {}, notificationManager = null, approvalManager = null } = {}) {
-    this.aiService = aiService;
-    this.notificationManager = notificationManager;
-    this.approvalManager = approvalManager;
-    this.serverControl = null;
-    this.guidelines = config.guidelines || process.env.NMT_GUIDELINES || process.env.NMT_AUTO_GUIDELINES || '';
-    this.mode = (() => {
-      const explicit = process.env.NMT_MODE || config.mode;
-      if (['record_only', 'analysis_only', 'auto'].includes(explicit)) return explicit;
-      if (process.env.NMT_AUTO_FIX === 'true' || config.autoFix) return 'auto';
-      if (process.env.NMT_AUTO_ANALYSIS === 'true' || config.autoAnalysis) return 'analysis_only';
-      return 'record_only';
-    })();
-    this.autoAnalysis = this.mode === 'analysis_only' || this.mode === 'auto';
-    this.autoFix = this.mode === 'auto';
-    this.autoIssue = process.env.NMT_AUTO_ISSUE !== undefined ? process.env.NMT_AUTO_ISSUE === 'true' : (config.autoIssue ?? true);
-    this.autoPr = process.env.NMT_AUTO_PR !== undefined ? process.env.NMT_AUTO_PR === 'true' : (config.autoPr ?? true);
-    this.requireApprovalForEdit = process.env.NMT_REQUIRE_APPROVAL_EDIT !== undefined ? process.env.NMT_REQUIRE_APPROVAL_EDIT === 'true' : (config.requireApprovalForEdit ?? false);
-    this.githubToken = process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || config.githubToken || '';
-    this.githubRepo = process.env.NMT_GITHUB_REPO || process.env.GITHUB_REPO || config.githubRepo || 'Nyaitter/Server';
-    this.gitAuthorName = process.env.NMT_GIT_AUTHOR_NAME || process.env.GIT_AUTHOR_NAME || config.gitAuthorName || 'nyantorusabu';
-    this.gitAuthorEmail = process.env.NMT_GIT_AUTHOR_EMAIL || process.env.GIT_AUTHOR_EMAIL || config.gitAuthorEmail || 'nyantorusabu@outlook.jp';
+  constructor() {
     this.errors = [];
-    this.dismissedPatterns = new Set();
-    this._lastFileMtime = 0;
+    this.logHub = null;
     this._load();
-    this._loadDismissed();
-  }
-
-  setServerControl(serverControl) {
-    this.serverControl = serverControl;
-  }
-
-  setNotificationManager(notificationManager) {
-    this.notificationManager = notificationManager;
-  }
-
-  setAiService(aiService) {
-    this.aiService = aiService;
-  }
-
-  setApprovalManager(approvalManager) {
-    this.approvalManager = approvalManager;
-  }
-
-  setSecurityManager(securityManager) {
-    this.securityManager = securityManager;
-  }
-
-  static shouldEscalateToSecurity(analysis) {
-    return /(?:^|\n)\s*NMT_SECURITY_ESCALATE\s*:\s*true\s*(?:\n|$)/i.test(String(analysis?.content || ''));
-  }
-
-  static hasDetectedProblem(analysis) {
-    return /(?:^|\n)\s*NMT_PROBLEM_DETECTED\s*:\s*true\s*(?:\n|$)/i.test(String(analysis?.content || ''));
-  }
-
-  static hasActionRequired(analysis) {
-    return /NMT_ACTION_REQUIRED\s*:\s*true/i.test(String(analysis?.content || ''));
-  }
-
-  static hasNoActionRequired(analysis) {
-    return /NMT_ACTION_REQUIRED\s*:\s*false/i.test(String(analysis?.content || ''));
-  }
-
-  async escalateToSecurity(errorId) {
-    const record = this.errors.find((error) => error.id === errorId);
-    if (!record || !this.securityManager) return null;
-    if (record.securityIncidentId) return record.securityIncidentId;
-    const incident = await this.securityManager.recordIncidentFromError(record);
-    if (!incident) return null;
-    record.securityIncidentId = incident.id;
-    this._save();
-    this._broadcast(record, 'error_updated');
-    return incident.id;
   }
 
   setLogHub(logHub) {
     this.logHub = logHub;
   }
 
-  static isNoiseError(message, stack = '', context = {}) {
-    const text = String(message || '');
-    const stackStr = String(stack || '');
-    const source = String(context.source || '');
-
-    const noisePatterns = [
-      { pattern: /Warning:/i, context: 'node' },
-      { pattern: /DeprecationWarning/i, context: 'node' },
-      { pattern: /ExperimentalWarning/i, context: 'node' },
-      { pattern: /NodeVersionSupportWarning/i },
-      { pattern: /The AWS SDK for JavaScript/i },
-      { pattern: /a\.co\//i },
-      { pattern: /More information can be found at/i },
-      { pattern: /will require node/i },
-      { pattern: /punycode.*deprecated/i },
-      { pattern: /require\(\) of .* is deprecated/i },
-      { pattern: /process\.binding.*deprecated/i },
-      { pattern: /crypto.*timingSafeEqual.*deprecated/i },
-    ];
-
-    for (const { pattern, context: noiseContext } of noisePatterns) {
-      if (pattern.test(text) || pattern.test(stackStr)) {
-        if (!noiseContext || source.includes(noiseContext) || text.includes(noiseContext) || stackStr.includes(noiseContext)) {
-          return true;
-        }
-      }
-    }
-
-    if (
-      source === 'nmt-console' ||
-      source.includes('managementTool') ||
-      text.includes('[NMT') ||
-      text.includes('[NyaitterManagementTool') ||
-      text.includes('opencode') ||
-      text.includes('Opencode') ||
-      text.includes('nmt-') ||
-      text.includes('nmt.') ||
-      text.includes('あなたはNyaitter') ||
-      text.includes('自動修復専門エージェント') ||
-      text.includes('エラー解析専門エージェント') ||
-      text.includes('【厳格な') ||
-      text.includes('【出力形式】') ||
-      text.includes('【エラー情報】') ||
-      text.includes('【重要：') ||
-      text.includes('thoughtSignature') ||
-      text.includes('"candidates"') ||
-      text.includes('"parts"') ||
-      text.includes('candidates')
-    ) {
-      return true;
-    }
-
-    if (stackStr.includes('services/managementTool') ||
-        stackStr.includes('AiAnalysisService') ||
-        stackStr.includes('ErrorManager') ||
-        stackStr.includes('LogHubManager') ||
-        stackStr.includes('standalone.js')) {
-      return true;
-    }
-
-    return false;
-  }
-
-  static classifyError(message, stack = '', context = {}) {
-    const text = String(message || '').toLowerCase();
-    const stackStr = String(stack || '').toLowerCase();
-    const source = String(context.source || '').toLowerCase();
-
-    if (text.includes('syntaxerror') || text.includes('syntax error') ||
-        text.includes('unexpected token') || text.includes('unexpected end of input') ||
-        text.includes('unexpected identifier') || text.includes('illegal character') ||
-        text.includes('unterminated') || text.includes('invalid or unexpected token')) {
-      return { category: 'syntax', severity: 'high', isStartup: false };
-    }
-
-    if (text.includes('cannot find module') || text.includes('module not found') ||
-        text.includes('require.*failed') || text.includes('error: cannot find module')) {
-      return { category: 'config', severity: 'high', isStartup: true };
-    }
-
-    if (text.includes('config') && (text.includes('invalid') || text.includes('parse') || text.includes('json'))) {
-      return { category: 'config', severity: 'high', isStartup: true };
-    }
-
-    if (text.includes('eaddrinuse') || text.includes('address already in use') ||
-        text.includes('eacces') || text.includes('permission denied') ||
-        text.includes('enotfound') || text.includes('getaddrinfo') ||
-        text.includes('econnrefused') || text.includes('connection refused')) {
-      return { category: 'startup', severity: 'high', isStartup: true };
-    }
-
-    if (source.includes('error-handler') ||
-        text.includes('unhandled') ||
-        text.includes('uncaught') ||
-        text.includes('internal server error')) {
-      return { category: 'runtime', severity: 'high', isStartup: false };
-    }
-
-    if (text.includes('timeout') || text.includes('etimedout') ||
-        text.includes('socket hang up') || text.includes('econnreset')) {
-      return { category: 'runtime', severity: 'medium', isStartup: false };
-    }
-
-    if (text.includes('validation') || text.includes('invalid input') ||
-        text.includes('bad request') || text.includes('400')) {
-      return { category: 'runtime', severity: 'low', isStartup: false };
-    }
-
-    return { category: 'unknown', severity: 'medium', isStartup: false };
-  }
-
-  static isDismissedByPattern(message, stack = '', dismissedPatterns) {
-    const text = String(message || '');
-    const stackStr = String(stack || '');
-    for (const pattern of dismissedPatterns) {
-      try {
-        const regex = new RegExp(pattern, 'i');
-        if (regex.test(text) || regex.test(stackStr)) {
-          return true;
-        }
-      } catch (_) {
-        if (text.includes(pattern) || stackStr.includes(pattern)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  static _saveAtomic(filepath, data) {
-    const tmp = `${filepath}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-    fs.renameSync(tmp, filepath);
-  }
-
-  static recordExternalError(err, context = {}) {
-    if (!err) return null;
-    const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
-    const stack = typeof err === 'string' ? '' : err.stack || '';
-    if (ErrorManager.isNoiseError(message, stack, context)) return null;
-
-    sendNmtEvent({
-      type: 'error',
-      error: {
-        message,
-        stack,
-        context,
-      },
-    });
-    return true;
-  }
-
-  _loadDismissed() {
-    try {
-      if (fs.existsSync(DISMISSED_ERRORS_FILE)) {
-        const raw = fs.readFileSync(DISMISSED_ERRORS_FILE, 'utf8').trim();
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            for (const pattern of parsed) {
-              this.dismissedPatterns.add(pattern);
-            }
-          }
-        }
-      }
-    } catch (_) {}
-  }
-
-  _saveDismissed() {
-    try {
-      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-      const patterns = Array.from(this.dismissedPatterns);
-      ErrorManager._saveAtomic(DISMISSED_ERRORS_FILE, patterns);
-    } catch (_) {}
-  }
-
-  _broadcast(record, eventType = 'error_updated') {
-    if (this.logHub && typeof this.logHub.broadcastError === 'function') {
-      try {
-        this.logHub.broadcastError(record, eventType);
-      } catch (_) {}
-    }
-  }
-
-  checkNewErrors() {
-    try {
-      if (!fs.existsSync(ERRORS_FILE)) return;
-      const knownIds = new Set(this.errors.map((e) => e.id));
-      this._load();
-
-      const newRecords = this.errors.filter((e) => !knownIds.has(e.id));
-      for (const newRecord of newRecords) {
-        this._broadcast(newRecord, 'error_created');
-      }
-
-      if (!this.aiService) return;
-
-      const isAuto = this.mode === 'auto';
-      const isAnalysisOnly = this.mode === 'analysis_only';
-
-      if (isAuto) {
-        const unhandled = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing && !e.fixing && !e.dismissed);
-        for (const record of unhandled) {
-          this.triggerAuto(record.id).catch((e) => console.warn('[NMT-Errors] Auto mode error:', e.message));
-        }
-      } else if (isAnalysisOnly) {
-        const unanalyzed = this.errors.filter((e) => e.status === 'open' && !e.analysis && !e.analyzing && !e.dismissed);
-        for (const record of unanalyzed) {
-          this.triggerAnalysis(record.id).catch((e) => console.warn('[NMT-Errors] Auto analysis error:', e.message));
-        }
-      }
-    } catch (_) {}
-  }
-
-  updateConfig(config = {}) {
-    if (config.mode !== undefined) {
-      this.mode = config.mode;
-      this.autoFix = this.mode === 'auto';
-      this.autoAnalysis = this.mode === 'analysis_only' || this.mode === 'auto';
-    } else {
-      if (config.autoFix !== undefined) this.autoFix = Boolean(config.autoFix);
-      if (config.autoAnalysis !== undefined) this.autoAnalysis = Boolean(config.autoAnalysis);
-      this.mode = this.autoFix ? 'auto' : this.autoAnalysis ? 'analysis_only' : 'record_only';
-    }
-    if (config.guidelines !== undefined) this.guidelines = String(config.guidelines);
-    if (config.autoIssue !== undefined) this.autoIssue = Boolean(config.autoIssue);
-    if (config.autoPr !== undefined) this.autoPr = Boolean(config.autoPr);
-    if (config.requireApprovalForEdit !== undefined) this.requireApprovalForEdit = Boolean(config.requireApprovalForEdit);
-    if (config.githubToken !== undefined) this.githubToken = config.githubToken;
-    if (config.githubRepo !== undefined) this.githubRepo = config.githubRepo;
-    if (config.gitAuthorName !== undefined) this.gitAuthorName = config.gitAuthorName;
-    if (config.gitAuthorEmail !== undefined) this.gitAuthorEmail = config.gitAuthorEmail;
-  }
-
   _load() {
     try {
-      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
       if (fs.existsSync(ERRORS_FILE)) {
-        this._lastFileMtime = fs.statSync(ERRORS_FILE).mtimeMs;
-        const raw = fs.readFileSync(ERRORS_FILE, 'utf8').trim();
-        if (!raw) return;
+        const raw = fs.readFileSync(ERRORS_FILE, 'utf8');
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          this.errors = parsed.slice(-MAX_ERROR_RECORDS).map((e) => {
-            if (e.analyzing && !e.analysis) e.analyzing = false;
-            if (e.fixing && !e.analysis) e.fixing = false;
-            if (!e.classification) {
-              e.classification = ErrorManager.classifyError(e.message, e.stack, e.context);
-            }
-            return e;
-          });
+          this.errors = parsed.slice(0, MAX_ERROR_RECORDS);
         }
       }
     } catch (_) {
@@ -367,495 +35,166 @@ class ErrorManager {
   _save() {
     try {
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-      ErrorManager._saveAtomic(ERRORS_FILE, this.errors.slice(-MAX_ERROR_RECORDS));
-      if (fs.existsSync(ERRORS_FILE)) {
-        this._lastFileMtime = fs.statSync(ERRORS_FILE).mtimeMs;
-      }
+      fs.writeFileSync(ERRORS_FILE, JSON.stringify(this.errors, null, 2), 'utf8');
     } catch (_) {}
   }
 
-  static isSameError(record, message, stack = '') {
-    if (!record) return false;
-    if (record.message === message) return true;
-    if (record.stack && stack && record.stack.trim() === stack.trim()) return true;
-    return false;
+  static recordExternalError(err, context = {}) {
+    if (!err) return null;
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      let list = [];
+      if (fs.existsSync(ERRORS_FILE)) {
+        try {
+          const raw = fs.readFileSync(ERRORS_FILE, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) list = parsed;
+        } catch (_) {}
+      }
+
+      const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
+      const stack = typeof err === 'object' && err.stack ? err.stack : '';
+      const name = typeof err === 'object' && err.name ? err.name : 'Error';
+      const source = context.source || 'server';
+      const now = new Date().toISOString();
+
+      const existing = list.find((e) => (
+        e.status === 'open' &&
+        e.message === message &&
+        e.source === source &&
+        Date.now() - new Date(e.lastOccurredAt || e.timestamp).getTime() < 60000
+      ));
+
+      if (existing) {
+        existing.count = (existing.count || 1) + 1;
+        existing.lastOccurredAt = now;
+        existing.context = { ...existing.context, ...context };
+      } else {
+        const item = {
+          id: `err_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          name,
+          message,
+          stack,
+          source,
+          context,
+          count: 1,
+          status: 'open',
+          timestamp: now,
+          lastOccurredAt: now,
+        };
+        list.unshift(item);
+      }
+
+      if (list.length > MAX_ERROR_RECORDS) {
+        list = list.slice(0, MAX_ERROR_RECORDS);
+      }
+      fs.writeFileSync(ERRORS_FILE, JSON.stringify(list, null, 2), 'utf8');
+    } catch (_) {}
   }
 
-  async recordError(err, context = {}) {
+  recordError(err, context = {}) {
     if (!err) return null;
 
     const message = typeof err === 'string' ? err : err.message || 'Unknown Error';
-    const stack = typeof err === 'string' ? '' : err.stack || '';
+    const stack = typeof err === 'object' && err.stack ? err.stack : '';
+    const name = typeof err === 'object' && err.name ? err.name : 'Error';
+    const source = context.source || 'server';
+    const now = new Date().toISOString();
 
-    if (ErrorManager.isNoiseError(message, stack, context)) return null;
-
-    if (ErrorManager.isDismissedByPattern(message, stack, this.dismissedPatterns)) {
-      return null;
-    }
-
-    const existing = this.errors.find(
-      (e) => (e.status === 'open' || !e.dismissed) && ErrorManager.isSameError(e, message, stack)
-    );
+    const existing = this.errors.find((e) => (
+      e.status === 'open' &&
+      e.message === message &&
+      e.source === source &&
+      Date.now() - new Date(e.lastOccurredAt || e.timestamp).getTime() < 60000
+    ));
 
     if (existing) {
-      existing.occurrences = (existing.occurrences || 1) + 1;
-      existing.lastOccurredAt = new Date().toISOString();
+      existing.count = (existing.count || 1) + 1;
+      existing.lastOccurredAt = now;
+      existing.context = { ...existing.context, ...context };
       this._save();
-      return null;
+      return existing;
     }
 
-    const id = `err_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const classification = ErrorManager.classifyError(message, stack, context);
-    const errorRecord = {
-      id,
-      timestamp: new Date().toISOString(),
-      lastOccurredAt: new Date().toISOString(),
-      occurrences: 1,
+    const errorItem = {
+      id: `err_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
       message,
       stack,
-      context: {
-        method: context.method || null,
-        url: context.url || context.path || null,
-        userId: context.userId ?? null,
-        ip: context.ip || null,
-        userAgent: context.userAgent || null,
-        requestId: context.requestId || null,
-      },
+      source,
+      context,
+      count: 1,
       status: 'open',
-      analysis: null,
-      actionRequired: null,
-      issueUrl: null,
-      prUrl: null,
-      fixed: false,
-      modifiedFiles: [],
-      classification,
-      dismissed: false,
-      dismissReason: null,
+      timestamp: now,
+      lastOccurredAt: now,
     };
 
-    this.errors.unshift(errorRecord);
-    if (this.errors.length > MAX_ERROR_RECORDS) this.errors.pop();
+    this.errors.unshift(errorItem);
+    if (this.errors.length > MAX_ERROR_RECORDS) {
+      this.errors = this.errors.slice(0, MAX_ERROR_RECORDS);
+    }
     this._save();
-    this._broadcast(errorRecord, 'error_created');
 
-    if (this.notificationManager) {
-      this.notificationManager.broadcast({
+    if (this.logHub && typeof this.logHub.addLog === 'function') {
+      this.logHub.addLog({
         type: 'error',
-        title: `🚨 新規エラー検知: ${message.slice(0, 60)}`,
-        message: `${context.method || 'GET'} ${context.url || ''} でエラーが発生しました。`,
-        errorId: id,
-        data: { id, message, timestamp: errorRecord.timestamp, classification },
+        level: 'error',
+        message: `[Error] ${message}${context.url ? ` (${context.method || 'GET'} ${context.url})` : ''}`,
+        source,
+        details: { stack, context },
       });
     }
 
-    if (this.mode === 'auto') {
-      this.triggerAuto(id).catch((e) => console.warn('[NMT-Errors] Auto mode error:', e.message));
-    } else if (this.mode === 'analysis_only' && this.aiService) {
-      this.triggerAnalysis(id).catch((e) => console.warn('[NMT-Errors] Auto AI analysis error:', e.message));
-    }
-
-    return errorRecord;
+    return errorItem;
   }
 
-  async triggerAnalysis(errorId) {
-    const record = this.errors.find((e) => e.id === errorId);
-    if (!record || !this.aiService) return null;
-    if (record.analyzing || record.dismissed) return null;
-
-    try {
-      record.analyzing = true;
-      this._save();
-      this._broadcast(record, 'error_updated');
-
-      const result = await this.aiService.analyzeError(record, { autoFix: false, guidelines: this.guidelines });
-      record.analysis = {
-        model: result?.model || 'AI Analyzer',
-        content: result?.content || '解析結果を取得できませんでした。',
-        provider: result?.provider || 'unknown',
-        analyzedAt: new Date().toISOString(),
-      };
-      record.actionRequired = ErrorManager.hasActionRequired(record.analysis)
-        ? true
-        : ErrorManager.hasNoActionRequired(record.analysis) ? false : null;
-      record.problemDetected = ErrorManager.hasDetectedProblem(record.analysis);
-      if (record.actionRequired === false) {
-        this.dismissError(errorId, 'AI marked as not requiring action');
-      }
-      this._save();
-
-      if (ErrorManager.shouldEscalateToSecurity(record.analysis)) {
-        await this.escalateToSecurity(errorId);
-      }
-
-      if (this.autoIssue && record.problemDetected && this.githubToken && !record.issueUrl) {
-        this.createGitHubIssue(errorId).catch((e) => console.warn('[NMT-Errors] Auto issue creation error:', e.message));
-      }
-
-      return record.analysis;
-    } catch (err) {
-      console.warn('[NMT-Errors] AI analysis failed:', err.message);
-      record.analysis = {
-        model: 'Analysis Error',
-        content: `AI解析に失敗しました: ${err.message}`,
-        provider: 'error',
-        analyzedAt: new Date().toISOString(),
-      };
-      record.problemDetected = false;
-
-      if (ErrorManager.shouldEscalateToSecurity(record.analysis)) {
-        await this.escalateToSecurity(errorId);
-      }
-      this._save();
-      return record.analysis;
-    } finally {
-      record.analyzing = false;
-      this._save();
-      this._broadcast(record, 'error_updated');
-    }
-  }
-
-  async triggerAuto(errorId) {
-    const record = this.errors.find((e) => e.id === errorId);
-    if (!record || !this.aiService) return null;
-    if (record.fixing || record.dismissed) return null;
-
-    try {
-      record.fixing = true;
-      this._save();
-      this._broadcast(record, 'error_updated');
-
-      const beforeDiff = await execGit(['diff', '--name-only']).catch(() => '');
-
-      const result = await this.aiService.analyzeError(record, { autoFix: true, guidelines: this.guidelines });
-
-      record.analysis = {
-        model: result.model,
-        content: result.content,
-        provider: result.provider,
-        analyzedAt: new Date().toISOString(),
-      };
-      record.actionRequired = ErrorManager.hasActionRequired(record.analysis)
-        ? true
-        : ErrorManager.hasNoActionRequired(record.analysis) ? false : null;
-      record.problemDetected = ErrorManager.hasDetectedProblem(record.analysis);
-
-      if (ErrorManager.shouldEscalateToSecurity(record.analysis)) {
-        await this.escalateToSecurity(errorId);
-      }
-
-      const afterDiff = await execGit(['diff', '--name-only']).catch(() => '');
-      const modifiedFiles = afterDiff.split('\n').map((s) => s.trim()).filter(Boolean);
-
-      if (modifiedFiles.length > 0) {
-        let syntaxOk = true;
-        for (const file of modifiedFiles) {
-          if (file.endsWith('.js') || file.endsWith('.mjs')) {
-            try {
-              await new Promise((resolve, reject) => {
-                execFile('node', ['--check', path.resolve(PROJECT_ROOT, file)], (err) => (err ? reject(err) : resolve()));
-              });
-            } catch (err) {
-              console.error(`[NMT-Auto] Syntax error in ${file}, rolling back:`, err.message);
-              syntaxOk = false;
-              break;
-            }
-          }
-        }
-
-        if (!syntaxOk) {
-          await execGit(['checkout', '--', ...modifiedFiles]).catch(() => {});
-          record.fixError = '自動修正コードに構文エラーが検出されたためロールバックしました。';
-        } else {
-          record.fixed = true;
-          record.modifiedFiles = modifiedFiles;
-          record.status = 'resolved';
-        }
-      }
-
-      // AIが自律的に作成したPRやIssueのURLがあれば記録に反映
-      const prUrlMatch = record.analysis?.content?.match(/https:\/\/github\.com\/[^\s\)]+\/pull\/\d+/);
-      if (prUrlMatch && !record.prUrl) record.prUrl = prUrlMatch[0];
-
-      const issueUrlMatch = record.analysis?.content?.match(/https:\/\/github\.com\/[^\s\)]+\/issues\/\d+/);
-      if (issueUrlMatch && !record.issueUrl) record.issueUrl = issueUrlMatch[0];
-
-      if (record.actionRequired === false) {
-        this.dismissError(errorId, 'AI marked as not requiring action');
-      }
-
-      this._save();
-      this._broadcast(record, 'error_updated');
-      return { analysis: record.analysis, fixed: record.fixed, modifiedFiles: record.modifiedFiles };
-    } catch (err) {
-      console.error('[NMT-Auto] Failed to execute auto fix:', err);
-      record.fixError = err.message;
-      this._save();
-      throw err;
-    } finally {
-      record.fixing = false;
-      this._save();
-      this._broadcast(record, 'error_updated');
-    }
-  }
-
-  async triggerAutoFix(errorId) {
-    return this.triggerAuto(errorId);
-  }
-
-  async createGitHubPullRequest(errorId) {
-    const record = this.errors.find((e) => e.id === errorId);
-    if (!record || !this.githubToken) throw new Error('GitHub token is missing or error not found');
-    if (record.prUrl) return record.prUrl;
-    if (!record.modifiedFiles || record.modifiedFiles.length === 0) {
-      throw new Error('No modified files found for pull request');
-    }
-
-    const branchName = `fix/nmt-autofix-${record.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
-    const currentBranch = await execGit(['branch', '--show-current']).catch(() => 'main');
-
-    try {
-      await execGit(['checkout', '-B', branchName]);
-      await execGit(['add', ...record.modifiedFiles]);
-
-      const commitMsg = `Fix(autofix): ${record.message.slice(0, 70)}\n\nAuto-fixed by NyaitterManagementTool for error ID ${record.id}`;
-      const author = `${this.gitAuthorName || 'nyantorusabu'} <${this.gitAuthorEmail || 'nyantorusabu@outlook.jp'}>`;
-      await execGit(['commit', `--author=${author}`, '-m', commitMsg]);
-
-      await execGit(['push', '-u', 'origin', branchName, '--force']);
-
-      const prTitle = `[AutoFix] ${record.message.slice(0, 80)}`;
-      const prBody = `## 🤖 NyaitterManagementTool 自動修復 Pull Request
-
-### 🚨 対象エラー情報
-- **エラーID**: \`${record.id}\`
-- **発生日時**: ${record.timestamp}
-- **リクエスト**: \`${record.context?.method || 'N/A'} ${record.context?.url || 'N/A'}\`
-
-### 🛠️ 変更ファイル
-${record.modifiedFiles.map((f) => `- \`${f}\``).join('\n')}
-
-### 📝 AI解析・修正サマリー
-${record.analysis?.content || '(詳細なし)'}
-
----
-*Generated automatically by NyaitterManagementTool*`;
-
-      const prUrl = await this._sendGitHubPullRequest(branchName, currentBranch || 'main', prTitle, prBody);
-      if (prUrl) {
-        record.prUrl = prUrl;
-        this._save();
-        this._broadcast(record, 'error_updated');
-      }
-
-      return prUrl;
-    } finally {
-      await execGit(['checkout', currentBranch]).catch(() => {});
-    }
-  }
-
-  _sendGitHubPullRequest(head, base, title, body) {
-    return new Promise((resolve, reject) => {
-      const repo = this.githubRepo || 'Nyaitter/Server';
-      const [owner, repoName] = repo.split('/');
-      if (!owner || !repoName) return reject(new Error('Invalid github repo format (owner/repo)'));
-
-      const postData = JSON.stringify({ title, body, head, base });
-
-      const options = {
-        hostname: 'api.github.com',
-        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/pulls`,
-        method: 'POST',
-        headers: {
-          'User-Agent': 'NyaitterManagementTool/1.0',
-          'Authorization': `Bearer ${this.githubToken}`,
-          'Accept': 'application/vnd.github.v3+json',
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-        timeout: 20000,
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              const parsed = JSON.parse(data);
-              return resolve(parsed.html_url);
-            } catch (_) {}
-          }
-          reject(new Error(`GitHub API HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
-        });
-      });
-
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('GitHub API timeout')); });
-      req.write(postData);
-      req.end();
-    });
-  }
-
-  async createGitHubIssue(errorId) {
-    const record = this.errors.find((e) => e.id === errorId);
-    if (!record || !this.githubToken) throw new Error('GitHub token is missing or error not found');
-    if (record.issueUrl) return record.issueUrl;
-
-    const existingWithIssue = this.errors.find((e) => e.id !== errorId && e.issueUrl && ErrorManager.isSameError(e, record.message, record.stack));
-    if (existingWithIssue) {
-      record.issueUrl = existingWithIssue.issueUrl;
-      this._save();
-      return record.issueUrl;
-    }
-
-    const title = `[AutoError] ${record.message.slice(0, 100)}`;
-    const body = `## 🚨 自動検知エラーレポート (NyaitterManagementTool)
-
-- **エラーID**: \`${record.id}\`
-- **発生日時**: ${record.timestamp}
-- **リクエスト**: \`${record.context?.method || 'N/A'} ${record.context?.url || 'N/A'}\`
-- **発生回数**: ${record.occurrences || 1}
-- **分類**: ${record.classification?.category || 'unknown'} (${record.classification?.severity || 'medium'})
-
-### スタックトレース
-\`\`\`
-${record.stack || '(スタックトレースなし)'}
-\`\`\`
-
-${record.analysis ? `### 🤖 AI解析・対応助言 (${record.analysis.model})
-${record.analysis.content}` : ''}
-
----
-*Generated automatically by NyaitterManagementTool*`;
-
-    const issueUrl = await this._sendGitHubIssue(title, body);
-    if (issueUrl) {
-      record.issueUrl = issueUrl;
-      this._save();
-      this._broadcast(record, 'error_updated');
-    }
-    return issueUrl;
-  }
-
-  _sendGitHubIssue(title, body) {
-    return new Promise((resolve, reject) => {
-      const repo = this.githubRepo || 'Nyaitter/Server';
-      const [owner, repoName] = repo.split('/');
-      if (!owner || !repoName) return reject(new Error('Invalid github repo format (owner/repo)'));
-
-      const postData = JSON.stringify({
-        title,
-        body,
-        labels: ['bug', 'automated-report'],
-      });
-
-      const options = {
-        hostname: 'api.github.com',
-        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/issues`,
-        method: 'POST',
-        headers: {
-          'User-Agent': 'NyaitterManagementTool/1.0',
-          'Authorization': `Bearer ${this.githubToken}`,
-          'Accept': 'application/vnd.github.v3+json',
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-        timeout: 15000,
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              const parsed = JSON.parse(data);
-              return resolve(parsed.html_url);
-            } catch (_) {}
-          }
-          reject(new Error(`GitHub API HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
-        });
-      });
-
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('GitHub API timeout')); });
-      req.write(postData);
-      req.end();
-    });
-  }
-
-  updateStatus(errorId, status) {
-    const record = this.errors.find((e) => e.id === errorId);
-    if (!record) return null;
-    if (['open', 'resolved', 'ignored'].includes(status)) {
-      record.status = status;
-      this._save();
-      this._broadcast(record, 'error_updated');
-    }
-    return record;
-  }
-
-  dismissError(errorId, reason = 'AI marked as non-issue') {
-    const record = this.errors.find((e) => e.id === errorId);
-    if (!record) return null;
-
-    record.dismissed = true;
-    record.dismissReason = reason;
-    record.dismissedAt = new Date().toISOString();
-    record.status = 'ignored';
-
-    const pattern = record.message.slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    this.dismissedPatterns.add(pattern);
-    this._saveDismissed();
-
-    this._save();
-    this._broadcast(record, 'error_updated');
-
-    return record;
-  }
-
-  undismissError(errorId) {
-    const record = this.errors.find((e) => e.id === errorId);
-    if (!record) return null;
-
-    record.dismissed = false;
-    record.dismissReason = null;
-    record.status = 'open';
-
-    this._save();
-    this._broadcast(record, 'error_updated');
-
-    return record;
-  }
-
-  getErrors({ status, search, limit = 50, offset = 0, includeDismissed = false } = {}) {
+  getErrors({ status = 'all', search = '', limit = 100, offset = 0 } = {}) {
+    this._load();
     let list = this.errors;
-    if (!includeDismissed) {
-      list = list.filter((e) => !e.dismissed);
-    }
     if (status && status !== 'all') {
       list = list.filter((e) => e.status === status);
     }
     if (search) {
       const q = search.toLowerCase();
-      list = list.filter((e) =>
-        (e.message || '').toLowerCase().includes(q) ||
-        (e.context?.url || '').toLowerCase().includes(q) ||
-        (e.classification?.category || '').toLowerCase().includes(q)
-      );
+      list = list.filter((e) => (
+        (e.message && e.message.toLowerCase().includes(q)) ||
+        (e.source && e.source.toLowerCase().includes(q)) ||
+        (e.name && e.name.toLowerCase().includes(q))
+      ));
     }
+
     const total = list.length;
-    const paginated = list.slice(offset, offset + limit);
-    return { errors: paginated, total, limit, offset };
+    const safeOffset = Math.max(0, Number(offset) || 0);
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 200));
+    const paginated = list.slice(safeOffset, safeOffset + safeLimit);
+
+    return {
+      errors: paginated,
+      total,
+      openCount: this.errors.filter((e) => e.status === 'open').length,
+    };
   }
 
   getErrorById(id) {
+    this._load();
     return this.errors.find((e) => e.id === id) || null;
+  }
+
+  updateErrorStatus(id, status) {
+    this._load();
+    const error = this.errors.find((e) => e.id === id);
+    if (!error) return null;
+    if (['open', 'resolved', 'ignored'].includes(status)) {
+      error.status = status;
+      this._save();
+    }
+    return error;
   }
 
   clearErrors() {
     this.errors = [];
     this._save();
+    return true;
   }
 }
 

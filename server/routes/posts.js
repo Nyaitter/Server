@@ -1216,13 +1216,11 @@ router.post({
 			}
 		}
 
-		const updatedLikes = await db.getLikeIds(userId);
-
 		res.json({
 			success: true,
 			liked: result.liked,
 			count: result.count,
-			updated_likes: updatedLikes,
+			updated_likes: null,
 		});
 	} catch (err) {
 		console.error('[posts] like error:', err);
@@ -1257,13 +1255,11 @@ router.post({
 			starCount: result.count,
 		});
 
-		const updatedStars = await db.getStarIds(userId);
-
 		res.json({
 			success: true,
 			starred: result.starred,
 			count: result.count,
-			updated_stars: updatedStars,
+			updated_stars: null,
 		});
 	} catch (err) {
 		console.error('[posts] star error:', err);

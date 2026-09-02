@@ -124,8 +124,8 @@
 		"adapter": "memory",
 					"postgres": {
 				"connectionString": "postgres://user:pass@localhost:5432/nyaitter",
-				"poolSize": 10,
-				"poolMin": 2,
+				"poolSize": 25,
+				"poolMin": 5,
 					"poolIdleTimeoutMs": 300000,
 					"poolMaxLifetimeSeconds": 1800,
 					"connectionTimeoutMs": 15000,

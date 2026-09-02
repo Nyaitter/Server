@@ -1,1359 +1,471 @@
 'use strict';
 
-let currentAdmin = null;
+// ── State ──
+const state = {
+  token: localStorage.getItem('nmt_token') || '',
+  activeTab: 'status',
+  activeSubtab: 'env',
+  statusTimer: null,
+  ws: null,
+  logs: [],
+  errors: [],
+};
 
-// ── API Helper ───────────────────────────────────────────────────────────
+// ── Helper: API Request ──
 async function api(path, options = {}) {
-  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-  const token = localStorage.getItem('nmt_token');
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const res = await fetch(`/api${path}`, { ...options, headers });
-  if (res.status === 401) {
-    localStorage.removeItem('nmt_token');
-    window.location.href = '/auth/login';
-    throw new Error('Unauthorized');
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {}),
+  };
+  if (state.token) {
+    headers['Authorization'] = `Bearer ${state.token}`;
   }
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-  return json;
+
+  const res = await fetch(path, { ...options, headers });
+  if (res.status === 401) {
+    showLoginModal();
+    throw new Error('認証が必要です');
+  }
+  return res.json();
 }
 
-// ── Auth & Init ──────────────────────────────────────────────────────────
+// ── Auth Handling ──
 async function checkAuth() {
-  // 1. URL ハッシュからトークンまたはエラーを取得
-  const hash = window.location.hash.replace(/^#/, '');
-  const params = new URLSearchParams(hash);
-  const token = params.get('token');
-  const error = params.get('error');
-
-  if (error) {
-    alert(`Authentication Error: ${error}`);
-    history.replaceState(null, '', window.location.pathname);
-  }
-
-  if (token) {
-    localStorage.setItem('nmt_token', token);
-    history.replaceState(null, '', window.location.pathname);
-  }
-
-  // 2. 認証状態を確認
   try {
-    const res = await api('/me');
-    if (res.user && res.user.admin) {
-      currentAdmin = res.user;
-      document.getElementById('current-admin-name').textContent = currentAdmin?.name || `#${currentAdmin?.id}`;
-      
-      // 認証成功後にリアルタイム接続とタブデータを安全に起動
-      initUnifiedLogsWS();
-      initNotificationsSSE();
-      checkPendingApprovals();
-      setInterval(checkPendingApprovals, 15000);
-      loadActiveTabData();
-      return;
+    const data = await api('/api/auth/me');
+    if (!data.authenticated && data.requiresPassword) {
+      showLoginModal();
+    } else {
+      hideLoginModal();
+      document.getElementById('logout-btn').classList.toggle('hidden', !data.requiresPassword);
+      init();
+    }
+  } catch (_) {
+    showLoginModal();
+  }
+}
+
+function showLoginModal() {
+  document.getElementById('login-modal').classList.remove('hidden');
+}
+
+function hideLoginModal() {
+  document.getElementById('login-modal').classList.add('hidden');
+}
+
+document.getElementById('login-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.classList.add('hidden');
+
+  try {
+    const res = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    });
+    if (res.success && res.token) {
+      state.token = res.token;
+      localStorage.setItem('nmt_token', res.token);
+      hideLoginModal();
+      init();
+    } else {
+      errEl.textContent = res.error || 'ログインに失敗しました';
+      errEl.classList.remove('hidden');
     }
   } catch (err) {
-    console.warn('[NMT] Auth check error:', err.message);
+    errEl.textContent = err.message || 'ログインに失敗しました';
+    errEl.classList.remove('hidden');
   }
-
-  // 3. 未認証時は NyaitterAuth へリダイレクト
-  window.location.href = '/auth/login';
-}
+});
 
 document.getElementById('logout-btn')?.addEventListener('click', async () => {
   try {
-    await api('/auth/logout', { method: 'POST' });
+    await api('/api/auth/logout', { method: 'POST' });
   } catch (_) {}
+  state.token = '';
   localStorage.removeItem('nmt_token');
-  window.location.href = '/auth/login';
+  showLoginModal();
 });
 
-// ── Tabs Navigation ──────────────────────────────────────────────────────
+// ── Tab Switching ──
 document.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
 
     btn.classList.add('active');
-    const tabId = btn.dataset.tab;
-    document.getElementById(tabId)?.classList.add('active');
-    loadActiveTabData();
+    const tabName = btn.dataset.tab;
+    state.activeTab = tabName;
+    document.getElementById(`tab-${tabName}`).classList.add('active');
+
+    if (tabName === 'status') loadStatus();
+    if (tabName === 'logs') loadLogs();
+    if (tabName === 'errors') loadErrors();
+    if (tabName === 'settings') loadSettings();
   });
 });
 
-async function loadActiveTabData() {
-  const activeTab = document.querySelector('.tab-pane.active')?.id;
+// ── Settings Subtab Switching ──
+document.querySelectorAll('.subtab-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.subtab-btn').forEach((b) => b.classList.remove('active'));
+    document.querySelectorAll('.subtab-content').forEach((c) => c.classList.remove('active'));
+
+    btn.classList.add('active');
+    const subtab = btn.dataset.subtab;
+    state.activeSubtab = subtab;
+    document.getElementById(`subtab-${subtab}`).classList.add('active');
+  });
+});
+
+// ── 1. Status Tab Logic ──
+async function loadStatus() {
   try {
-    if (activeTab === 'errors-tab') await loadErrors();
-    else if (activeTab === 'logs-tab') await loadUnifiedLogs();
-    else if (activeTab === 'admins-tab') { await loadAdmins(); await loadAuditLogs(); }
-    else if (activeTab === 'security-tab') { await loadSecurityEvents(); await loadRecentAccessLogs(); }
-    else if (activeTab === 'server-tab') await loadServerTab();
-    else if (activeTab === 'settings-tab') await loadSettings();
-  } catch (err) {
-    console.error('[NMT] Failed to load tab data for', activeTab, err);
-  }
-}
+    const data = await api('/api/status');
+    const serverOnline = Boolean(data.server?.online);
 
-// ── 1. Errors ────────────────────────────────────────────────────────────
-let cachedErrorsData = [];
-let currentOpenErrorId = null;
-
-function renderErrors(errors = cachedErrorsData) {
-  const listEl = document.getElementById('errors-list');
-  if (!listEl) return;
-
-  const status = document.getElementById('error-filter-status')?.value || 'all';
-  const search = (document.getElementById('error-search-input')?.value || '').trim().toLowerCase();
-
-  let filtered = errors;
-  if (status && status !== 'all') {
-    filtered = filtered.filter((e) => e.status === status);
-  }
-  if (search) {
-    filtered = filtered.filter((e) =>
-      (e.message || '').toLowerCase().includes(search) ||
-      (e.context?.url || '').toLowerCase().includes(search)
-    );
-  }
-
-  const openCount = errors.filter((e) => e.status === 'open').length;
-  const badge = document.getElementById('open-error-badge');
-  if (badge) {
-    if (openCount > 0) {
-      badge.textContent = openCount;
-      badge.classList.remove('hidden');
+    const pill = document.getElementById('server-status-pill');
+    if (serverOnline) {
+      pill.textContent = 'サーバー稼働中';
+      pill.className = 'status-pill status-online';
     } else {
-      badge.classList.add('hidden');
+      pill.textContent = 'サーバー停止中';
+      pill.className = 'status-pill status-offline';
     }
-  }
 
-  if (filtered.length === 0) {
-    listEl.innerHTML = '<div class="empty-state">No errors recorded.</div>';
-    return;
-  }
+    const sBadge = document.getElementById('server-badge');
+    sBadge.textContent = serverOnline ? 'Online' : 'Offline';
+    sBadge.className = `badge ${serverOnline ? 'badge-online' : 'badge-offline'}`;
 
-  listEl.innerHTML = filtered.map((err) => `
-    <div class="card" data-error-id="${escapeHTML(err.id)}">
-      <div class="card-header">
-        <span class="card-title">${escapeHTML(err.message)}</span>
-        <span class="tag tag-${err.status}">${err.status.toUpperCase()}</span>
-      </div>
-      <div class="card-meta">
-        <span>${new Date(err.timestamp).toLocaleTimeString()}</span>
-        <span>Hits: ${err.occurrences || 1}</span>
-        ${err.analyzing ? '<span style="color:var(--primary-color);">[Analyzing]</span>' : ''}
-        ${err.fixing ? '<span style="color:#d29922;">[Fixing]</span>' : ''}
-        ${err.fixed ? '<span style="color:#3fb950;">[Fixed]</span>' : ''}
-        ${err.analysis ? '<span style="color:var(--primary-color)">[Analyzed]</span>' : ''}
-        ${err.prUrl ? `<a href="${escapeHTML(err.prUrl)}" target="_blank" onclick="event.stopPropagation()" style="color:#58a6ff;">PR #${err.prUrl.split('/').pop()}</a>` : ''}
-        ${err.issueUrl ? `<a href="${escapeHTML(err.issueUrl)}" target="_blank" onclick="event.stopPropagation()">Issue #${err.issueUrl.split('/').pop()}</a>` : ''}
-      </div>
-    </div>
-  `).join('');
+    document.getElementById('server-process-status').textContent = serverOnline ? '正常稼働中' : '停止中';
+    document.getElementById('server-pid').textContent = data.server?.pid || '-';
+    document.getElementById('server-port').textContent = data.server?.port || 3000;
 
-  listEl.querySelectorAll('.card').forEach((card) => {
-    card.addEventListener('click', () => openErrorDetail(card.dataset.errorId));
-  });
+    document.getElementById('nmt-pid').textContent = data.nmt?.pid || '-';
+    document.getElementById('nmt-uptime').textContent = formatUptime(data.nmt?.uptime || 0);
+    document.getElementById('nmt-port').textContent = data.nmt?.port || 4040;
+
+    const dbBadge = document.getElementById('db-badge');
+    const dbConnected = data.database?.status === 'connected';
+    dbBadge.textContent = dbConnected ? 'Connected' : (data.database?.status || '-');
+    dbBadge.className = `badge ${dbConnected ? 'badge-online' : 'badge-offline'}`;
+    document.getElementById('db-status').textContent = dbConnected ? '接続完了' : (data.database?.status || '未接続');
+    document.getElementById('db-error').textContent = data.database?.error || 'なし';
+
+    document.getElementById('sys-memory').textContent = `${data.nmt?.memoryMb || 0} MB`;
+    document.getElementById('sys-cpu').textContent = `${data.nmt?.cpuPercent || 0} %`;
+    document.getElementById('sys-node').textContent = data.system?.nodeVersion || '-';
+  } catch (_) {}
 }
 
-function handleIncomingLiveError(errorRecord, eventType) {
-  if (!errorRecord || !errorRecord.id) return;
-  const idx = cachedErrorsData.findIndex((e) => e.id === errorRecord.id);
-  if (idx >= 0) {
-    cachedErrorsData[idx] = { ...cachedErrorsData[idx], ...errorRecord };
-  } else {
-    cachedErrorsData.unshift(errorRecord);
-  }
-  renderErrors();
-
-  if (currentOpenErrorId === errorRecord.id) {
-    openErrorDetail(errorRecord.id, false);
-  }
+function formatUptime(sec) {
+  if (!sec) return '0秒';
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (d > 0) return `${d}日 ${h}時間`;
+  if (h > 0) return `${h}時間 ${m}分`;
+  if (m > 0) return `${m}分 ${s}秒`;
+  return `${s}秒`;
 }
 
-async function loadErrors() {
-  const listEl = document.getElementById('errors-list');
-  const status = document.getElementById('error-filter-status')?.value || 'all';
-  const search = (document.getElementById('error-search-input')?.value || '').trim();
+// ── Process Control Actions ──
+function setupControls() {
+  const msgEl = document.getElementById('control-message');
+  const showMsg = (text, isSuccess) => {
+    msgEl.textContent = text;
+    msgEl.className = `alert ${isSuccess ? 'alert-success' : 'alert-danger'}`;
+    msgEl.classList.remove('hidden');
+    setTimeout(() => msgEl.classList.add('hidden'), 6000);
+  };
 
-  try {
-    const data = await api(`/errors?status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`);
-    cachedErrorsData = data.errors || [];
-    renderErrors(cachedErrorsData);
-  } catch (err) {
-    if (listEl) listEl.innerHTML = `<div class="error-msg">Failed to load errors: ${escapeHTML(err.message)}</div>`;
-  }
-}
-
-document.getElementById('error-filter-status').addEventListener('change', () => renderErrors());
-document.getElementById('error-search-input').addEventListener('input', debounce(() => renderErrors(), 200));
-document.getElementById('refresh-errors-btn').addEventListener('click', loadErrors);
-
-async function openErrorDetail(errorId, showOverlay = true) {
-  currentOpenErrorId = errorId;
-  const err = await api(`/errors/${encodeURIComponent(errorId)}`);
-  if (!err || currentOpenErrorId !== errorId) return;
-
-  const modalTitle = document.getElementById('modal-title');
-  const modalBody = document.getElementById('modal-body');
-  const modalFooter = document.getElementById('modal-footer');
-
-  modalTitle.textContent = `Error: ${err.id}`;
-  modalBody.innerHTML = `
-    <div style="margin-bottom: 0.8rem;">
-      <div style="font-weight:600; color:var(--danger-color); font-size:13px;">${escapeHTML(err.message)}</div>
-      <div style="color:var(--secondary-text-color); font-size:11px; margin-top:0.3rem;">
-        Time: ${new Date(err.timestamp).toLocaleString()} | Hits: ${err.occurrences || 1}<br>
-        Request: ${escapeHTML(err.context?.method || 'GET')} ${escapeHTML(err.context?.url || 'N/A')}<br>
-        IP: ${escapeHTML(err.context?.ip || 'N/A')} | UA: ${escapeHTML(err.context?.userAgent || 'N/A')}
-      </div>
-      ${err.fixed ? `<div style="margin-top:0.4rem; color:#3fb950; font-size:12px;"><strong>Status:</strong> Fixed${err.modifiedFiles?.length ? ` (${err.modifiedFiles.join(', ')})` : ''}</div>` : ''}
-      ${err.securityIncidentId ? `<div style="margin-top:0.4rem; color:#da3633; font-size:12px;"><strong>Security incident:</strong> ${escapeHTML(err.securityIncidentId)}</div>` : ''}
-      ${err.prUrl ? `<div style="margin-top:0.3rem;"><a href="${escapeHTML(err.prUrl)}" target="_blank" style="color:#58a6ff;">Pull Request: #${err.prUrl.split('/').pop()}</a></div>` : ''}
-    </div>
-    ${err.stack ? `<div><div class="code-box">${escapeHTML(err.stack)}</div></div>` : ''}
-    <div id="modal-ai-section">
-      ${err.analyzing ? `
-        <div class="ai-panel" style="margin-top:0.8rem; font-size:12px; color:var(--primary-color);">
-          Analyzing with AI...
-        </div>
-      ` : err.fixing ? `
-        <div class="ai-panel" style="margin-top:0.8rem; font-size:12px; color:#d29922;">
-          Auto-fixing...
-        </div>
-      ` : err.analysis ? `
-        <div class="ai-panel" style="margin-top:0.8rem;">
-          <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--secondary-text-color);">
-            <strong style="color:var(--primary-color);">AI Analysis (${escapeHTML(err.analysis.model)})</strong>
-            <span>${new Date(err.analysis.analyzedAt).toLocaleTimeString()}</span>
-          </div>
-          <div style="margin-top:0.5rem; font-size:12px;">${formatMarkdown(err.analysis.content)}</div>
-        </div>
-      ` : ''}
-    </div>
-  `;
-
-  modalFooter.innerHTML = `
-    <button class="btn btn-secondary btn-sm" id="modal-fix-btn" ${err.fixing ? 'disabled' : ''}>${err.fixing ? 'Fixing...' : 'Auto Fix'}</button>
-    <button class="btn btn-secondary btn-sm" id="modal-analyze-btn" ${err.analyzing ? 'disabled' : ''}>${err.analyzing ? 'Analyzing...' : 'Analyze'}</button>
-    ${!err.securityIncidentId ? '<button class="btn btn-secondary btn-sm" id="modal-escalate-security-btn">Escalate Security</button>' : ''}
-    ${err.fixed && !err.prUrl ? '<button class="btn btn-secondary btn-sm" id="modal-pr-btn">Create PR</button>' : ''}
-    ${!err.issueUrl ? '<button class="btn btn-secondary btn-sm" id="modal-issue-btn">Create Issue</button>' : ''}
-    ${err.status !== 'resolved' ? '<button class="btn btn-primary btn-sm" id="modal-resolve-btn">Resolve</button>' : '<button class="btn btn-secondary btn-sm" id="modal-reopen-btn">Reopen</button>'}
-  `;
-
-  document.getElementById('modal-fix-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('modal-fix-btn');
-    btn.disabled = true;
-    btn.textContent = 'Fixing...';
+  document.getElementById('btn-server-restart')?.addEventListener('click', async () => {
+    if (!confirm('NyaitterServer を再起動しますか？')) return;
     try {
-      const res = await api(`/errors/${encodeURIComponent(errorId)}/fix`, { method: 'POST' });
-      alert(res.fixed ? `Auto-fix succeeded! Modified: ${res.modifiedFiles?.join(', ')}` : 'Fix completed.');
-      openErrorDetail(errorId, false);
-      loadErrors();
+      const res = await api('/api/server/restart', { method: 'POST' });
+      showMsg(res.message || '再起動を開始しました', res.success !== false);
+      setTimeout(loadStatus, 1500);
     } catch (e) {
-      alert(`Auto-fix error: ${e.message}`);
-      btn.disabled = false;
-      btn.textContent = 'Auto Fix';
+      showMsg(e.message, false);
     }
   });
 
-  document.getElementById('modal-pr-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('modal-pr-btn');
-    btn.disabled = true;
-    btn.textContent = 'Creating PR...';
+  document.getElementById('btn-server-stop')?.addEventListener('click', async () => {
+    if (!confirm('NyaitterServer を停止しますか？')) return;
     try {
-      const res = await api(`/errors/${encodeURIComponent(errorId)}/pr`, { method: 'POST' });
-      alert(`Pull Request created: ${res.prUrl}`);
-      openErrorDetail(errorId, false);
-      loadErrors();
+      const res = await api('/api/server/stop', { method: 'POST' });
+      showMsg(res.message || '停止しました', res.success !== false);
+      setTimeout(loadStatus, 1000);
     } catch (e) {
-      alert(`PR creation error: ${e.message}`);
-      btn.disabled = false;
-      btn.textContent = 'Create PR';
+      showMsg(e.message, false);
     }
   });
 
-  document.getElementById('modal-analyze-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('modal-analyze-btn');
-    btn.disabled = true;
-    btn.textContent = 'Analyzing...';
+  document.getElementById('btn-server-start')?.addEventListener('click', async () => {
     try {
-      await api(`/errors/${encodeURIComponent(errorId)}/analyze`, { method: 'POST' });
-      openErrorDetail(errorId, false);
+      const res = await api('/api/server/start', { method: 'POST' });
+      showMsg(res.message || '起動しました', res.success !== false);
+      setTimeout(loadStatus, 1500);
     } catch (e) {
-      alert(`AI error: ${e.message}`);
-      btn.disabled = false;
-      btn.textContent = 'Analyze';
+      showMsg(e.message, false);
     }
   });
 
-  document.getElementById('modal-escalate-security-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('modal-escalate-security-btn');
-    btn.disabled = true;
-    btn.textContent = 'Escalating...';
+  document.getElementById('btn-nmt-restart')?.addEventListener('click', async () => {
+    if (!confirm('NMT 管理ツールを再起動しますか？')) return;
     try {
-      await api(`/errors/${encodeURIComponent(errorId)}/escalate-security`, { method: 'POST' });
-      openErrorDetail(errorId, false);
-      loadErrors();
+      const res = await api('/api/nmt/restart', { method: 'POST' });
+      showMsg(res.message || '再起動中... 5秒後にリロードします', true);
+      setTimeout(() => location.reload(), 4000);
     } catch (e) {
-      alert(`Security escalation error: ${e.message}`);
-      btn.disabled = false;
-      btn.textContent = 'Escalate Security';
+      showMsg(e.message, false);
     }
   });
 
-  document.getElementById('modal-issue-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('modal-issue-btn');
-    btn.disabled = true;
-    btn.textContent = 'Creating Issue...';
-    try {
-      const res = await api(`/errors/${encodeURIComponent(errorId)}/issue`, { method: 'POST' });
-      alert(`Issue created: ${res.issueUrl}`);
-      openErrorDetail(errorId, false);
-    } catch (e) {
-      alert(`Issue error: ${e.message}`);
-      btn.disabled = false;
-      btn.textContent = 'Create Issue';
-    }
-  });
-
-  document.getElementById('modal-resolve-btn')?.addEventListener('click', async () => {
-    await api(`/errors/${encodeURIComponent(errorId)}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved' }) });
-    closeModal();
+  document.getElementById('refresh-all-btn')?.addEventListener('click', () => {
+    loadStatus();
     loadErrors();
   });
-
-  document.getElementById('modal-reopen-btn')?.addEventListener('click', async () => {
-    await api(`/errors/${encodeURIComponent(errorId)}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'open' }) });
-    closeModal();
-    loadErrors();
-  });
-
-  if (showOverlay) showModal();
 }
 
-// ── 2. Admins ────────────────────────────────────────────────────────────
-async function loadAdmins() {
-  const container = document.getElementById('admins-list');
-  try {
-    const data = await api('/admins');
-    const admins = data.admins || [];
-    if (admins.length === 0) {
-      container.innerHTML = '<div class="empty-state">No admins found.</div>';
-      return;
-    }
+// ── 2. Logs Tab Logic (WebSocket) ──
+function setupWebSocket() {
+  const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${wsProtocol}//${location.host}/ws`;
 
-    container.innerHTML = admins.map((adm) => `
-      <div class="admin-cell">
-        <div>
-          <div style="font-weight:600;">${escapeHTML(adm.name || 'Unnamed')}</div>
-          <div style="font-size:11px; color:var(--secondary-text-color);">#${adm.id} (@${escapeHTML(adm.scid || 'none')})</div>
-        </div>
-        ${Number(adm.id) !== Number(currentAdmin?.id) ? `
-          <button class="btn btn-secondary btn-sm btn-danger-action" data-user-id="${adm.id}">Revoke</button>
-        ` : '<span class="tag tag-resolved">You</span>'}
-      </div>
-    `).join('');
+  const ws = new WebSocket(wsUrl);
+  state.ws = ws;
 
-    container.querySelectorAll('.btn-danger-action').forEach((btn) => {
-      btn.addEventListener('click', () => updateAdminStatus(btn.dataset.userId, false));
-    });
-  } catch (err) {
-    container.innerHTML = `<div class="error-msg">Failed to load admins: ${escapeHTML(err.message)}</div>`;
-  }
-}
+  ws.onopen = () => {
+    document.getElementById('ws-status').textContent = 'LIVE';
+    document.getElementById('ws-status').className = 'status-indicator live';
+  };
 
-document.getElementById('user-search-btn').addEventListener('click', async () => {
-  const q = document.getElementById('user-search-input').value.trim();
-  const resultsEl = document.getElementById('user-search-results');
-  if (!q) return;
+  ws.onclose = () => {
+    document.getElementById('ws-status').textContent = '切断';
+    document.getElementById('ws-status').className = 'status-indicator text-muted';
+    setTimeout(setupWebSocket, 3000);
+  };
 
-  resultsEl.innerHTML = '<div class="empty-state">Searching...</div>';
-  try {
-    const data = await api(`/users/search?q=${encodeURIComponent(q)}`);
-    const users = data.users || [];
-    if (users.length === 0) {
-      resultsEl.innerHTML = '<div class="empty-state">No users found.</div>';
-      return;
-    }
-
-    resultsEl.innerHTML = users.map((u) => `
-      <div class="admin-cell" style="margin-bottom:0.4rem;">
-        <div>
-          <span style="font-weight:600;">${escapeHTML(u.name || 'Unnamed')}</span>
-          <span style="font-size:11px; color:var(--secondary-text-color); margin-left:0.4rem;">#${u.id} (@${escapeHTML(u.scid || 'none')}) - ${u.admin ? 'Admin' : 'User'}</span>
-        </div>
-        <button class="btn ${u.admin ? 'btn-secondary' : 'btn-primary'} btn-sm" data-user-id="${u.id}" data-set-admin="${!u.admin}">
-          ${u.admin ? 'Revoke Admin' : 'Grant Admin'}
-        </button>
-      </div>
-    `).join('');
-
-    resultsEl.querySelectorAll('button[data-set-admin]').forEach((btn) => {
-      btn.addEventListener('click', () => updateAdminStatus(btn.dataset.userId, btn.dataset.setAdmin === 'true'));
-    });
-  } catch (e) {
-    resultsEl.innerHTML = `<div class="error-msg">Search error: ${escapeHTML(e.message)}</div>`;
-  }
-});
-
-async function updateAdminStatus(userId, makeAdmin) {
-  const actionText = makeAdmin ? 'grant admin to' : 'revoke admin from';
-  if (!confirm(`Are you sure to ${actionText} user #${userId}?`)) return;
-
-  try {
-    await api(`/admins/${encodeURIComponent(userId)}`, {
-      method: 'POST',
-      body: JSON.stringify({ admin: makeAdmin }),
-    });
-    loadAdmins();
-    loadAuditLogs();
-    const searchInput = document.getElementById('user-search-input');
-    if (searchInput.value.trim()) document.getElementById('user-search-btn').click();
-  } catch (err) {
-    alert(`Update error: ${err.message}`);
-  }
-}
-
-async function loadAuditLogs() {
-  const el = document.getElementById('admin-audit-logs');
-  try {
-    const data = await api('/admins/audit-logs');
-    const logs = data.logs || [];
-    if (logs.length === 0) {
-      el.innerHTML = '<div class="empty-state">No audit logs.</div>';
-      return;
-    }
-
-    el.innerHTML = `
-      <table>
-        <thead>
-          <tr><th>Time</th><th>Operator</th><th>Target</th><th>Action</th></tr>
-        </thead>
-        <tbody>
-          ${logs.map((l) => `
-            <tr>
-              <td>${new Date(l.timestamp).toLocaleString()}</td>
-              <td>${escapeHTML(l.operatorName)} (#${l.operatorId || 'N/A'})</td>
-              <td>${escapeHTML(l.targetUserName)} (#${l.targetUserId})</td>
-              <td><span class="tag ${l.action === 'grant_admin' ? 'tag-resolved' : 'tag-open'}">${l.action === 'grant_admin' ? 'Grant' : 'Revoke'}</span></td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    `;
-  } catch (e) {
-    el.innerHTML = `<div class="error-msg">Audit log error: ${escapeHTML(e.message)}</div>`;
-  }
-}
-
-// ── 3. Security ──────────────────────────────────────────────────────────
-async function loadSecurityEvents() {
-  const listEl = document.getElementById('security-events-list');
-  const severity = document.getElementById('security-filter-severity').value;
-
-  try {
-    const data = await api(`/security/events?severity=${encodeURIComponent(severity)}`);
-    const events = data.events || [];
-
-    const badge = document.getElementById('security-alert-badge');
-    if (events.length > 0) {
-      badge.textContent = events.length;
-      badge.classList.remove('hidden');
-    } else {
-      badge.classList.add('hidden');
-    }
-
-    if (events.length === 0) {
-      listEl.innerHTML = '<div class="empty-state">No suspicious events recorded.</div>';
-      return;
-    }
-
-    listEl.innerHTML = events.map((ev) => `
-      <div class="card" data-security-id="${ev.id}">
-        <div class="card-header">
-          <span class="card-title">${escapeHTML(ev.reason)}</span>
-          <span class="tag tag-${ev.severity === 'high' ? 'open' : 'ignored'}">${ev.severity.toUpperCase()}</span>
-        </div>
-        <div class="card-meta">
-          <span>${new Date(ev.timestamp).toLocaleString()}</span>
-          <span>IP: ${escapeHTML(ev.ip)}</span>
-          <span>${escapeHTML(ev.method)} ${escapeHTML(ev.url)} (${ev.statusCode})</span>
-          ${ev.analysis ? '<span style="color:var(--primary-color)">[Analyzed]</span>' : ''}
-        </div>
-      </div>
-    `).join('');
-
-    listEl.querySelectorAll('.card').forEach((card) => {
-      card.addEventListener('click', () => openSecurityDetail(card.dataset.securityId));
-    });
-  } catch (e) {
-    listEl.innerHTML = `<div class="error-msg">Security log error: ${escapeHTML(e.message)}</div>`;
-  }
-}
-
-document.getElementById('security-filter-severity').addEventListener('change', loadSecurityEvents);
-document.getElementById('refresh-security-btn').addEventListener('click', () => {
-  loadSecurityEvents();
-  loadRecentAccessLogs();
-});
-
-async function openSecurityDetail(eventId) {
-  const data = await api(`/security/events`);
-  const ev = data.events?.find((e) => e.id === eventId);
-  if (!ev) return;
-
-  const modalTitle = document.getElementById('modal-title');
-  const modalBody = document.getElementById('modal-body');
-  const modalFooter = document.getElementById('modal-footer');
-
-  modalTitle.textContent = `Security Event: ${ev.id}`;
-  modalBody.innerHTML = `
-    <div style="margin-bottom:0.8rem;">
-      <div style="color:var(--danger-color); font-weight:600; font-size:13px;">${escapeHTML(ev.reason)}</div>
-      <div style="color:var(--secondary-text-color); font-size:11px; margin-top:0.3rem;">
-        Time: ${new Date(ev.timestamp).toLocaleString()}<br>
-        IP: ${escapeHTML(ev.ip)} | Status: ${ev.statusCode}<br>
-        Path: ${escapeHTML(ev.method)} ${escapeHTML(ev.url)}<br>
-        UA: ${escapeHTML(ev.userAgent)}
-      </div>
-    </div>
-    ${ev.analysis ? `
-      <div class="ai-panel">
-        <strong style="color:var(--primary-color); font-size:11px;">AI Threat Analysis (${escapeHTML(ev.analysis.model)})</strong>
-        <div style="margin-top:0.5rem; font-size:12px;">${formatMarkdown(ev.analysis.content)}</div>
-      </div>
-    ` : ''}
-  `;
-
-  modalFooter.innerHTML = `
-    <button class="btn btn-secondary btn-sm" id="modal-sec-analyze-btn">Analyze</button>
-    <button class="btn btn-primary btn-sm" onclick="closeModal()">Close</button>
-  `;
-
-  document.getElementById('modal-sec-analyze-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('modal-sec-analyze-btn');
-    btn.disabled = true;
-    btn.textContent = 'Analyzing...';
+  ws.onmessage = (event) => {
     try {
-      await api(`/security/events/${encodeURIComponent(eventId)}/analyze`, { method: 'POST' });
-      openSecurityDetail(eventId);
-    } catch (e) {
-      alert(`AI error: ${e.message}`);
-      btn.disabled = false;
-      btn.textContent = 'Analyze';
-    }
-  });
-
-  showModal();
-}
-
-async function loadRecentAccessLogs() {
-  const el = document.getElementById('recent-access-table');
-  try {
-    const logs = await api('/security/access-logs?limit=50');
-    if (!logs || logs.length === 0) {
-      el.innerHTML = '<div class="empty-state">No access logs.</div>';
-      return;
-    }
-
-    el.innerHTML = `
-      <table>
-        <thead>
-          <tr><th>Time</th><th>IP</th><th>Method</th><th>URL</th><th>Status</th><th>Duration</th></tr>
-        </thead>
-        <tbody>
-          ${logs.map((l) => `
-            <tr>
-              <td>${new Date(l.timestamp).toLocaleTimeString()}</td>
-              <td>${escapeHTML(l.ip)}</td>
-              <td>${escapeHTML(l.method)}</td>
-              <td style="max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(l.url)}</td>
-              <td><span class="tag ${l.statusCode >= 500 ? 'tag-open' : l.statusCode >= 400 ? 'tag-ignored' : 'tag-resolved'}">${l.statusCode}</span></td>
-              <td>${l.durationMs}ms</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    `;
-  } catch (e) {
-    el.innerHTML = `<div class="error-msg">Failed to load logs: ${escapeHTML(e.message)}</div>`;
-  }
-}
-
-// ── 4. Settings ──────────────────────────────────────────────────────────
-async function loadSettings() {
-  try {
-    const [s, modelsData] = await Promise.all([
-      api('/settings'),
-      api('/settings/models').catch(() => ({ models: [] })),
-    ]);
-
-    const mode = s.mode || (s.autoFix ? 'auto' : s.autoAnalysis ? 'analysis_only' : 'record_only');
-    if (mode === 'auto') {
-      const el = document.getElementById('mode-auto');
-      if (el) el.checked = true;
-    } else if (mode === 'analysis_only') {
-      const el = document.getElementById('mode-analysis-only');
-      if (el) el.checked = true;
-    } else {
-      const el = document.getElementById('mode-record-only');
-      if (el) el.checked = true;
-    }
-
-    const guidelinesEl = document.getElementById('setting-guidelines');
-    if (guidelinesEl) {
-      guidelinesEl.value = s.guidelines || '';
-    }
-
-    // Guardrails 設定の反映
-    const g = s.guardrails || {};
-    document.getElementById('guard-git-tracked').checked = g.restrictToGitTracked !== false;
-    document.getElementById('guard-syntax-validation').checked = g.syntaxValidation !== false;
-    document.getElementById('guard-block-env').checked = g.blockEnvModification !== false;
-    document.getElementById('guard-block-commands').checked = g.blockSuspiciousCommands !== false;
-
-    const modelSelect = document.getElementById('setting-ai-model');
-    const availableModels = modelsData.models || [];
-    if (availableModels.length > 0) {
-      modelSelect.innerHTML = availableModels.map((m) => `
-        <option value="${escapeHTML(m.id)}">${escapeHTML(m.name)}</option>
-      `).join('');
-    }
-    modelSelect.value = s.aiModel || 'auto';
-
-    document.getElementById('setting-gemini-key').value = s.geminiApiKey || '';
-    document.getElementById('setting-openai-key').value = s.openaiApiKey || '';
-    document.getElementById('setting-github-token').value = s.githubToken || '';
-    document.getElementById('setting-github-repo').value = s.githubRepo || '';
-    if (document.getElementById('setting-git-author-name')) {
-      document.getElementById('setting-git-author-name').value = s.gitAuthorName || '';
-    }
-    if (document.getElementById('setting-git-author-email')) {
-      document.getElementById('setting-git-author-email').value = s.gitAuthorEmail || '';
-    }
-  } catch (e) {
-    console.error('Settings load error:', e);
-  }
-}
-
-document.getElementById('settings-preset-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const selectedMode = document.querySelector('input[name="nmt-mode"]:checked')?.value || 'record_only';
-  try {
-    await api('/settings', {
-      method: 'POST',
-      body: JSON.stringify({
-        mode: selectedMode,
-        guidelines: document.getElementById('setting-guidelines')?.value.trim() || '',
-        aiModel: document.getElementById('setting-ai-model')?.value,
-        geminiApiKey: document.getElementById('setting-gemini-key')?.value.trim(),
-        openaiApiKey: document.getElementById('setting-openai-key')?.value.trim(),
-      }),
-    });
-    alert('プリセットおよびAI設定を保存しました。');
-  } catch (err) {
-    alert(`Save error: ${err.message}`);
-  }
-});
-
-document.getElementById('settings-guardrails-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    await api('/settings', {
-      method: 'POST',
-      body: JSON.stringify({
-        guardrails: {
-          restrictToGitTracked: document.getElementById('guard-git-tracked').checked,
-          syntaxValidation: document.getElementById('guard-syntax-validation').checked,
-          blockEnvModification: document.getElementById('guard-block-env').checked,
-          blockSuspiciousCommands: document.getElementById('guard-block-commands').checked,
-        },
-      }),
-    });
-    alert('Safety Guardrails settings saved.');
-  } catch (err) {
-    alert(`Save error: ${err.message}`);
-  }
-});
-
-document.getElementById('settings-github-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    await api('/settings', {
-      method: 'POST',
-      body: JSON.stringify({
-        githubToken: document.getElementById('setting-github-token').value.trim(),
-        githubRepo: document.getElementById('setting-github-repo').value.trim(),
-        gitAuthorName: document.getElementById('setting-git-author-name')?.value.trim(),
-        gitAuthorEmail: document.getElementById('setting-git-author-email')?.value.trim(),
-      }),
-    });
-    alert('GitHub & Git 設定を保存しました。');
-  } catch (err) {
-    alert(`Save error: ${err.message}`);
-  }
-});
-
-// ── 5. Server Management ────────────────────────────────────────────────
-async function loadServerTab() {
-  await Promise.allSettled([
-    loadServerStatus(),
-    loadServerEnv(),
-    loadServerConfigJson(),
-  ]);
-}
-
-function renderServerStatus(s) {
-  const container = document.getElementById('server-status-grid');
-  if (!container || !s) return;
-
-  const uptimeHours = (s.uptime / 3600).toFixed(1);
-  const isOnline = s.serverOnline !== false;
-  const cpu = s.cpu != null ? s.cpu : null;
-  const cpuColor = cpu == null ? 'var(--text-color)' : cpu >= 80 ? '#f85149' : cpu >= 50 ? '#e3b341' : '#3fb950';
-
-  container.innerHTML = `
-    <div class="card">
-      <div style="font-size:11px; color:var(--secondary-text-color);">Process Status</div>
-      <div style="font-size:16px; font-weight:600; color:${isOnline ? '#3fb950' : '#f85149'}; margin-top:0.2rem;">
-        ${isOnline ? 'ONLINE' : 'STOPPED'}
-      </div>
-      <div style="font-size:11px; margin-top:0.3rem;">Server PID: ${s.serverPid || s.pid} ${s.nmtPid ? `(NMT: ${s.nmtPid})` : ''}</div>
-    </div>
-    <div class="card">
-      <div style="font-size:11px; color:var(--secondary-text-color);">Uptime &amp; Start</div>
-      <div style="font-size:16px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">${uptimeHours} hours</div>
-      <div style="font-size:11px; margin-top:0.3rem;">Since: ${new Date(s.startedAt).toLocaleTimeString()}</div>
-    </div>
-    <div class="card">
-      <div style="font-size:11px; color:var(--secondary-text-color);">CPU Usage</div>
-      <div style="font-size:16px; font-weight:600; color:${cpuColor}; margin-top:0.2rem;">${cpu != null ? cpu + ' %' : 'N/A'}</div>
-      <div style="font-size:11px; margin-top:0.3rem;">Node: ${s.nodeVersion || ''} / ${s.arch || ''}</div>
-    </div>
-    <div class="card">
-      <div style="font-size:11px; color:var(--secondary-text-color);">Memory Usage (RSS)</div>
-      <div style="font-size:16px; font-weight:600; color:var(--primary-color); margin-top:0.2rem;">${s.memory?.rss || 0} MB</div>
-      <div style="font-size:11px; margin-top:0.3rem;">Heap: ${s.memory?.heapUsed || 0} / ${s.memory?.heapTotal || 0} MB</div>
-    </div>
-    <div class="card">
-      <div style="font-size:11px; color:var(--secondary-text-color);">Environment & Storage</div>
-      <div style="font-size:13px; font-weight:600; color:var(--text-color); margin-top:0.2rem;">DB: ${escapeHTML(s.databaseAdapter || 'N/A')}</div>
-      <div style="font-size:11px; margin-top:0.3rem;">Storage: ${escapeHTML(s.storageAdapter || 'local')}</div>
-    </div>
-  `;
-}
-
-async function loadServerStatus() {
-  const container = document.getElementById('server-status-grid');
-  try {
-    const s = await api('/server/status');
-    renderServerStatus(s);
-  } catch (e) {
-    if (container) container.innerHTML = `<div class="error-msg">Failed to load server status: ${escapeHTML(e.message)}</div>`;
-  }
-}
-
-document.getElementById('server-restart-btn')?.addEventListener('click', async () => {
-  if (!confirm('NyaitterServer を再起動しますか？')) return;
-  const btn = document.getElementById('server-restart-btn');
-  btn.disabled = true;
-  btn.textContent = 'Restarting...';
-
-  try {
-    const res = await api('/server/restart', { method: 'POST' });
-    alert(res.message || '再起動シグナルを送信しました。');
-    setTimeout(() => {
-      btn.disabled = false;
-      btn.textContent = 'Restart Server';
-      loadServerStatus();
-      loadServerLogs();
-    }, 2000);
-  } catch (e) {
-    alert(`Restart error: ${e.message}`);
-    btn.disabled = false;
-    btn.textContent = 'Restart Server';
-  }
-});
-
-document.getElementById('nmt-restart-btn')?.addEventListener('click', async () => {
-  if (!confirm('NMT Console を再起動しますか？')) return;
-  const btn = document.getElementById('nmt-restart-btn');
-  btn.disabled = true;
-  btn.textContent = 'Restarting NMT...';
-
-  try {
-    const res = await api('/server/restart-nmt', { method: 'POST' });
-    alert(res.message || 'NMT 再起動完了。');
-    setTimeout(() => {
-      window.location.reload();
-    }, 1500);
-  } catch (e) {
-    alert(`NMT Restart error: ${e.message}`);
-    btn.disabled = false;
-    btn.textContent = 'Restart NMT';
-  }
-});
-
-document.getElementById('server-stop-btn').addEventListener('click', async () => {
-  if (!confirm('NyaitterServer を停止しますか？')) return;
-  const btn = document.getElementById('server-stop-btn');
-  btn.disabled = true;
-  btn.textContent = 'Stopping...';
-
-  try {
-    const res = await api('/server/stop', { method: 'POST' });
-    alert(res.message || '停止シグナルを送信しました。');
-  } catch (e) {
-    alert(`Stop error: ${e.message}`);
-    btn.disabled = false;
-    btn.textContent = 'Stop Server';
-  }
-});
-
-// .env 読み込み & 保存
-async function loadServerEnv() {
-  try {
-    const data = await api('/server/env');
-    document.getElementById('server-env-editor').value = data.content || '';
-  } catch (e) {
-    console.error('Failed to load .env:', e);
-  }
-}
-
-document.getElementById('save-env-btn').addEventListener('click', async () => {
-  const content = document.getElementById('server-env-editor').value;
-  const btn = document.getElementById('save-env-btn');
-  btn.disabled = true;
-  btn.textContent = 'Saving...';
-
-  try {
-    const res = await api('/server/env', {
-      method: 'PUT',
-      body: JSON.stringify({ content }),
-    });
-    alert(res.message || '.env を保存しました。');
-  } catch (e) {
-    alert(`Save error: ${e.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Save .env';
-  }
-});
-
-// config.json 読み込み & 保存
-async function loadServerConfigJson() {
-  try {
-    const data = await api('/server/config-file');
-    document.getElementById('server-config-json-editor').value = data.content || '{}';
-  } catch (e) {
-    console.error('Failed to load config.json:', e);
-  }
-}
-
-document.getElementById('save-config-json-btn').addEventListener('click', async () => {
-  const content = document.getElementById('server-config-json-editor').value;
-  const btn = document.getElementById('save-config-json-btn');
-  btn.disabled = true;
-  btn.textContent = 'Saving...';
-
-  try {
-    const res = await api('/server/config-file', {
-      method: 'PUT',
-      body: JSON.stringify({ content }),
-    });
-    alert(res.message || 'config.json を保存しました。');
-  } catch (e) {
-    alert(`Save error: ${e.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Save config.json';
-  }
-});
-
-// ── 5.5. Unified Real-time Live Logs (WebSocket) ─────────────────────────
-let unifiedLogWS = null;
-let unifiedLogData = [];
-
-function getSelectedLogTypes() {
-  const types = [];
-  if (document.getElementById('filter-log-system')?.checked) types.push('system');
-  if (document.getElementById('filter-log-error')?.checked) types.push('error');
-  if (document.getElementById('filter-log-security')?.checked) types.push('security');
-  if (document.getElementById('filter-log-ai')?.checked) types.push('ai');
-  if (document.getElementById('filter-log-admin')?.checked) types.push('admin');
-  if (document.getElementById('filter-log-moderation')?.checked) types.push('moderation');
-  return types;
-}
-
-function initUnifiedLogsWS() {
-  const token = localStorage.getItem('nmt_token');
-  if (!token) return;
-
-  if (unifiedLogWS) {
-    try { unifiedLogWS.close(); } catch (_) {}
-  }
-
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${proto}//${window.location.host}/ws/logs?token=${encodeURIComponent(token)}`;
-
-  const statusBadge = document.getElementById('ws-status-badge');
-  if (statusBadge) {
-    statusBadge.textContent = 'CONNECTING';
-    statusBadge.className = 'tag tag-open';
-  }
-
-  try {
-    unifiedLogWS = new WebSocket(wsUrl);
-
-    unifiedLogWS.onopen = () => {
-      if (statusBadge) {
-        statusBadge.textContent = 'LIVE';
-        statusBadge.className = 'tag tag-resolved';
+      const data = JSON.parse(event.data);
+      if (data.type === 'init' && Array.isArray(data.logs)) {
+        state.logs = data.logs;
+        renderLogs();
+      } else if (data.type === 'log' && data.log) {
+        state.logs.push(data.log);
+        if (state.logs.length > 2000) state.logs.shift();
+        appendLogToTerminal(data.log);
       }
-      sendWSFilter();
-    };
-
-    unifiedLogWS.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.event === 'init' || data.event === 'filtered') {
-          unifiedLogData = data.logs || [];
-          renderUnifiedLogs();
-        } else if (data.event === 'log') {
-          handleIncomingLiveLog(data.log);
-        } else if (data.event === 'server_status') {
-          renderServerStatus(data.status);
-        } else if (data.event === 'init_errors' || data.event === 'errors_data') {
-          cachedErrorsData = data.errors || [];
-          renderErrors(cachedErrorsData);
-        } else if (data.event === 'error_created' || data.event === 'error_updated' || data.event === 'error') {
-          handleIncomingLiveError(data.error, data.event);
-        }
-      } catch (_) {}
-    };
-
-    unifiedLogWS.onclose = () => {
-      if (statusBadge) {
-        statusBadge.textContent = 'OFFLINE';
-        statusBadge.className = 'tag tag-ignored';
-      }
-    };
-
-    unifiedLogWS.onerror = () => {
-      if (statusBadge) {
-        statusBadge.textContent = 'ERROR';
-        statusBadge.className = 'tag tag-ignored';
-      }
-    };
-  } catch (e) {
-    console.warn('WS log connection error:', e);
-  }
+    } catch (_) {}
+  };
 }
 
-function sendWSFilter() {
-  if (unifiedLogWS && unifiedLogWS.readyState === WebSocket.OPEN) {
-    const types = getSelectedLogTypes();
-    const search = document.getElementById('unified-log-search')?.value.trim() || '';
-    const level = document.getElementById('unified-log-level')?.value || 'all';
-    unifiedLogWS.send(JSON.stringify({
-      action: 'filter',
-      types,
-      search,
-      level,
-      limit: 200,
-    }));
-  }
+async function loadLogs() {
+  try {
+    const data = await api('/api/logs?limit=300');
+    if (data.logs) {
+      state.logs = data.logs;
+      renderLogs();
+    }
+  } catch (_) {}
 }
 
-function handleIncomingLiveLog(logItem) {
-  unifiedLogData.push(logItem);
-  if (unifiedLogData.length > 500) unifiedLogData.shift();
+function renderLogs() {
+  const container = document.getElementById('terminal-logs');
+  container.innerHTML = '';
 
-  // 現在のフィルター条件にマッチするか判定
-  const selectedTypes = getSelectedLogTypes();
-  const search = document.getElementById('unified-log-search')?.value.trim().toLowerCase() || '';
-  const level = document.getElementById('unified-log-level')?.value || 'all';
+  const levelFilter = document.getElementById('log-level-filter').value;
+  const searchFilter = document.getElementById('log-search-input').value.toLowerCase();
 
-  if (!selectedTypes.includes(logItem.type)) return;
-  if (level !== 'all' && logItem.level !== level) return;
-  if (search && !logItem.message.toLowerCase().includes(search) && !logItem.type.toLowerCase().includes(search)) return;
-
-  const container = document.getElementById('unified-logs-container');
-  if (!container) return;
-
-  const lineEl = document.createElement('div');
-  lineEl.innerHTML = formatLogLineHTML(logItem);
-  container.appendChild(lineEl);
-  container.scrollTop = container.scrollHeight;
-}
-
-function renderUnifiedLogs() {
-  const container = document.getElementById('unified-logs-container');
-  if (!container) return;
-
-  const selectedTypes = getSelectedLogTypes();
-  const search = document.getElementById('unified-log-search')?.value.trim().toLowerCase() || '';
-  const level = document.getElementById('unified-log-level')?.value || 'all';
-
-  const filtered = unifiedLogData.filter((l) => {
-    if (!selectedTypes.includes(l.type)) return false;
-    if (level !== 'all' && l.level !== level) return false;
-    if (search && !l.message.toLowerCase().includes(search) && !l.type.toLowerCase().includes(search)) return false;
+  const filtered = state.logs.filter((log) => {
+    if (levelFilter !== 'all' && log.level !== levelFilter) return false;
+    if (searchFilter && !log.message.toLowerCase().includes(searchFilter)) return false;
     return true;
   });
 
   if (filtered.length === 0) {
-    container.innerHTML = '<div class="empty-state">No matching logs.</div>';
+    container.innerHTML = '<div class="empty-state">表示可能なログはありません</div>';
     return;
   }
 
-  container.innerHTML = filtered.map(formatLogLineHTML).join('');
-  container.scrollTop = container.scrollHeight;
-}
-
-function formatLogLineHTML(l) {
-  const time = new Date(l.timestamp).toLocaleTimeString();
-  let typeTag = '';
-  let color = 'color:var(--text-color);';
-
-  if (l.type === 'error') {
-    typeTag = '<span style="color:#f85149; font-weight:bold;">[ERROR]</span>';
-    color = 'color:#f85149;';
-  } else if (l.type === 'security') {
-    typeTag = '<span style="color:#e3b341; font-weight:bold;">[SECURITY]</span>';
-    color = 'color:#e3b341;';
-  } else if (l.type === 'ai') {
-    typeTag = '<span style="color:#58a6ff; font-weight:bold;">[AI]</span>';
-    color = 'color:#58a6ff;';
-  } else if (l.type === 'admin') {
-    typeTag = '<span style="color:#a371f7; font-weight:bold;">[ADMIN]</span>';
-    color = 'color:#a371f7;';
-  } else if (l.type === 'moderation') {
-    typeTag = '<span style="color:#3fb950; font-weight:bold;">[MOD]</span>';
-    color = 'color:#3fb950;';
-  } else {
-    typeTag = '<span style="color:#8b949e;">[SYSTEM]</span>';
-    color = 'color:#8b949e;';
+  for (const log of filtered) {
+    appendLogToTerminal(log, false);
   }
 
-  return `<div style="${color} line-height:1.3; padding:1px 0; word-break:break-all; white-space:pre-wrap;"><span style="color:#484f58;">[${time}]</span> ${typeTag} <span style="color:#7ee787;">[${escapeHTML(l.source || 'app')}]</span> ${escapeHTML(l.message)}</div>`;
-}
-
-async function loadUnifiedLogs() {
-  // 1. 即座に HTTP API から最新ログを fetch して描画
-  try {
-    const types = getSelectedLogTypes();
-    const search = document.getElementById('unified-log-search')?.value.trim() || '';
-    const level = document.getElementById('unified-log-level')?.value || 'all';
-    const params = new URLSearchParams({
-      types: types.join(','),
-      search,
-      level,
-      limit: '200',
-    });
-    const res = await api(`/logs?${params.toString()}`);
-    if (res.logs && Array.isArray(res.logs)) {
-      unifiedLogData = res.logs;
-      renderUnifiedLogs();
-    }
-  } catch (err) {
-    console.warn('[NMT] HTTP log fetch warning:', err.message);
-  }
-
-  // 2. WebSocket 接続の確認・初期化
-  if (!unifiedLogWS || unifiedLogWS.readyState !== WebSocket.OPEN) {
-    initUnifiedLogsWS();
-  } else {
-    sendWSFilter();
+  if (document.getElementById('log-autoscroll').checked) {
+    container.scrollTop = container.scrollHeight;
   }
 }
 
-// フィルターイベントリスナー
-['filter-log-system', 'filter-log-error', 'filter-log-security', 'filter-log-ai', 'filter-log-admin', 'filter-log-moderation'].forEach((id) => {
-  document.getElementById(id)?.addEventListener('change', () => {
-    renderUnifiedLogs();
-    sendWSFilter();
-  });
+function appendLogToTerminal(log, autoScroll = true) {
+  const container = document.getElementById('terminal-logs');
+  const empty = container.querySelector('.empty-state');
+  if (empty) container.innerHTML = '';
+
+  const line = document.createElement('div');
+  line.className = 'log-line';
+
+  const timeStr = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+  const level = log.level || 'info';
+
+  line.innerHTML = `
+    <span class="log-time">${timeStr}</span>
+    <span class="log-badge log-badge-${level}">${level.toUpperCase()}</span>
+    <span class="log-msg">${escapeHtml(log.message)}</span>
+  `;
+
+  container.appendChild(line);
+
+  if (autoScroll && document.getElementById('log-autoscroll').checked) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+document.getElementById('log-level-filter')?.addEventListener('change', renderLogs);
+document.getElementById('log-search-input')?.addEventListener('input', renderLogs);
+document.getElementById('btn-clear-logs')?.addEventListener('click', async () => {
+  await api('/api/logs', { method: 'DELETE' });
+  state.logs = [];
+  renderLogs();
 });
 
-document.getElementById('unified-log-search')?.addEventListener('input', debounce(() => {
-  renderUnifiedLogs();
-  sendWSFilter();
-}, 300));
-
-document.getElementById('unified-log-level')?.addEventListener('change', () => {
-  renderUnifiedLogs();
-  sendWSFilter();
-});
-
-document.getElementById('reconnect-ws-btn')?.addEventListener('click', initUnifiedLogsWS);
-document.getElementById('clear-unified-logs-btn')?.addEventListener('click', async () => {
-  await api('/logs/clear', { method: 'POST' });
-  unifiedLogData = [];
-  renderUnifiedLogs();
-});
-
-// ── 6. Real-time Notifications & Approvals ──────────────────────────────
-let notificationEventSource = null;
-const receivedNotificationIds = new Set();
-
-function initNotificationsSSE() {
-  const token = localStorage.getItem('nmt_token');
-  if (!token) return;
-
-  if (notificationEventSource) {
-    notificationEventSource.close();
-  }
+// ── 3. Errors Tab Logic ──
+async function loadErrors() {
+  const status = document.getElementById('error-status-filter').value;
+  const search = document.getElementById('error-search-input').value;
 
   try {
-    notificationEventSource = new EventSource(`/api/notifications/stream?token=${encodeURIComponent(token)}`);
+    const data = await api(`/api/errors?status=${status}&search=${encodeURIComponent(search)}`);
+    state.errors = data.errors || [];
 
-    notificationEventSource.onmessage = (event) => {
-      try {
-        const item = JSON.parse(event.data);
-        if (item.id && receivedNotificationIds.has(item.id)) return;
-        if (item.id) {
-          receivedNotificationIds.add(item.id);
-          if (receivedNotificationIds.size > 500) {
-            receivedNotificationIds.delete(receivedNotificationIds.values().next().value);
-          }
-        }
-        handleIncomingNotification(item);
-      } catch (_) {}
-    };
-
-    notificationEventSource.onerror = () => {
-      // 再接続はブラウザが自動実行
-    };
-  } catch (e) {
-    console.warn('SSE connection failed:', e);
-  }
-
-  // 初期通知 & 承認リクエスト取得
-  loadUnreadNotificationCount();
-  checkPendingApprovals();
-}
-
-function handleIncomingNotification(item) {
-  // バッジ更新
-  loadUnreadNotificationCount();
-
-  // 承認リクエスト通知の場合
-  if (item.type === 'approval_request') {
-    checkPendingApprovals();
-  }
-
-  // ブラウザ通知が許可されていれば表示
-  if (window.Notification && Notification.permission === 'granted') {
-    try {
-      new Notification(item.title, {
-        body: item.message,
-        icon: '/favicon.ico',
-      });
-    } catch (_) {}
-  }
-}
-
-async function loadUnreadNotificationCount() {
-  try {
-    const data = await api('/notifications');
-    const list = data.notifications || [];
-    const unread = list.filter((n) => !n.read).length;
-    const badge = document.getElementById('unread-notifications-badge');
-    if (unread > 0) {
-      badge.textContent = unread;
+    const badge = document.getElementById('errors-count-badge');
+    if (data.openCount > 0) {
+      badge.textContent = data.openCount;
       badge.classList.remove('hidden');
     } else {
       badge.classList.add('hidden');
     }
+
+    renderErrors();
   } catch (_) {}
 }
 
-async function checkPendingApprovals() {
-  try {
-    const data = await api('/approvals/pending');
-    const requests = data.requests || [];
-    const btn = document.getElementById('nav-approvals-btn');
-    const badge = document.getElementById('pending-approvals-badge');
+function renderErrors() {
+  const container = document.getElementById('errors-list');
+  container.innerHTML = '';
 
-    if (requests.length > 0) {
-      badge.textContent = requests.length;
-      btn.classList.remove('hidden');
-    } else {
-      btn.classList.add('hidden');
-    }
-  } catch (_) {}
-}
-
-// 承認リクエストモーダル
-async function openApprovalsModal() {
-  const data = await api('/approvals/pending');
-  const requests = data.requests || [];
-
-  const modalTitle = document.getElementById('modal-title');
-  const modalBody = document.getElementById('modal-body');
-  const modalFooter = document.getElementById('modal-footer');
-
-  modalTitle.textContent = 'Pending Access Approvals';
-  if (requests.length === 0) {
-    modalBody.innerHTML = '<div class="empty-state">No pending approval requests.</div>';
-    modalFooter.innerHTML = '';
-  } else {
-    modalBody.innerHTML = `
-      <div style="display:flex; flex-direction:column; gap:0.8rem;">
-        ${requests.map((r) => `
-          <div class="card" style="border-left: 3px solid #e3b341;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <strong style="color:#e3b341;">[${r.type.toUpperCase()}] ${escapeHTML(r.reason)}</strong>
-              <span style="font-size:10px; color:var(--secondary-text-color);">${new Date(r.requestedAt).toLocaleTimeString()}</span>
-            </div>
-            ${r.target ? `<div style="font-size:12px; margin-top:0.3rem;">Target: <code>${escapeHTML(r.target)}</code></div>` : ''}
-            ${r.command ? `<div style="font-size:12px; margin-top:0.3rem;"><pre class="code-box" style="margin:0.2rem 0;">${escapeHTML(r.command)}</pre></div>` : ''}
-            <div style="display:flex; gap:0.4rem; margin-top:0.6rem;">
-              <button class="btn btn-primary btn-sm btn-approve-session" data-id="${escapeHTML(r.id)}">Approve for Session</button>
-              <button class="btn btn-secondary btn-sm btn-approve-once" data-id="${escapeHTML(r.id)}">Approve Once</button>
-              <button class="btn btn-secondary btn-sm btn-deny" data-id="${escapeHTML(r.id)}" style="color:#f85149; border-color:#f85149;">Deny</button>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    `;
-    modalFooter.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button>';
-
-    modalBody.querySelectorAll('.btn-approve-session').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await api(`/approvals/${encodeURIComponent(btn.dataset.id)}/approve`, { method: 'POST', body: JSON.stringify({ scope: 'session' }) });
-        openApprovalsModal();
-        checkPendingApprovals();
-      });
-    });
-
-    modalBody.querySelectorAll('.btn-approve-once').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await api(`/approvals/${encodeURIComponent(btn.dataset.id)}/approve`, { method: 'POST', body: JSON.stringify({ scope: 'once' }) });
-        openApprovalsModal();
-        checkPendingApprovals();
-      });
-    });
-
-    modalBody.querySelectorAll('.btn-deny').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await api(`/approvals/${encodeURIComponent(btn.dataset.id)}/deny`, { method: 'POST' });
-        openApprovalsModal();
-        checkPendingApprovals();
-      });
-    });
-  }
-
-  showModal();
-}
-
-// 通知一覧モーダル
-async function openNotificationsModal() {
-  const data = await api('/notifications');
-  const list = data.notifications || [];
-
-  const modalTitle = document.getElementById('modal-title');
-  const modalBody = document.getElementById('modal-body');
-  const modalFooter = document.getElementById('modal-footer');
-
-  modalTitle.textContent = 'Notifications & Alerts';
-  if (list.length === 0) {
-    modalBody.innerHTML = '<div class="empty-state">No notifications.</div>';
-  } else {
-    modalBody.innerHTML = `
-      <div style="display:flex; flex-direction:column; gap:0.5rem; max-height:400px; overflow-y:auto;">
-        ${list.map((n) => {
-          const borderColor = n.type === 'error' ? '#f85149' : n.type === 'approval_request' ? '#e3b341' : n.type === 'security_alert' ? '#da3633' : '#58a6ff';
-          return `
-            <div class="card" style="border-left: 3px solid ${borderColor}; padding:0.6rem;">
-              <div style="display:flex; justify-content:space-between; font-size:11px;">
-                <strong>${escapeHTML(n.title)}</strong>
-                <span style="color:var(--secondary-text-color);">${new Date(n.timestamp).toLocaleTimeString()}</span>
-              </div>
-              <div style="font-size:12px; margin-top:0.2rem;">${escapeHTML(n.message)}</div>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    `;
-  }
-
-  modalFooter.innerHTML = `
-    <button class="btn btn-secondary btn-sm" id="modal-mark-read-btn">Mark All as Read</button>
-    <button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button>
-  `;
-
-  document.getElementById('modal-mark-read-btn')?.addEventListener('click', async () => {
-    await api('/notifications/read-all', { method: 'POST' });
-    loadUnreadNotificationCount();
-    closeModal();
-  });
-
-  showModal();
-}
-
-document.getElementById('nav-approvals-btn').addEventListener('click', openApprovalsModal);
-document.getElementById('nav-notifications-btn').addEventListener('click', openNotificationsModal);
-
-document.getElementById('enable-browser-notifications-btn')?.addEventListener('click', async () => {
-  if (!('Notification' in window)) {
-    alert('This browser does not support desktop notifications.');
+  if (state.errors.length === 0) {
+    container.innerHTML = '<div class="empty-state">該当するエラーはありません</div>';
     return;
   }
 
-  const permission = await Notification.requestPermission();
-  if (permission === 'granted') {
-    await api('/notifications/subscribe', { method: 'POST', body: JSON.stringify({ enabled: true }) });
-    alert('Browser notifications enabled!');
-  } else {
-    alert(`Notification permission: ${permission}`);
+  for (const err of state.errors) {
+    const card = document.createElement('div');
+    card.className = 'error-card';
+
+    const timeStr = err.lastOccurredAt ? new Date(err.lastOccurredAt).toLocaleString() : '';
+    const countBadge = err.count > 1 ? `<span class="badge badge-danger">×${err.count}回</span>` : '';
+
+    card.innerHTML = `
+      <div class="error-card-header">
+        <div class="error-msg">${escapeHtml(err.message)}</div>
+        <div>${countBadge}</div>
+      </div>
+      <div class="error-meta">
+        <span>発生元: ${escapeHtml(err.source || 'server')}</span>
+        <span>最終発生: ${timeStr}</span>
+        <span>状態: <strong>${err.status}</strong></span>
+      </div>
+      <div class="error-details hidden">
+        ${err.stack ? escapeHtml(err.stack) : 'スタックトレースなし'}
+      </div>
+    `;
+
+    card.addEventListener('click', () => {
+      const details = card.querySelector('.error-details');
+      details.classList.toggle('hidden');
+    });
+
+    container.appendChild(card);
+  }
+}
+
+document.getElementById('error-status-filter')?.addEventListener('change', loadErrors);
+document.getElementById('error-search-input')?.addEventListener('input', loadErrors);
+document.getElementById('btn-refresh-errors')?.addEventListener('click', loadErrors);
+document.getElementById('btn-clear-errors')?.addEventListener('click', async () => {
+  if (!confirm('すべてのエラー記録を消去しますか？')) return;
+  await api('/api/errors', { method: 'DELETE' });
+  loadErrors();
+});
+
+// ── 4. Settings Tab Logic ──
+async function loadSettings() {
+  try {
+    const envData = await api('/api/settings/env');
+    document.getElementById('env-editor').value = envData.content || '';
+
+    const configData = await api('/api/settings/config');
+    document.getElementById('config-editor').value = JSON.stringify(configData.config || {}, null, 2);
+  } catch (_) {}
+}
+
+document.getElementById('btn-save-settings')?.addEventListener('click', async () => {
+  const msgEl = document.getElementById('settings-message');
+  const showMsg = (text, isSuccess) => {
+    msgEl.textContent = text;
+    msgEl.className = `alert ${isSuccess ? 'alert-success' : 'alert-danger'}`;
+    msgEl.classList.remove('hidden');
+    setTimeout(() => msgEl.classList.add('hidden'), 6000);
+  };
+
+  try {
+    if (state.activeSubtab === 'env') {
+      const content = document.getElementById('env-editor').value;
+      const res = await api('/api/settings/env', {
+        method: 'POST',
+        body: JSON.stringify({ content }),
+      });
+      showMsg(res.message || '.env を保存しました', true);
+    } else {
+      const raw = document.getElementById('config-editor').value;
+      const parsed = JSON.parse(raw);
+      const res = await api('/api/settings/config', {
+        method: 'POST',
+        body: JSON.stringify({ config: parsed }),
+      });
+      showMsg(res.message || 'config.json を保存しました', true);
+    }
+  } catch (err) {
+    showMsg(err.message || '保存に失敗しました', false);
   }
 });
 
-// ── Modal & Utilities ────────────────────────────────────────────────────
-function showModal() {
-  document.getElementById('detail-modal').classList.remove('hidden');
-}
-
-function closeModal() {
-  currentOpenErrorId = null;
-  document.getElementById('detail-modal').classList.add('hidden');
-}
-
-document.getElementById('modal-close-btn').addEventListener('click', closeModal);
-document.getElementById('detail-modal').addEventListener('click', (e) => {
-  if (e.target.id === 'detail-modal') closeModal();
-});
-
-function escapeHTML(str) {
-  return String(str || '')
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+    .replace(/"/g, '&quot;');
 }
 
-function formatMarkdown(text) {
-  if (!text) return '';
-  return escapeHTML(text)
-    .replace(/### (.*?)\n/g, '<h4 style="margin-top:0.5rem; color:var(--primary-color); font-size:12px;">$1</h4>')
-    .replace(/## (.*?)\n/g, '<h3 style="margin-top:0.6rem; color:var(--text-color); font-size:13px;">$1</h3>')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code style="background:#000; padding:1px 3px; border-radius:2px;">$1</code>')
-    .replace(/\n/g, '<br>');
+// ── Init ──
+function init() {
+  setupControls();
+  setupWebSocket();
+  loadStatus();
+  loadErrors();
+
+  if (state.statusTimer) clearInterval(state.statusTimer);
+  state.statusTimer = setInterval(() => {
+    if (state.activeTab === 'status') loadStatus();
+  }, 3000);
 }
 
-function debounce(fn, ms) {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
-}
-
+// Start
 checkAuth();

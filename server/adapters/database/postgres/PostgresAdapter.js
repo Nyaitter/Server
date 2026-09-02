@@ -405,14 +405,14 @@ class PostgresAdapter extends DatabaseAdapter {
 			throw new Error('Invalid PostgreSQL sslmode. Use disable, allow, prefer, require, verify-ca, verify-full, or no-verify.');
 		}
 
-		const poolMax = Math.max(1, Number(this.config.poolSize) || 10);
-		const poolMin = Math.min(poolMax, Math.max(1, Number(this.config.poolMin) || 2));
+		const poolMax = Math.max(25, Number(this.config.poolSize) || 25);
+		const poolMin = Math.min(poolMax, Math.max(5, Number(this.config.poolMin) || 5));
 		const poolOptions = {
 			connectionString,
 			max: poolMax,
 			min: poolMin,
 			idleTimeoutMillis: this.config.poolIdleTimeoutMs || 300000,
-			connectionTimeoutMillis: this.config.connectionTimeoutMs || 15000,
+			connectionTimeoutMillis: this.config.connectionTimeoutMs || 10000,
 			maxLifetimeSeconds: this.config.poolMaxLifetimeSeconds || 1800,
 			keepAlive: true,
 			keepAliveInitialDelayMillis: 10000,
@@ -3448,53 +3448,55 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		if (validViewerId != null) {
 			const cachedAffinity = this._affinityCache.get(validViewerId);
+			const cachedFollows = this._followCache.get(validViewerId);
+			const cachedReactions = this._reactionCache.get(validViewerId);
+
 			if (cachedAffinity && cachedAffinity.expiresAt > now) {
 				keywordProfile = cachedAffinity.profile;
-			} else {
-				fetchTasks.push(
-					this.pool.query(
-						'SELECT keyword, score FROM user_keyword_affinities WHERE user_id = $1 ORDER BY score DESC LIMIT 25',
-						[validViewerId],
-					).then(({ rows }) => {
-						keywordProfile = new Map(rows.map((r) => [String(r.keyword).toLowerCase(), Number(r.score) || 0]));
-						if (this._affinityCache.size >= 2000) this._affinityCache.clear();
-						this._affinityCache.set(validViewerId, { profile: keywordProfile, expiresAt: Date.now() + 60000 });
-					}).catch(() => {})
-				);
 			}
-
-			const cachedFollows = this._followCache.get(validViewerId);
 			if (cachedFollows && cachedFollows.expiresAt > now) {
 				directFollows = cachedFollows.follows;
-			} else {
-				fetchTasks.push(
-					this.pool.query(
-						'SELECT following_id FROM follows WHERE follower_id = $1 LIMIT 100',
-						[validViewerId],
-					).then(({ rows }) => {
-						directFollows = new Set(rows.map((r) => Number(r.following_id)));
-						if (this._followCache.size >= 2000) this._followCache.clear();
-						this._followCache.set(validViewerId, { follows: directFollows, expiresAt: Date.now() + 60000 });
-					}).catch(() => {})
-				);
 			}
-
-			const cachedReactions = this._reactionCache.get(validViewerId);
 			if (cachedReactions && cachedReactions.expiresAt > now) {
 				reactedPostIds = cachedReactions.posts;
-			} else {
+			}
+
+			if (!cachedAffinity || cachedAffinity.expiresAt <= now ||
+				!cachedFollows || cachedFollows.expiresAt <= now ||
+				!cachedReactions || cachedReactions.expiresAt <= now) {
 				fetchTasks.push(
 					this.pool.query(
-						`(SELECT post_id FROM likes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
-						 UNION ALL
-						 (SELECT post_id FROM stars WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
-						 UNION ALL
-						 (SELECT post_id FROM reposts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)`,
+						`SELECT
+							(SELECT COALESCE(jsonb_object_agg(keyword, score), '{}'::jsonb)
+							 FROM (SELECT keyword, score FROM user_keyword_affinities WHERE user_id = $1 ORDER BY score DESC LIMIT 25) _ka) AS affinities,
+							(SELECT COALESCE(jsonb_agg(following_id), '[]'::jsonb)
+							 FROM (SELECT following_id FROM follows WHERE follower_id = $1 LIMIT 100) _f) AS follows,
+							(SELECT COALESCE(jsonb_agg(post_id), '[]'::jsonb)
+							 FROM (
+								SELECT post_id FROM likes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100
+								UNION ALL
+								SELECT post_id FROM stars WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100
+								UNION ALL
+								SELECT post_id FROM reposts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100
+							 ) _r) AS reactions`,
 						[validViewerId],
 					).then(({ rows }) => {
-						reactedPostIds = new Set(rows.map((r) => Number(r.post_id)));
-						if (this._reactionCache.size >= 2000) this._reactionCache.clear();
-						this._reactionCache.set(validViewerId, { posts: reactedPostIds, expiresAt: Date.now() + 60000 });
+						const row = rows[0] || {};
+						if (row.affinities && typeof row.affinities === 'object') {
+							keywordProfile = new Map(Object.entries(row.affinities).map(([k, v]) => [String(k).toLowerCase(), Number(v) || 0]));
+							if (this._affinityCache.size >= 2000) this._affinityCache.clear();
+							this._affinityCache.set(validViewerId, { profile: keywordProfile, expiresAt: Date.now() + 60000 });
+						}
+						if (Array.isArray(row.follows)) {
+							directFollows = new Set(row.follows.map(Number));
+							if (this._followCache.size >= 2000) this._followCache.clear();
+							this._followCache.set(validViewerId, { follows: directFollows, expiresAt: Date.now() + 60000 });
+						}
+						if (Array.isArray(row.reactions)) {
+							reactedPostIds = new Set(row.reactions.map(Number));
+							if (this._reactionCache.size >= 2000) this._reactionCache.clear();
+							this._reactionCache.set(validViewerId, { posts: reactedPostIds, expiresAt: Date.now() + 60000 });
+						}
 					}).catch(() => {})
 				);
 			}
@@ -4150,57 +4152,47 @@ class PostgresAdapter extends DatabaseAdapter {
 		const pId = Number(postId);
 		const now = new Date().toISOString();
 
-		const result = await this._withTransaction(async (client) => {
-			const delResult = await client.query(
-				'DELETE FROM likes WHERE user_id = $1 AND post_id = $2 RETURNING 1',
-				[uId, pId],
-			);
-			let liked = false;
-			let count = 0;
-			let tags = null;
-			let changed = false;
+		const sql = `
+			WITH del AS (
+				DELETE FROM likes WHERE user_id = $1 AND post_id = $2
+				RETURNING 1
+			),
+			ins AS (
+				INSERT INTO likes (user_id, post_id, created_at)
+				SELECT $1, $2, $3
+				WHERE NOT EXISTS (SELECT 1 FROM del)
+				ON CONFLICT DO NOTHING
+				RETURNING 1
+			),
+			upd AS (
+				UPDATE posts
+				SET like_count = CASE
+					WHEN EXISTS (SELECT 1 FROM del) THEN GREATEST(0, like_count - 1)
+					WHEN EXISTS (SELECT 1 FROM ins) THEN like_count + 1
+					ELSE like_count
+				END
+				WHERE id = $2
+				RETURNING like_count, tags
+			)
+			SELECT
+				EXISTS(SELECT 1 FROM ins) AS liked,
+				EXISTS(SELECT 1 FROM del) AS unliked,
+				(SELECT like_count FROM upd) AS count,
+				(SELECT tags FROM upd) AS tags;
+		`;
+		const { rows } = await this.pool.query(sql, [uId, pId, now]);
+		const row = rows[0] || {};
+		const liked = Boolean(row.liked);
+		const unliked = Boolean(row.unliked);
+		const count = Math.max(0, Number(row.count) || 0);
+		const tags = row.tags;
 
-			if (delResult.rowCount > 0) {
-				const { rows } = await client.query(
-					'UPDATE posts SET like_count = GREATEST(0, like_count - 1) WHERE id = $1 RETURNING like_count, tags',
-					[pId],
-				);
-				liked = false;
-				changed = true;
-				count = Math.max(0, Number(rows[0]?.like_count) || 0);
-				tags = rows[0]?.tags;
-			} else {
-				const insertResult = await client.query(
-					'INSERT INTO likes (user_id, post_id, created_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1',
-					[uId, pId, now],
-				);
-				if (insertResult.rowCount > 0) {
-					const { rows } = await client.query(
-						'UPDATE posts SET like_count = like_count + 1 WHERE id = $1 RETURNING like_count, tags',
-						[pId],
-					);
-					liked = true;
-					changed = true;
-					count = Math.max(0, Number(rows[0]?.like_count) || 0);
-					tags = rows[0]?.tags;
-				} else {
-					const { rows } = await client.query(
-						'SELECT like_count, tags FROM posts WHERE id = $1',
-						[pId],
-					);
-					liked = true;
-					count = Math.max(0, Number(rows[0]?.like_count) || 0);
-					tags = rows[0]?.tags;
-				}
-			}
+		if (tags && (liked || unliked)) {
+			const delta = liked ? 1 : -1;
+			this._adjustUserKeywordAffinitiesForTags(this.pool, uId, tags, delta).catch(() => {});
+		}
 
-			if (tags && changed) {
-				const delta = liked ? 1 : -1;
-				await this._adjustUserKeywordAffinitiesForTags(client, uId, tags, delta);
-			}
-
-			return { liked, count };
-		});
+		const result = { liked, count };
 		const cachedPost = this._getPostCache()?.get(pId);
 		if (cachedPost) {
 			this._getPostCache()?.set(pId, {
@@ -4243,57 +4235,47 @@ class PostgresAdapter extends DatabaseAdapter {
 		const pId = Number(postId);
 		const now = new Date().toISOString();
 
-		const result = await this._withTransaction(async (client) => {
-			const delResult = await client.query(
-				'DELETE FROM stars WHERE user_id = $1 AND post_id = $2 RETURNING 1',
-				[uId, pId],
-			);
-			let starred = false;
-			let count = 0;
-			let tags = null;
-			let changed = false;
+		const sql = `
+			WITH del AS (
+				DELETE FROM stars WHERE user_id = $1 AND post_id = $2
+				RETURNING 1
+			),
+			ins AS (
+				INSERT INTO stars (user_id, post_id, created_at)
+				SELECT $1, $2, $3
+				WHERE NOT EXISTS (SELECT 1 FROM del)
+				ON CONFLICT DO NOTHING
+				RETURNING 1
+			),
+			upd AS (
+				UPDATE posts
+				SET star_count = CASE
+					WHEN EXISTS (SELECT 1 FROM del) THEN GREATEST(0, star_count - 1)
+					WHEN EXISTS (SELECT 1 FROM ins) THEN star_count + 1
+					ELSE star_count
+				END
+				WHERE id = $2
+				RETURNING star_count, tags
+			)
+			SELECT
+				EXISTS(SELECT 1 FROM ins) AS starred,
+				EXISTS(SELECT 1 FROM del) AS unstarred,
+				(SELECT star_count FROM upd) AS count,
+				(SELECT tags FROM upd) AS tags;
+		`;
+		const { rows } = await this.pool.query(sql, [uId, pId, now]);
+		const row = rows[0] || {};
+		const starred = Boolean(row.starred);
+		const unstarred = Boolean(row.unstarred);
+		const count = Math.max(0, Number(row.count) || 0);
+		const tags = row.tags;
 
-			if (delResult.rowCount > 0) {
-				const { rows } = await client.query(
-					'UPDATE posts SET star_count = GREATEST(0, star_count - 1) WHERE id = $1 RETURNING star_count, tags',
-					[pId],
-				);
-				starred = false;
-				changed = true;
-				count = Math.max(0, Number(rows[0]?.star_count) || 0);
-				tags = rows[0]?.tags;
-			} else {
-				const insertResult = await client.query(
-					'INSERT INTO stars (user_id, post_id, created_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1',
-					[uId, pId, now],
-				);
-				if (insertResult.rowCount > 0) {
-					const { rows } = await client.query(
-						'UPDATE posts SET star_count = star_count + 1 WHERE id = $1 RETURNING star_count, tags',
-						[pId],
-					);
-					starred = true;
-					changed = true;
-					count = Math.max(0, Number(rows[0]?.star_count) || 0);
-					tags = rows[0]?.tags;
-				} else {
-					const { rows } = await client.query(
-						'SELECT star_count, tags FROM posts WHERE id = $1',
-						[pId],
-					);
-					starred = true;
-					count = Math.max(0, Number(rows[0]?.star_count) || 0);
-					tags = rows[0]?.tags;
-				}
-			}
+		if (tags && (starred || unstarred)) {
+			const delta = starred ? 1 : -1;
+			this._adjustUserKeywordAffinitiesForTags(this.pool, uId, tags, delta).catch(() => {});
+		}
 
-			if (tags && changed) {
-				const delta = starred ? 3 : -3;
-				await this._adjustUserKeywordAffinitiesForTags(client, uId, tags, delta);
-			}
-
-			return { starred, count };
-		});
+		const result = { starred, count };
 		const cachedPost = this._getPostCache()?.get(pId);
 		if (cachedPost) {
 			this._getPostCache()?.set(pId, {
@@ -4332,35 +4314,36 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async togglePin(userId, postId) {
-		const result = await this._withTransaction(async (client) => {
-			const post = await client.query(
-				'SELECT user_id FROM posts WHERE id = $1',
-				[Number(postId)],
-			);
-			if (!post.rows[0] || Number(post.rows[0].user_id) !== Number(userId)) {
-				throw new Error('Cannot pin a post you do not own');
-			}
+		const uId = Number(userId);
+		const pId = Number(postId);
+		const now = new Date().toISOString();
 
-			const existing = await client.query(
-				'SELECT 1 FROM pinned_posts WHERE user_id = $1 AND post_id = $2',
-				[Number(userId), Number(postId)],
-			);
-			if (existing.rows.length > 0) {
-				await client.query(
-					'DELETE FROM pinned_posts WHERE user_id = $1 AND post_id = $2',
-					[Number(userId), Number(postId)],
-				);
-				return { pinned: false };
-			}
-			const now = new Date().toISOString();
-			await client.query(
-				'INSERT INTO pinned_posts (user_id, post_id, created_at) VALUES ($1, $2, $3)',
-				[Number(userId), Number(postId), now],
-			);
-			return { pinned: true };
-		});
-		this._invalidateProfileStatsCache(userId);
-		return result;
+		const sql = `
+			WITH post_check AS (
+				SELECT id FROM posts WHERE id = $1 AND user_id = $2
+			),
+			del AS (
+				DELETE FROM pinned_posts
+				WHERE user_id = $2 AND post_id = $1 AND EXISTS (SELECT 1 FROM post_check)
+				RETURNING 1
+			),
+			ins AS (
+				INSERT INTO pinned_posts (user_id, post_id, created_at)
+				SELECT $2, $1, $3
+				WHERE EXISTS (SELECT 1 FROM post_check) AND NOT EXISTS (SELECT 1 FROM del)
+				ON CONFLICT DO NOTHING
+				RETURNING 1
+			)
+			SELECT
+				EXISTS (SELECT 1 FROM post_check) AS post_exists,
+				EXISTS (SELECT 1 FROM ins) AS pinned;
+		`;
+		const { rows } = await this.pool.query(sql, [pId, uId, now]);
+		if (!rows[0]?.post_exists) {
+			throw new Error('Cannot pin a post you do not own');
+		}
+		this._invalidateProfileStatsCache(uId);
+		return { pinned: Boolean(rows[0]?.pinned) };
 	}
 
 	async getPinnedPosts(userId) {
