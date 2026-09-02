@@ -3444,8 +3444,9 @@ class PostgresAdapter extends DatabaseAdapter {
 		let directFollows = new Set();
 		let reactedPostIds = new Set();
 
+		const fetchTasks = [];
+
 		if (validViewerId != null) {
-			const fetchTasks = [];
 			const cachedAffinity = this._affinityCache.get(validViewerId);
 			if (cachedAffinity && cachedAffinity.expiresAt > now) {
 				keywordProfile = cachedAffinity.profile;
@@ -3484,11 +3485,11 @@ class PostgresAdapter extends DatabaseAdapter {
 			} else {
 				fetchTasks.push(
 					this.pool.query(
-						`SELECT post_id FROM likes WHERE user_id = $1
-						 UNION
-						 SELECT post_id FROM stars WHERE user_id = $1
-						 UNION
-						 SELECT post_id FROM reposts WHERE user_id = $1`,
+						`(SELECT post_id FROM likes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
+						 UNION ALL
+						 (SELECT post_id FROM stars WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
+						 UNION ALL
+						 (SELECT post_id FROM reposts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)`,
 						[validViewerId],
 					).then(({ rows }) => {
 						reactedPostIds = new Set(rows.map((r) => Number(r.post_id)));
@@ -3497,26 +3498,27 @@ class PostgresAdapter extends DatabaseAdapter {
 					}).catch(() => {})
 				);
 			}
-
-			if (fetchTasks.length > 0) {
-				await Promise.all(fetchTasks);
-			}
 		}
 
 		let candidateRows = [];
 		let hasMore = false;
 
-		if (validViewerId == null && !decodedCursor && normalizedBeforeId == null && normalizedOffset === 0 && this._candidatePostsCache.expiresAt > now && this._candidatePostsCache.posts.length > 0) {
-			candidateRows = this._candidatePostsCache.posts;
-			hasMore = candidateRows.length >= candidateLimit;
-		} else {
-			const { rows } = await this.pool.query(query, params);
-			hasMore = rows.length >= candidateLimit;
-			candidateRows = rows.slice(0, candidateLimit - 1);
-			if (validViewerId == null && !decodedCursor && normalizedBeforeId == null && normalizedOffset === 0) {
-				this._candidatePostsCache = { posts: candidateRows, expiresAt: now + 300000 };
+		const candidateTask = (async () => {
+			if (validViewerId == null && !decodedCursor && normalizedBeforeId == null && normalizedOffset === 0 && this._candidatePostsCache.expiresAt > now && this._candidatePostsCache.posts.length > 0) {
+				candidateRows = this._candidatePostsCache.posts;
+				hasMore = candidateRows.length >= candidateLimit;
+			} else {
+				const { rows } = await this.pool.query(query, params);
+				hasMore = rows.length >= candidateLimit;
+				candidateRows = rows.slice(0, candidateLimit - 1);
+				if (validViewerId == null && !decodedCursor && normalizedBeforeId == null && normalizedOffset === 0) {
+					this._candidatePostsCache = { posts: candidateRows, expiresAt: now + 300000 };
+				}
 			}
-		}
+		})();
+
+		fetchTasks.push(candidateTask);
+		await Promise.all(fetchTasks);
 
 		// Fast in-memory scoring on Node.js server
 		const scored = scoreRecommendedPosts(candidateRows, {
@@ -5003,10 +5005,26 @@ class PostgresAdapter extends DatabaseAdapter {
 						AND attachments IS NOT NULL
 						AND jsonb_typeof(attachments) = 'array'
 						AND jsonb_array_length(attachments) > 0) AS media_count,
-				(SELECT post_id FROM pinned_posts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1) AS pinned_post_id`,
+				(SELECT post_id FROM pinned_posts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1) AS pinned_post_id,
+				COALESCE((
+					SELECT jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name, 'icon_data', g.icon_data))
+					FROM (
+						SELECT g.id, g.name, g.icon_data
+						FROM group_memberships gm
+						JOIN groups g ON g.id = gm.group_id
+						WHERE gm.user_id = $1 AND gm.status = 'active'
+						  AND g.deleted_at IS NULL AND g.icon_data IS NOT NULL AND g.icon_data <> ''
+						  AND g.visibility IN ('open', 'open_invite')
+						ORDER BY gm.joined_at DESC NULLS LAST, g.created_at DESC
+						LIMIT 5
+					) g
+				), '[]'::jsonb) AS group_badges`,
 			[targetUserId],
 		);
 		const row = rows[0] || {};
+		const groupBadges = Array.isArray(row.group_badges)
+			? row.group_badges
+			: (typeof row.group_badges === 'string' ? JSON.parse(row.group_badges || '[]') : []);
 		const stats = {
 			followingCount: Math.max(0, Number(row.following_count) || 0),
 			followerCount: Math.max(0, Number(row.follower_count) || 0),
@@ -5018,6 +5036,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			post_count: Math.max(0, Number(row.post_count) || 0),
 			media_count: Math.max(0, Number(row.media_count) || 0),
 			pinned_post_id: row.pinned_post_id != null ? Number(row.pinned_post_id) : null,
+			groupBadges,
+			group_badges: groupBadges,
 		};
 		cache?.set(targetUserId, stats);
 		return stats;

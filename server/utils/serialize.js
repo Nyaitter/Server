@@ -223,23 +223,23 @@ async function serializeUser(db, user, viewerId = null, publicUrl = null) {
 		})
 		: [];
 
-	let groupBadges = Array.isArray(user.group_badges) && user.group_badges.length > 0
+	let groupBadges = Array.isArray(user.group_badges)
 		? user.group_badges.slice(0, 5)
-		: (Array.isArray(accountState?.group_badges) && accountState.group_badges.length > 0 ? accountState.group_badges.slice(0, 5) : null);
-	if (!groupBadges) {
+		: (Array.isArray(accountState?.group_badges) ? accountState.group_badges.slice(0, 5) : null);
+	if (groupBadges === null) {
 		const cached = userGroupBadgesCache.get(Number(id));
 		if (cached && cached.expiresAt > Date.now()) {
 			groupBadges = cached.badges.slice(0, 5);
 		}
 	}
-	if (!groupBadges && typeof db.getUsersGroupBadgesBatch === 'function') {
+	if (groupBadges === null && typeof db.getUsersGroupBadgesBatch === 'function') {
 		try {
 			const badgeMap = await db.getUsersGroupBadgesBatch([id]);
 			const fetched = (badgeMap.get(Number(id)) || []).slice(0, 5);
 			if (fetched.length > 0) groupBadges = fetched;
 		} catch (_) {}
 	}
-	if (!groupBadges && typeof db.getUserGroups === 'function') {
+	if (groupBadges === null && typeof db.getUserGroups === 'function') {
 		try {
 			const groups = await db.getUserGroups(id, { status: 'active', limit: 20 });
 			groupBadges = (groups || [])
@@ -338,31 +338,32 @@ async function serializePublicProfile(
 	const mediaCount = stats?.mediaCount || 0;
 	const pinnedPostId = stats?.pinnedPostId || null;
 
-	let groupBadges = Array.isArray(user.group_badges) && user.group_badges.length > 0 ? user.group_badges : null;
-	if (!groupBadges && Array.isArray(knownGroups) && knownGroups.length > 0) {
-		const filtered = knownGroups
+	let groupBadges = Array.isArray(user.group_badges)
+		? user.group_badges
+		: (Array.isArray(stats?.group_badges || stats?.groupBadges) ? (stats.group_badges || stats.groupBadges) : null);
+	if (groupBadges === null && Array.isArray(knownGroups)) {
+		groupBadges = knownGroups
 			.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
 			.map((g) => ({
 				id: String(g.id),
 				name: String(g.name || ''),
 				icon_data: g.icon_data || g.iconData,
 			}));
-		if (filtered.length > 0) groupBadges = filtered;
 	}
-	if (!groupBadges) {
+	if (groupBadges === null) {
 		const cached = userGroupBadgesCache.get(Number(user.id));
 		if (cached && cached.expiresAt > Date.now()) {
 			groupBadges = cached.badges;
 		}
 	}
-	if (!groupBadges && typeof db.getUsersGroupBadgesBatch === 'function') {
+	if (groupBadges === null && typeof db.getUsersGroupBadgesBatch === 'function') {
 		try {
 			const badgeMap = await db.getUsersGroupBadgesBatch([user.id]);
 			const fetched = badgeMap.get(Number(user.id)) || [];
 			if (fetched.length > 0) groupBadges = fetched;
 		} catch (_) {}
 	}
-	if (!groupBadges && typeof db.getUserGroups === 'function') {
+	if (groupBadges === null && typeof db.getUserGroups === 'function') {
 		try {
 			const groups = await db.getUserGroups(user.id, { status: 'active', limit: 100 });
 			groupBadges = (groups || [])
@@ -720,37 +721,6 @@ async function serializePostsBatch(
 	const missingAuthorIds = [...new Set(allPosts
 		.map((post) => Number(post?.userId ?? post?.user_id ?? post?.userid ?? post?.author?.id ?? post?.user?.id))
 		.filter((authorId) => Number.isInteger(authorId) && authorId > 0 && !knownAuthorsById.has(authorId)))];
-	const [additionalUsers, metrics] = await Promise.all([
-		fetchUsersByIds(db, missingAuthorIds),
-		fetchPostMetrics(db, allPosts, currentUserId, knownViewer),
-	]);
-	const usersById = new Map(knownAuthorsById);
-	for (const user of additionalUsers) usersById.set(Number(user.id), user);
-	await attachGroupBadgesToUsers(db, Array.from(usersById.values()));
-	const metricsByPostId = new Map(metrics.map((metric) => [Number(metric.post_id), metric]));
-	const visibilityContext = await extendPostVisibilityContext(
-		db,
-		knownVisibilityContext,
-		allPosts,
-		currentUserId,
-		usersById,
-		knownViewer,
-	);
-	const visibleByPostId = new Map(allPosts.map((post) => [
-		Number(post.id),
-		canViewPostWithContext(post, visibilityContext),
-	]));
-	const postKeywordBackfillService = db?.postKeywordBackfillService;
-	if (postKeywordBackfillService) {
-		for (const post of allPosts) {
-			if (!visibleByPostId.get(Number(post.id))) continue;
-			try {
-				postKeywordBackfillService.enqueue(db, post);
-			} catch (error) {
-				console.warn('[serialize] post keyword backfill enqueue failed:', error.message);
-			}
-		}
-	}
 	const briefUsersById = new Map();
 	const visitingPostIds = new Set();
 	const rootPostsById = new Map();
@@ -797,33 +767,60 @@ async function serializePostsBatch(
 			})
 			.filter((id) => Number.isInteger(id) && id > 0 && id !== normalizedViewerId))]
 		: [];
-	const authorsFollowingViewer = new Set();
-	if (followingCheckAuthorIds.length > 0) {
-		if (typeof db.getFollowRelationshipSnapshot === 'function') {
-			try {
-				const snapshot = await db.getFollowRelationshipSnapshot(
-					normalizedViewerId,
-					followingCheckAuthorIds,
-				);
-				for (const authorId of snapshot?.followerIds || []) {
-					authorsFollowingViewer.add(Number(authorId));
-				}
-			} catch (_) {}
-		} else if (typeof db.isFollowing === 'function') {
-			await Promise.all(followingCheckAuthorIds.map(async (authorId) => {
-				try {
-					if (await db.isFollowing(authorId, normalizedViewerId)) {
-						authorsFollowingViewer.add(authorId);
-					}
-				} catch (_) {}
-			}));
-		}
-	}
 
 	const allPostIds = allPosts.map((p) => Number(p.id)).filter((id) => Number.isInteger(id) && id > 0);
-	const pollsByPostId = typeof db.getPollsByPostIds === 'function'
-		? await db.getPollsByPostIds(allPostIds, currentUserId)
-		: new Map();
+
+	const [additionalUsers, metrics, pollsByPostId, followSnapshot] = await Promise.all([
+		fetchUsersByIds(db, missingAuthorIds),
+		fetchPostMetrics(db, allPosts, currentUserId, knownViewer),
+		typeof db.getPollsByPostIds === 'function' ? db.getPollsByPostIds(allPostIds, currentUserId) : new Map(),
+		(followingCheckAuthorIds.length > 0 && typeof db.getFollowRelationshipSnapshot === 'function')
+			? db.getFollowRelationshipSnapshot(normalizedViewerId, followingCheckAuthorIds)
+			: null,
+	]);
+
+	const authorsFollowingViewer = new Set();
+	if (followSnapshot?.followerIds) {
+		for (const authorId of followSnapshot.followerIds) {
+			authorsFollowingViewer.add(Number(authorId));
+		}
+	} else if (followingCheckAuthorIds.length > 0 && typeof db.isFollowing === 'function') {
+		await Promise.all(followingCheckAuthorIds.map(async (authorId) => {
+			try {
+				if (await db.isFollowing(authorId, normalizedViewerId)) {
+					authorsFollowingViewer.add(authorId);
+				}
+			} catch (_) {}
+		}));
+	}
+
+	const usersById = new Map(knownAuthorsById);
+	for (const user of additionalUsers) usersById.set(Number(user.id), user);
+	await attachGroupBadgesToUsers(db, Array.from(usersById.values()));
+	const metricsByPostId = new Map(metrics.map((metric) => [Number(metric.post_id), metric]));
+	const visibilityContext = await extendPostVisibilityContext(
+		db,
+		knownVisibilityContext,
+		allPosts,
+		currentUserId,
+		usersById,
+		knownViewer,
+	);
+	const visibleByPostId = new Map(allPosts.map((post) => [
+		Number(post.id),
+		canViewPostWithContext(post, visibilityContext),
+	]));
+	const postKeywordBackfillService = db?.postKeywordBackfillService;
+	if (postKeywordBackfillService) {
+		for (const post of allPosts) {
+			if (!visibleByPostId.get(Number(post.id))) continue;
+			try {
+				postKeywordBackfillService.enqueue(db, post);
+			} catch (error) {
+				console.warn('[serialize] post keyword backfill enqueue failed:', error.message);
+			}
+		}
+	}
 
 	function getBriefUser(author) {
 		const authorId = Number(author?.id);

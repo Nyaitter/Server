@@ -754,13 +754,14 @@ router.get({
 }, async (req, res) => {
   const db = getDbAdapter(req);
   try {
-    const accounts = await getValidRememberedAccounts(req, db);
+    const remembered = readRememberedAccounts(req);
+    const operatorIds = remembered.map((account) => account.userId);
+    const [accounts, accessibleByOperator] = await Promise.all([
+      getValidRememberedAccounts(req, db),
+      listAccessibleImpostersForOperators(db, operatorIds),
+    ]);
     setRememberedAccountsCookie(res, accounts);
     const activeToken = getCookieValue(req, 'nyaitter_session');
-    const accessibleByOperator = await listAccessibleImpostersForOperators(
-      db,
-      accounts.map((account) => account.userId),
-    );
     const automaticallyAccessible = new Map();
     for (let index = 0; index < accounts.length; index += 1) {
       const account = accounts[index];

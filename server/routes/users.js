@@ -517,11 +517,7 @@ router.get({
 					member_count: Math.max(0, Number(group.memberCount ?? group.member_count) || 0),
 				}));
 			} else if (typeof db.getMutualUserGroups === 'function') {
-				const [mutualGroups, fetchedTargetGroups] = await Promise.all([
-					db.getMutualUserGroups(userId, viewerId, { limit: 200, offset: 0 }),
-					db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 }),
-				]);
-				targetGroups = fetchedTargetGroups;
+				const mutualGroups = await db.getMutualUserGroups(userId, viewerId, { limit: 200, offset: 0 });
 				groups = mutualGroups.map((group) => ({
 					id: String(group.id),
 					name: group.name || '',
