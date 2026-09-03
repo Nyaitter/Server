@@ -1192,6 +1192,24 @@ router.post({
 		if (!post || !(await canViewPost(db, post, userId, null, null, req.user?.visibilityUser || null))) {
 			return res.status(404).json({ error: 'Post not found' });
 		}
+		const queue = req.app.locals.postActionQueue;
+		if (queue && typeof db.hasUserLikedPost === 'function') {
+			const currentlyLiked = await db.hasUserLikedPost(userId, postId);
+			const actionId = queue.enqueue('like', async () => {
+				const result = await postService.toggleLike(userId, postId);
+				if (result.liked && post.userId !== userId) {
+					const notification = await createNotificationIfAllowed(db, {
+						userId: post.userId,
+						type: 'like',
+						fromUserId: userId,
+						target: { kind: 'post', id: postId },
+					});
+					if (notification) await publishNewNotification(req, post.userId, notification);
+				}
+			});
+			const count = typeof db.getLikeCount === 'function' ? await db.getLikeCount(postId) : 0;
+			return res.status(202).json({ success: true, queued: true, action_id: actionId, liked: !currentlyLiked, count: Math.max(0, count + (currentlyLiked ? -1 : 1)), updated_likes: null });
+		}
 		const result = await postService.toggleLike(userId, postId);
 		timelineCacheManager.updatePostMetrics(postId, {
 			like_count: result.count,
@@ -1248,6 +1266,13 @@ router.post({
 		const post = await db.getPostById(postId);
 		if (!post || !(await canViewPost(db, post, userId, null, null, req.user?.visibilityUser || null))) {
 			return res.status(404).json({ error: 'Post not found' });
+		}
+		const queue = req.app.locals.postActionQueue;
+		if (queue && typeof db.hasUserStarredPost === 'function') {
+			const currentlyStarred = await db.hasUserStarredPost(userId, postId);
+			const actionId = queue.enqueue('star', () => postService.toggleStar(userId, postId));
+			const count = typeof db.getStarCount === 'function' ? await db.getStarCount(postId) : 0;
+			return res.status(202).json({ success: true, queued: true, action_id: actionId, starred: !currentlyStarred, count: Math.max(0, count + (currentlyStarred ? -1 : 1)), updated_stars: null });
 		}
 		const result = await postService.toggleStar(userId, postId);
 		timelineCacheManager.updatePostMetrics(postId, {
@@ -1543,6 +1568,11 @@ router.post({
 
 	try {
 		if (typeof db.dislikePost === 'function') {
+			const queue = req.app.locals.postActionQueue;
+			if (queue) {
+				const actionId = queue.enqueue('dislike', () => db.dislikePost(userId, postId));
+				return res.status(202).json({ success: true, queued: true, action_id: actionId });
+			}
 			await db.dislikePost(userId, postId);
 		}
 		res.json({ success: true, message: '関連性が低いと評価しました' });

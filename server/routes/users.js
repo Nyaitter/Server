@@ -671,9 +671,16 @@ router.get({
 		}
 		const mediaResult = await db.getMediaPosts(userId, limit, offset, type, { cursor: rawCursor, withNextCursor: true });
 		const mediaItems = Array.isArray(mediaResult) ? mediaResult : (mediaResult?.media_items || []);
+		const mediaPostIds = [...new Set(mediaItems.map((item) => Number(item.post_id)).filter(Number.isInteger))];
+		const mediaPosts = typeof db.getPostsByIds === 'function'
+			? await db.getPostsByIds(mediaPostIds)
+			: [];
+		const viewablePostIds = new Set((await filterViewablePosts(db, mediaPosts, req.user?.id || null))
+			.map((post) => Number(post.id)));
+		const visibleMediaItems = mediaItems.filter((item) => viewablePostIds.has(Number(item.post_id)));
 		const nextCursor = mediaResult?.next_cursor || mediaItems?.next_cursor || null;
 		res.json({
-			media_items: mediaItems,
+			media_items: visibleMediaItems,
 			next_cursor: nextCursor,
 		});
 	} catch (err) {
@@ -793,6 +800,27 @@ router.post({
 	try {
 		if (await hasBlockRelationship(db, followerId, followingId)) {
 			return res.status(403).json({ error: 'ブロック関係にあるユーザーをフォローすることはできません。' });
+		}
+		const queue = req.app.locals.postActionQueue;
+		if (queue && typeof db.getFollowIds === 'function') {
+			const follows = await db.getFollowIds(followerId);
+			const currentlyFollowing = follows.some((id) => Number(id) === followingId);
+			const actionId = queue.enqueue('follow', async () => {
+				const result = await db.toggleFollow(followerId, followingId);
+				if (result.following) {
+					const notification = await createNotificationIfAllowed(db, {
+						userId: followingId,
+						type: 'follow',
+						fromUserId: followerId,
+						target: { kind: 'user', id: followingId },
+					});
+					if (notification) await publishNewNotification(req, followingId, notification);
+				}
+			});
+			const updatedFollows = new Set(follows.map(Number));
+			if (currentlyFollowing) updatedFollows.delete(followingId);
+			else updatedFollows.add(followingId);
+			return res.status(202).json({ success: true, queued: true, action_id: actionId, following: !currentlyFollowing, updated_follows: [...updatedFollows] });
 		}
 		const result = await db.toggleFollow(followerId, followingId);
 
