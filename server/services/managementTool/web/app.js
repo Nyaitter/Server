@@ -22,11 +22,13 @@ async function api(path, options = {}) {
   }
 
   const res = await fetch(path, { ...options, headers });
-  if (res.status === 401) {
-    showLoginModal();
-    throw new Error('認証が必要です');
+  if (res.status === 401 || res.status === 403) {
+    window.location.replace('/auth/login');
+    throw new Error('Nyaitter管理者アカウントでのサインインが必要です');
   }
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
 }
 
 // ── Tab Switching Logic (Event Delegation) ──
@@ -68,24 +70,15 @@ function switchSubtab(subtabName) {
 async function checkAuth() {
   try {
     const data = await api('/api/auth/me');
-    if (!data.authenticated && data.requiresPassword) {
-      showLoginModal();
+    if (!data.authenticated) {
+      window.location.replace('/auth/login');
     } else {
-      hideLoginModal();
       const logoutBtn = document.getElementById('logout-btn');
-      if (logoutBtn) logoutBtn.classList.toggle('hidden', !data.requiresPassword);
+      if (logoutBtn) logoutBtn.classList.remove('hidden');
     }
-  } catch (_) {}
-}
-
-function showLoginModal() {
-  const modal = document.getElementById('login-modal');
-  if (modal) modal.classList.remove('hidden');
-}
-
-function hideLoginModal() {
-  const modal = document.getElementById('login-modal');
-  if (modal) modal.classList.add('hidden');
+  } catch (_) {
+    window.location.replace('/auth/login');
+  }
 }
 
 // ── 1. Status Tab Logic ──
@@ -98,15 +91,10 @@ async function loadStatus() {
     const pill = document.getElementById('server-status-pill');
     if (pill) {
       pill.textContent = serverOnline ? 'サーバー稼働中' : 'サーバー停止中';
-      pill.className = `status-pill ${serverOnline ? 'status-online' : 'status-offline'}`;
+        pill.className = `status-text ${serverOnline ? 'online' : 'offline'}`;
     }
 
     // Card 1: NyaitterServer
-    const sBadge = document.getElementById('server-badge');
-    if (sBadge) {
-      sBadge.textContent = serverOnline ? 'Online' : 'Offline';
-      sBadge.className = `badge ${serverOnline ? 'badge-online' : 'badge-offline'}`;
-    }
 
     const sStatus = document.getElementById('server-process-status');
     if (sStatus) sStatus.textContent = serverOnline ? '正常稼働中' : '停止中';
@@ -128,12 +116,7 @@ async function loadStatus() {
     if (nPort) nPort.textContent = data.nmt?.port || 4040;
 
     // Card 3: Database
-    const dbBadge = document.getElementById('db-badge');
     const dbConnected = data.database?.status === 'connected';
-    if (dbBadge) {
-      dbBadge.textContent = dbConnected ? 'Connected' : (data.database?.status || '-');
-      dbBadge.className = `badge ${dbConnected ? 'badge-online' : 'badge-offline'}`;
-    }
 
     const dbStatus = document.getElementById('db-status');
     if (dbStatus) dbStatus.textContent = dbConnected ? '接続完了' : (data.database?.status || '未接続');
@@ -209,7 +192,7 @@ function setupControls() {
   });
 
   document.getElementById('btn-nmt-restart')?.addEventListener('click', async () => {
-    if (!confirm('NMT 管理ツールを再起動しますか？')) return;
+    if (!confirm('NMTを再起動しますか？')) return;
     try {
       const res = await api('/api/nmt/restart', { method: 'POST' });
       showMsg(res.message || '再起動中... 4秒後にリロードします', true);
@@ -320,7 +303,6 @@ function appendLogToTerminal(log, autoScroll = true) {
 
   line.innerHTML = `
     <span class="log-time">${timeStr}</span>
-    <span class="log-badge log-badge-${level}">${level.toUpperCase()}</span>
     <span class="log-msg">${escapeHtml(log.message)}</span>
   `;
 
@@ -341,16 +323,6 @@ async function loadErrors() {
     const data = await api(`/api/errors?status=${status}&search=${encodeURIComponent(search)}`);
     state.errors = data.errors || [];
 
-    const badge = document.getElementById('errors-count-badge');
-    if (badge) {
-      if (data.openCount > 0) {
-        badge.textContent = data.openCount;
-        badge.classList.remove('hidden');
-      } else {
-        badge.classList.add('hidden');
-      }
-    }
-
     renderErrors();
   } catch (_) {}
 }
@@ -370,12 +342,12 @@ function renderErrors() {
     card.className = 'error-card';
 
     const timeStr = err.lastOccurredAt ? new Date(err.lastOccurredAt).toLocaleString() : '';
-    const countBadge = err.count > 1 ? `<span class="badge badge-danger">×${err.count}回</span>` : '';
+      const countText = err.count > 1 ? `<span class="error-count">×${err.count}回</span>` : '';
 
     card.innerHTML = `
       <div class="error-card-header">
         <div class="error-msg">${escapeHtml(err.message)}</div>
-        <div>${countBadge}</div>
+          <div>${countText}</div>
       </div>
       <div class="error-meta">
         <span>発生元: ${escapeHtml(err.source || 'server')}</span>
@@ -398,15 +370,32 @@ function renderErrors() {
 
 // ── 4. Settings Tab Logic ──
 async function loadSettings() {
-  try {
-    const envData = await api('/api/settings/env');
+  const [envResult, configResult] = await Promise.allSettled([
+    api('/api/settings/env'),
+    api('/api/settings/config'),
+  ]);
+
+  if (envResult.status === 'fulfilled') {
+    const envData = envResult.value;
     const envEditor = document.getElementById('env-editor');
     if (envEditor) envEditor.value = envData.content || '';
+    const envStatus = document.getElementById('env-status');
+    if (envStatus) envStatus.textContent = envData.exists ? envData.path : (envData.message || envData.path);
+  } else {
+    const envStatus = document.getElementById('env-status');
+    if (envStatus) envStatus.textContent = envResult.reason.message;
+  }
 
-    const configData = await api('/api/settings/config');
+  if (configResult.status === 'fulfilled') {
+    const configData = configResult.value;
     const cfgEditor = document.getElementById('config-editor');
     if (cfgEditor) cfgEditor.value = JSON.stringify(configData.config || {}, null, 2);
-  } catch (_) {}
+    const configStatus = document.getElementById('config-status');
+    if (configStatus) configStatus.textContent = configData.error || configData.path || configData.message || '';
+  } else {
+    const configStatus = document.getElementById('config-status');
+    if (configStatus) configStatus.textContent = configResult.reason.message;
+  }
 }
 
 function escapeHtml(str) {
@@ -488,43 +477,12 @@ function setupEventListeners() {
     }
   });
 
-  // Login form & logout
-  document.getElementById('login-form')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const password = document.getElementById('login-password').value;
-    const errEl = document.getElementById('login-error');
-    if (errEl) errEl.classList.add('hidden');
-
-    try {
-      const res = await api('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ password }),
-      });
-      if (res.success && res.token) {
-        state.token = res.token;
-        localStorage.setItem('nmt_token', res.token);
-        hideLoginModal();
-        loadStatus();
-        loadErrors();
-      } else if (errEl) {
-        errEl.textContent = res.error || 'ログインに失敗しました';
-        errEl.classList.remove('hidden');
-      }
-    } catch (err) {
-      if (errEl) {
-        errEl.textContent = err.message || 'ログインに失敗しました';
-        errEl.classList.remove('hidden');
-      }
-    }
-  });
-
   document.getElementById('logout-btn')?.addEventListener('click', async () => {
     try {
       await api('/api/auth/logout', { method: 'POST' });
     } catch (_) {}
     state.token = '';
     localStorage.removeItem('nmt_token');
-    showLoginModal();
   });
 
   setupControls();

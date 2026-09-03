@@ -11,9 +11,8 @@
     <!-- ヘッダー -->
     <header class="navbar">
       <div class="nav-brand">
-        <span class="logo-icon">🐾</span>
         <span class="logo-text">Nyaitter Management Tool</span>
-        <span id="server-status-pill" class="status-pill status-offline">サーバー停止中</span>
+        <span id="server-status-pill" class="status-text">サーバー停止中</span>
       </div>
       <div class="nav-actions">
         <button id="refresh-all-btn" class="btn btn-secondary btn-sm" title="データを再読み込み">更新</button>
@@ -24,17 +23,16 @@
     <!-- タブナビゲーション -->
     <nav class="tabs-nav">
       <button class="tab-btn active" data-tab="status">
-        <span class="tab-icon">📊</span> ステータス
+        ステータス
       </button>
       <button class="tab-btn" data-tab="logs">
-        <span class="tab-icon">📝</span> ログ
+        ログ
       </button>
       <button class="tab-btn" data-tab="errors">
-        <span class="tab-icon">🚨</span> エラー
-        <span id="errors-count-badge" class="badge badge-danger hidden">0</span>
+        エラー
       </button>
       <button class="tab-btn" data-tab="settings">
-        <span class="tab-icon">⚙️</span> 設定
+        設定
       </button>
     </nav>
 
@@ -46,7 +44,6 @@
           <div class="card">
             <div class="card-header">
               <h3>NyaitterServer</h3>
-              <span id="server-badge" class="badge badge-offline">Offline</span>
             </div>
             <div class="card-body">
               <div class="metric-row">
@@ -66,8 +63,7 @@
 
           <div class="card">
             <div class="card-header">
-              <h3>NMT 管理ツール</h3>
-              <span class="badge badge-online">Online</span>
+              <h3>NMT</h3>
             </div>
             <div class="card-body">
               <div class="metric-row">
@@ -88,7 +84,6 @@
           <div class="card">
             <div class="card-header">
               <h3>データベース</h3>
-              <span id="db-badge" class="badge badge-neutral">-</span>
             </div>
             <div class="card-body">
               <div class="metric-row">
@@ -105,7 +100,6 @@
           <div class="card">
             <div class="card-header">
               <h3>システムリソース</h3>
-              <span class="badge badge-neutral">Node.js</span>
             </div>
             <div class="card-body">
               <div class="metric-row">
@@ -131,16 +125,16 @@
           </div>
           <div class="panel-body control-actions">
             <button id="btn-server-restart" class="btn btn-primary">
-              <span class="btn-icon">🔄</span> サーバー再起動
+              サーバー再起動
             </button>
             <button id="btn-server-stop" class="btn btn-danger">
-              <span class="btn-icon">⏹️</span> サーバー停止
+              サーバー停止
             </button>
             <button id="btn-server-start" class="btn btn-success">
-              <span class="btn-icon">▶️</span> サーバー起動
+              サーバー起動
             </button>
             <button id="btn-nmt-restart" class="btn btn-warning">
-              <span class="btn-icon">🔁</span> NMT 再起動
+              NMT 再起動
             </button>
           </div>
           <div id="control-message" class="alert hidden"></div>
@@ -212,9 +206,11 @@
           </div>
           <div class="panel-body">
             <div id="subtab-env" class="subtab-content active">
+              <div id="env-status" class="settings-file-status"></div>
               <textarea id="env-editor" class="code-editor" spellcheck="false" placeholder=".env の内容を読み込み中..."></textarea>
             </div>
             <div id="subtab-config" class="subtab-content">
+              <div id="config-status" class="settings-file-status"></div>
               <textarea id="config-editor" class="code-editor" spellcheck="false" placeholder="config.json の内容を読み込み中..."></textarea>
             </div>
             <div id="settings-message" class="alert hidden"></div>
@@ -223,24 +219,6 @@
       </section>
     </main>
 
-    <!-- ログインモーダル -->
-    <div id="login-modal" class="modal-overlay hidden">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3>管理者ログイン</h3>
-        </div>
-        <div class="modal-body">
-          <form id="login-form">
-            <div class="form-group">
-              <label for="login-password">パスワード</label>
-              <input type="password" id="login-password" class="input-control" placeholder="NMT パスワードを入力" autofocus>
-            </div>
-            <div id="login-error" class="alert alert-danger hidden"></div>
-            <button type="submit" class="btn btn-primary btn-block">ログイン</button>
-          </form>
-        </div>
-      </div>
-    </div>
   </div>
 
   <script src="./app.js"></script>

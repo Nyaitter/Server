@@ -1,13 +1,15 @@
 'use strict';
 
 const http = require('http');
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const crypto = require('crypto');
+const NyaitterAuthManager = require('../auth/NyaitterAuthManager');
 
 const ErrorManager = require('./ErrorManager');
 const LogHubManager = require('./LogHubManager');
 const ServerControlManager = require('./ServerControlManager');
+const { getAuthenticatedPrincipal } = require('../../middleware/auth');
 
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const SESSION_FILE = path.join(DATA_DIR, 'nmt-sessions.json');
@@ -17,6 +19,7 @@ class ManagementToolServer {
     this.config = config.nmt || {};
     this.mainConfig = config;
     this.dbAdapter = dbAdapter;
+    this.authManager = new NyaitterAuthManager({ dbAdapter });
     this.port = Number(process.env.NMT_PORT) || this.config.port || 4040;
     this.host = this.config.host || '0.0.0.0';
 
@@ -34,6 +37,7 @@ class ManagementToolServer {
 
   setDbAdapter(dbAdapter) {
     this.dbAdapter = dbAdapter;
+    this.authManager = new NyaitterAuthManager({ dbAdapter });
     this.serverControl.setDbAdapter(dbAdapter);
   }
 
@@ -77,79 +81,67 @@ class ManagementToolServer {
     const webDir = path.join(__dirname, 'web');
     this.app.use(express.static(webDir));
 
+    this.app.get('/auth/login', async (req, res) => {
+      try {
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+        const host = req.headers.host || `localhost:${this.port}`;
+        const redirectUri = `${protocol}://${host}/auth/callback`;
+        const authRequest = await this.authManager.createAuthorizationRequest({
+          app_id: 'nmt-internal',
+          api_token: process.env.NMT_AUTH_TOKEN || 'nmt-internal',
+          name: 'NMT',
+          redirect_uri: redirectUri,
+          scopes: ['profile:read'],
+        }, req);
+        return res.redirect(authRequest.auth_url);
+      } catch (error) {
+        return res.status(500).send(`NyaitterAuthの開始に失敗しました: ${error.message}`);
+      }
+    });
+
+    this.app.get('/auth/callback', async (req, res) => {
+      const code = String(req.query.code || req.query.token || '');
+      const approved = NyaitterAuthManager.pendingCodes.get(code);
+      if (!approved || approved.expiresAt <= Date.now()) {
+        return res.status(401).send('NyaitterAuthの認証コードが無効です。');
+      }
+      const user = await this.dbAdapter?.getUserById?.(approved.userId);
+      if (!user?.admin) return res.status(403).send('Nyaitter管理者権限が必要です。');
+      NyaitterAuthManager.pendingCodes.delete(code);
+      return res.redirect('/');
+    });
+
     // 認証ミドルウェア
     const requireAuth = async (req, res, next) => {
-      const nmtPassword = process.env.NMT_PASSWORD || this.config.password;
-      if (!nmtPassword) {
-        req.adminUser = { id: 1, name: 'Admin', admin: true };
+      try {
+        const principal = await getAuthenticatedPrincipal(req);
+        if (!principal) return res.status(401).json({ error: 'Nyaitterへのサインインが必要です。' });
+        if (!principal.admin) return res.status(403).json({ error: 'Nyaitter管理者権限が必要です。' });
+        req.adminUser = principal;
         return next();
+      } catch (error) {
+        console.error('[NMT] authentication error:', error.message);
+        return res.status(500).json({ error: '認証の確認に失敗しました。' });
       }
-
-      const authHeader = req.headers.authorization || '';
-      const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.query.token;
-      if (!token) return res.status(401).json({ error: '認証が必要です。' });
-
-      const session = this.sessions.get(token);
-      if (session && (!session.expiresAt || session.expiresAt > Date.now())) {
-        req.adminUser = session.user || { admin: true };
-        return next();
-      }
-
-      // DBセッション検証
-      if (this.dbAdapter && typeof this.dbAdapter.getSession === 'function') {
-        try {
-          const dbSession = await this.dbAdapter.getSession(token);
-          if (dbSession?.userId && typeof this.dbAdapter.getUserById === 'function') {
-            const user = await this.dbAdapter.getUserById(dbSession.userId);
-            if (user && user.admin) {
-              const sessionData = { user: { id: user.id, name: user.name, admin: true }, expiresAt: Date.now() + 86400000 * 7 };
-              this.sessions.set(token, sessionData);
-              this._saveSessions();
-              req.adminUser = sessionData.user;
-              return next();
-            }
-          }
-        } catch (_) {}
-      }
-
-      return res.status(401).json({ error: '無効な認証セッションです。' });
     };
 
     // ── Auth APIs ──
-    this.app.get('/api/auth/me', (req, res) => {
-      const nmtPassword = process.env.NMT_PASSWORD || this.config.password;
-      if (!nmtPassword) {
-        return res.json({ authenticated: true, user: { id: 1, name: 'Admin' }, requiresPassword: false });
+    this.app.get('/api/auth/me', async (req, res) => {
+      try {
+        const principal = await getAuthenticatedPrincipal(req);
+        if (!principal) return res.json({ authenticated: false, requiresNyaitterAuth: true });
+        return res.json({
+          authenticated: Boolean(principal.admin),
+          requiresNyaitterAuth: true,
+          user: principal.admin ? { id: principal.id, admin: true } : null,
+        });
+      } catch (error) {
+        return res.status(500).json({ error: '認証の確認に失敗しました。' });
       }
-
-      const authHeader = req.headers.authorization || '';
-      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-      const session = token ? this.sessions.get(token) : null;
-
-      if (session && (!session.expiresAt || session.expiresAt > Date.now())) {
-        return res.json({ authenticated: true, user: session.user, requiresPassword: true });
-      }
-      return res.json({ authenticated: false, requiresPassword: true });
     });
 
     this.app.post('/api/auth/login', (req, res) => {
-      const { password, token: incomingToken } = req.body || {};
-      const expectedPassword = process.env.NMT_PASSWORD || this.config.password;
-
-      if (expectedPassword) {
-        if (!password || password !== expectedPassword) {
-          return res.status(401).json({ success: false, error: 'パスワードが正しくありません。' });
-        }
-      }
-
-      const token = incomingToken || `nmt_${crypto.randomBytes(24).toString('hex')}`;
-      const sessionData = {
-        user: { name: 'Admin', admin: true },
-        expiresAt: Date.now() + 86400000 * 7,
-      };
-      this.sessions.set(token, sessionData);
-      this._saveSessions();
-      res.json({ success: true, token, user: sessionData.user });
+      res.status(410).json({ success: false, error: 'NMT独自のログインは無効です。Nyaitterの管理者アカウントでサインインしてください。' });
     });
 
     this.app.post('/api/auth/logout', (req, res) => {

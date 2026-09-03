@@ -246,7 +246,7 @@ class ServerControlManager {
     if (fs.existsSync(ENV_FILE)) {
       return { content: fs.readFileSync(ENV_FILE, 'utf8'), exists: true, path: ENV_FILE };
     }
-    return { content: '', exists: false, path: ENV_FILE };
+    return { content: '', exists: false, path: ENV_FILE, message: '.env はまだ作成されていません。' };
   }
 
   updateEnv(content) {
@@ -264,10 +264,12 @@ class ServerControlManager {
     if (fs.existsSync(CONFIG_FILE)) {
       try {
         const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-        return { config: parsed, exists: true };
-      } catch (_) {}
+        return { config: parsed, exists: true, path: CONFIG_FILE };
+      } catch (error) {
+        return { config: {}, exists: true, path: CONFIG_FILE, error: `config.json の読み込みに失敗しました: ${error.message}` };
+      }
     }
-    return { config: {}, exists: false };
+    return { config: {}, exists: false, path: CONFIG_FILE, message: 'config.json はまだ作成されていません。' };
   }
 
   updateConfig(newConfig) {

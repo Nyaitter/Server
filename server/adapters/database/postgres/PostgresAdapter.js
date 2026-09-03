@@ -4152,40 +4152,34 @@ class PostgresAdapter extends DatabaseAdapter {
 		const pId = Number(postId);
 		const now = new Date().toISOString();
 
-		const sql = `
-			WITH del AS (
-				DELETE FROM likes WHERE user_id = $1 AND post_id = $2
-				RETURNING 1
-			),
-			ins AS (
-				INSERT INTO likes (user_id, post_id, created_at)
-				SELECT $1, $2, $3
-				WHERE NOT EXISTS (SELECT 1 FROM del)
-				ON CONFLICT DO NOTHING
-				RETURNING 1
-			),
-			upd AS (
-				UPDATE posts
-				SET like_count = CASE
-					WHEN EXISTS (SELECT 1 FROM del) THEN GREATEST(0, like_count - 1)
-					WHEN EXISTS (SELECT 1 FROM ins) THEN like_count + 1
-					ELSE like_count
-				END
-				WHERE id = $2
-				RETURNING like_count, tags
-			)
-			SELECT
-				EXISTS(SELECT 1 FROM ins) AS liked,
-				EXISTS(SELECT 1 FROM del) AS unliked,
-				(SELECT like_count FROM upd) AS count,
-				(SELECT tags FROM upd) AS tags;
-		`;
-		const { rows } = await this.pool.query(sql, [uId, pId, now]);
-		const row = rows[0] || {};
-		const liked = Boolean(row.liked);
-		const unliked = Boolean(row.unliked);
-		const count = Math.max(0, Number(row.count) || 0);
-		const tags = row.tags;
+		const { liked, unliked, count, tags } = await this._withTransaction(async (client) => {
+			const removed = await client.query(
+				'DELETE FROM likes WHERE user_id = $1 AND post_id = $2 RETURNING 1',
+				[uId, pId],
+			);
+			let added = false;
+			if (removed.rowCount === 0) {
+				const inserted = await client.query(
+					'INSERT INTO likes (user_id, post_id, created_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1',
+					[uId, pId, now],
+				);
+				added = inserted.rowCount > 0;
+			}
+			const delta = removed.rowCount > 0 ? -1 : (added ? 1 : 0);
+			const updated = await client.query(
+				`UPDATE posts
+				 SET like_count = GREATEST(0, like_count + $1)
+				 WHERE id = $2
+				 RETURNING like_count, tags`,
+				[delta, pId],
+			);
+			return {
+				liked: added,
+				unliked: removed.rowCount > 0,
+				count: Math.max(0, Number(updated.rows[0]?.like_count) || 0),
+				tags: updated.rows[0]?.tags,
+			};
+		});
 
 		if (tags && (liked || unliked)) {
 			const delta = liked ? 1 : -1;
@@ -4235,40 +4229,34 @@ class PostgresAdapter extends DatabaseAdapter {
 		const pId = Number(postId);
 		const now = new Date().toISOString();
 
-		const sql = `
-			WITH del AS (
-				DELETE FROM stars WHERE user_id = $1 AND post_id = $2
-				RETURNING 1
-			),
-			ins AS (
-				INSERT INTO stars (user_id, post_id, created_at)
-				SELECT $1, $2, $3
-				WHERE NOT EXISTS (SELECT 1 FROM del)
-				ON CONFLICT DO NOTHING
-				RETURNING 1
-			),
-			upd AS (
-				UPDATE posts
-				SET star_count = CASE
-					WHEN EXISTS (SELECT 1 FROM del) THEN GREATEST(0, star_count - 1)
-					WHEN EXISTS (SELECT 1 FROM ins) THEN star_count + 1
-					ELSE star_count
-				END
-				WHERE id = $2
-				RETURNING star_count, tags
-			)
-			SELECT
-				EXISTS(SELECT 1 FROM ins) AS starred,
-				EXISTS(SELECT 1 FROM del) AS unstarred,
-				(SELECT star_count FROM upd) AS count,
-				(SELECT tags FROM upd) AS tags;
-		`;
-		const { rows } = await this.pool.query(sql, [uId, pId, now]);
-		const row = rows[0] || {};
-		const starred = Boolean(row.starred);
-		const unstarred = Boolean(row.unstarred);
-		const count = Math.max(0, Number(row.count) || 0);
-		const tags = row.tags;
+		const { starred, unstarred, count, tags } = await this._withTransaction(async (client) => {
+			const removed = await client.query(
+				'DELETE FROM stars WHERE user_id = $1 AND post_id = $2 RETURNING 1',
+				[uId, pId],
+			);
+			let added = false;
+			if (removed.rowCount === 0) {
+				const inserted = await client.query(
+					'INSERT INTO stars (user_id, post_id, created_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1',
+					[uId, pId, now],
+				);
+				added = inserted.rowCount > 0;
+			}
+			const delta = removed.rowCount > 0 ? -1 : (added ? 1 : 0);
+			const updated = await client.query(
+				`UPDATE posts
+				 SET star_count = GREATEST(0, star_count + $1)
+				 WHERE id = $2
+				 RETURNING star_count, tags`,
+				[delta, pId],
+			);
+			return {
+				starred: added,
+				unstarred: removed.rowCount > 0,
+				count: Math.max(0, Number(updated.rows[0]?.star_count) || 0),
+				tags: updated.rows[0]?.tags,
+			};
+		});
 
 		if (tags && (starred || unstarred)) {
 			const delta = starred ? 1 : -1;
