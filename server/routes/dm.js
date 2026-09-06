@@ -319,6 +319,16 @@ function normalizeDmMemberIds(value) {
 		.filter((id) => Number.isInteger(id) && id >= 0);
 }
 
+function getAcceptedDmMemberIds(dm) {
+	if (dm?.accepted !== undefined && dm?.accepted !== null) {
+		return normalizeDmMemberIds(dm.accepted);
+	}
+	if (dm?.unread && Object.prototype.hasOwnProperty.call(dm.unread, '_accepted')) {
+		return normalizeDmMemberIds(dm.unread._accepted);
+	}
+	return normalizeDmMemberIds(dm?.member);
+}
+
 async function serializeGroupDm(db, dm, userId, { includePosts = true, usersById = null } = {}) {
 	const blockedMemberIds = await getBlockedDmMemberIds(db, userId, dm.member || [], usersById);
 	const rawMessages = dm.post ? dm.post.slice() : [];
@@ -353,11 +363,7 @@ async function serializeGroupDm(db, dm, userId, { includePosts = true, usersById
 	const unreadCount = Number(
 		dm.unread?.[userId] ?? dm.unread?.[String(userId)] ?? dm.unread_count ?? 0,
 	);
-	const hasAccepted = dm.accepted !== undefined && dm.accepted !== null;
-	const hasStoredAccepted = dm.unread && Object.prototype.hasOwnProperty.call(dm.unread, '_accepted');
-	const acceptedList = hasAccepted
-		? normalizeDmMemberIds(dm.accepted)
-		: (hasStoredAccepted ? normalizeDmMemberIds(dm.unread._accepted) : normalizeDmMemberIds(dm.member));
+	const acceptedList = getAcceptedDmMemberIds(dm);
 	const isPending = !acceptedList.includes(Number(userId));
 
 	return {
@@ -380,7 +386,7 @@ async function serializeGroupDm(db, dm, userId, { includePosts = true, usersById
 				: String(latestMessage.content || '').slice(0, 200),
 		} : null),
 		// ブロックした相手の未読数から、メッセージの存在を推測できないようにする。
-		unread_count: blockedMemberIds.size > 0 ? 0 : unreadCount,
+		unread_count: blockedMemberIds.size > 0 || isPending ? 0 : unreadCount,
 	};
 }
 
@@ -620,7 +626,7 @@ router.get({
 		if (!dm.member.includes(userId)) {
 			return res.status(403).json({ error: 'Forbidden' });
 		}
-				if (req.query.mark_read === '1') {
+				if (req.query.mark_read === '1' && getAcceptedDmMemberIds(dm).includes(Number(userId))) {
 					const unreadBefore = Number(dm.unread?.[userId] || 0);
 					await db.markGroupDmRead(dmId, userId);
 					// 未読表示更新と競合して再読込ループを起こすため、状態変化時だけ通知する。
@@ -820,9 +826,7 @@ router.post({
 			}
 		}
 
-		const currentAccepted = Array.isArray(dm.accepted)
-			? dm.accepted.slice()
-			: (Array.isArray(dm.unread?._accepted) ? dm.unread._accepted.slice() : (dm.member || []).slice());
+		const currentAccepted = getAcceptedDmMemberIds(dm);
 		if (!currentAccepted.includes(userId)) {
 			currentAccepted.push(userId);
 			await db.updateGroupDm(dmId, { accepted: currentAccepted });
@@ -860,10 +864,11 @@ router.post({
 		const dm = await db.getGroupDm(dmId);
 		if (!dm) return res.status(404).json({ error: 'DM が見つかりません' });
 
-		if (typeof db.acceptDmInvitation === 'function') {
-			await db.acceptDmInvitation(dmId, userId);
-		}
-		res.json({ success: true });
+		const accepted = getAcceptedDmMemberIds(dm);
+		if (!accepted.includes(Number(userId))) accepted.push(Number(userId));
+		const updated = await db.updateGroupDm(dmId, { accepted });
+		await publishDmUnreadCounts(req, [userId], dmId);
+		res.json({ success: true, dm: await serializeGroupDm(db, updated || dm, userId) });
 	} catch (err) {
 		console.error('[dm] accept error:', err);
 		res.status(500).json({ error: '招待の受諾に失敗しました' });
@@ -907,6 +912,9 @@ router.post({
 		if (!dm) return res.status(404).json({ error: 'DM が見つかりません' });
 		if (!dm.member.includes(userId)) {
 			return res.status(403).json({ error: 'Forbidden' });
+		}
+		if (!getAcceptedDmMemberIds(dm).includes(Number(userId))) {
+			return res.status(403).json({ error: 'DM招待を承認してください' });
 		}
 
 		await db.markGroupDmRead(dmId, userId);

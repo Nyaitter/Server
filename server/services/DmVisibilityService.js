@@ -12,6 +12,13 @@ function getDmUnreadCount(dm, userId) {
 	);
 }
 
+function isDmAccepted(dm, userId) {
+	const accepted = Array.isArray(dm?.accepted)
+		? dm.accepted
+		: (Array.isArray(dm?.unread?._accepted) ? dm.unread._accepted : dm?.member || []);
+	return accepted.map(Number).includes(Number(userId));
+}
+
 function blocksUser(user, otherUserId) {
 	if (!user) return false;
 	return normalizeBlockList(user.block, user.id).includes(Number(otherUserId));
@@ -68,7 +75,9 @@ async function getVisibleDmUnreadCount(db, userId, { viewer: knownViewer = null 
 	if (!Array.isArray(dms) || dms.length === 0) return 0;
 
 	// 未読が存在するDMのみを対象とする。未読合計が0の場合は追加のユーザー取得をスキップして即座に0を返す。
-	const dmsWithUnread = dms.filter((dm) => getDmUnreadCount(dm, normalizedUserId) > 0);
+	const dmsWithUnread = dms.filter((dm) =>
+		isDmAccepted(dm, normalizedUserId) && getDmUnreadCount(dm, normalizedUserId) > 0,
+	);
 	if (dmsWithUnread.length === 0) return 0;
 
 	const memberIds = new Set();

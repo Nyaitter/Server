@@ -2199,6 +2199,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			return dm ? {
 				id: dm.id,
 				member: (dm.member || []).map(Number),
+				accepted: Array.isArray(dm.accepted) ? dm.accepted.map(Number) : (dm.member || []).map(Number),
 				unread: dm.unread || {},
 			} : null;
 		}).filter(Boolean);

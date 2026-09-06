@@ -4656,6 +4656,12 @@ class PostgresAdapter extends DatabaseAdapter {
 		return rows.map((row) => ({
 			id: String(row.id),
 			member: (row.member || []).map(Number),
+			accepted: (() => {
+				const unread = typeof row.unread === 'object' && row.unread !== null
+					? row.unread
+					: parseJsonSafe(row.unread, {});
+				return Array.isArray(unread._accepted) ? unread._accepted.map(Number) : (row.member || []).map(Number);
+			})(),
 			unread: typeof row.unread === 'object' && row.unread !== null ? row.unread : parseJsonSafe(row.unread, {}),
 		}));
 	}
