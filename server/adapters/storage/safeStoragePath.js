@@ -19,6 +19,12 @@ const CONTENT_TYPE_EXTENSIONS = new Map([
   ['application/zip', '.zip'],
 ]);
 
+const SAFE_FILENAME_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.gif', '.webp',
+  '.mp4', '.webm', '.mp3', '.ogg', '.wav',
+  '.pdf', '.txt', '.csv', '.zip',
+]);
+
 function normalizeContentType(contentType) {
   return String(contentType || 'application/octet-stream')
     .split(';', 1)[0]
@@ -32,7 +38,7 @@ function getSafeExtension(fileName, contentType) {
   if (mappedExtension) return mappedExtension;
 
   const candidate = path.extname(String(fileName || '')).toLowerCase();
-  if (/^\.[a-z0-9]{1,10}$/.test(candidate)) return candidate;
+  if (SAFE_FILENAME_EXTENSIONS.has(candidate)) return candidate;
   return '';
 }
 

@@ -1,5 +1,5 @@
 -- Nyaitter Server の新規DB用スキーマ
--- PostgreSQLで使用する。
+-- PostgreSQL互換のデータベースで使用する。
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -230,9 +230,7 @@ CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id);
 CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
 CREATE INDEX IF NOT EXISTS idx_follows_follower_created_desc ON follows(follower_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_follows_following_created_desc ON follows(following_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_dm_channels_participants ON dm_channels USING GIN (participants);
 CREATE INDEX IF NOT EXISTS idx_dm_messages_channel_sent_id_desc ON dm_messages(channel_id, sent_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_group_dms_member ON group_dms USING GIN (member);
 CREATE INDEX IF NOT EXISTS idx_group_dms_time ON group_dms(time DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_created_id_desc ON notifications(user_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, read, created_at DESC);

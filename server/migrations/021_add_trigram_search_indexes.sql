@@ -1,15 +1,4 @@
--- Migration 021: Add trigram GIN indexes for fast fuzzy and substring search
--- Compatible with PostgreSQL and CockroachDB (v22.2+)
-
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
-CREATE INDEX IF NOT EXISTS idx_posts_view_content_trgm
-ON posts USING GIN (view_content gin_trgm_ops)
-WHERE group_id IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_users_name_trgm
-ON users USING GIN (name gin_trgm_ops);
-
-CREATE INDEX IF NOT EXISTS idx_users_scid_trgm
-ON users USING GIN (scid gin_trgm_ops)
-WHERE scid IS NOT NULL;
+-- 検索用の拡張機能はDB製品ごとに構文が異なるため、ここでは追加しない。
+-- PostgreSQLのpg_trgm / GIN構文を共通マイグレーションへ含めると、移行全体が停止する。
+-- 検索クエリは通常の列条件で動作し、必要な製品固有の索引は運用側で追加できる。
+SELECT 1;

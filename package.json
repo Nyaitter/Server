@@ -30,6 +30,9 @@
   "engines": {
     "node": ">=20.9.0"
   },
+  "overrides": {
+    "qs": "^6.16.0"
+  },
   "devDependencies": {
     "@emoji-mart/data": "1.2.1",
     "emoji-mart": "5.6.0",

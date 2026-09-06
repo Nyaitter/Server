@@ -16,7 +16,7 @@ const {
 	isOwnedAttachmentKey,
 	normalizeContentType,
 } = require('../adapters/storage/safeStoragePath');
-const { getPublicUrl } = require('../utils/nyaitterAddress');
+const { getPublicUrl, normalizePublicUrl } = require('../utils/nyaitterAddress');
 const {
 	canViewPost,
 	createPostVisibilityContext,
@@ -1086,15 +1086,11 @@ router.get({
 			} else if (req.accepts(['html', 'json']) === 'html') {
 				// Human visitor in web browser: HTTP 302 redirect directly to SPA post hash
 				let redirectUrl = '';
-				if (config.frontendUrl) {
-					redirectUrl = `${config.frontendUrl.replace(/\/+$/, '')}/#post/${post.id}`;
+				const configuredFrontendUrl = normalizePublicUrl(config.frontendUrl);
+				if (configuredFrontendUrl) {
+					redirectUrl = `${configuredFrontendUrl}/#post/${post.id}`;
 				} else {
-					const host = req.get('host') || req.hostname || 'localhost';
-					const cleanHost = host.replace(/^(?:link|api)\./i, '');
-					const forwardedProto = req.get('x-forwarded-proto') || req.get('x-forwarded-protocol');
-					const isLocal = cleanHost.startsWith('localhost') || cleanHost.startsWith('127.0.0.1');
-					const proto = (forwardedProto || (isLocal ? 'http' : 'https')).toLowerCase();
-					redirectUrl = `${proto}://${cleanHost}/#post/${post.id}`;
+					redirectUrl = `/#post/${post.id}`;
 				}
 				return res.redirect(302, redirectUrl);
 			}

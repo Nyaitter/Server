@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS user_keyword_affinities (
   CONSTRAINT user_keyword_affinities_score_nonnegative CHECK (score >= 0)
 );
 
-CREATE INDEX IF NOT EXISTS idx_posts_tags_gin ON posts USING GIN (tags);
+-- JSONB inverted indexes use different syntax in PostgreSQL and CockroachDB.
+-- The application remains correct without this optional acceleration index.
 CREATE INDEX IF NOT EXISTS idx_user_keyword_affinities_user_score
   ON user_keyword_affinities(user_id, score DESC, keyword);

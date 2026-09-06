@@ -352,7 +352,7 @@ function renderErrors() {
       <div class="error-meta">
         <span>発生元: ${escapeHtml(err.source || 'server')}</span>
         <span>最終発生: ${timeStr}</span>
-        <span>状態: <strong>${err.status}</strong></span>
+        <span>状態: <strong>${escapeHtml(err.status || '')}</strong></span>
       </div>
       <div class="error-details hidden">
         ${err.stack ? escapeHtml(err.stack) : 'スタックトレースなし'}

@@ -2114,7 +2114,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 		const id = meta?.id != null && Number.isSafeInteger(Number(meta.id)) && Number(meta.id) > 0
 			? Number(meta.id)
-			: Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+			: Number(`${Date.now() % 1000000000}${crypto.randomInt(0, 1000).toString().padStart(3, '0')}`);
 
 		const message = {
 			id,
@@ -4273,7 +4273,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 		const pollId = id != null
 			? (Number(id) || String(id).trim())
-			: Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+			: Number(`${Date.now() % 1000000000}${crypto.randomInt(0, 1000).toString().padStart(3, '0')}`);
 		const pId = Number(postId) || String(postId).trim();
 		const uId = Number(userId) || String(userId).trim();
 		const poll = {
@@ -4368,7 +4368,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 		// 新規投票を挿入
 		for (const optId of targetOptionIds) {
-			const newVoteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+			const newVoteId = Number(`${Date.now() % 1000000000}${crypto.randomInt(0, 1000).toString().padStart(3, '0')}`);
 			const vote = {
 				id: newVoteId,
 				poll_id: pId,

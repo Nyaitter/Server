@@ -881,7 +881,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			const countResult = await this.pool.query('SELECT COUNT(*)::bigint AS count FROM users');
 			const count = Number(countResult.rows[0].count);
 			const digits = Math.max(4, String(Math.max(count, 1)).length);
-			const id = Math.floor(Math.random() * (10 ** digits));
+			const id = crypto.randomInt(1, 10 ** digits);
 			const handle = provider === 'nyaitter' && userData.external_id != null
 				? formatNyaitterId(userData.external_id)
 				: formatNyaitterId(id);
@@ -1130,7 +1130,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			const upperBound = 10 ** digits;
 			let nextId = null;
 			for (let attempt = 0; attempt < 100; attempt += 1) {
-				const candidate = Math.floor(Math.random() * upperBound);
+				const candidate = crypto.randomInt(1, upperBound);
 				if (candidate === previousId) continue;
 				const { rows } = await client.query('SELECT 1 FROM users WHERE id = $1 LIMIT 1', [candidate]);
 				if (rows.length === 0) {
@@ -6004,7 +6004,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		const pollId = id != null
 			? (Number(id) || String(id).trim())
-			: Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+			: Number(`${Date.now() % 1000000000}${crypto.randomInt(0, 1000).toString().padStart(3, '0')}`);
 		const pId = Number(postId) || String(postId).trim();
 		const uId = Number(userId) || String(userId).trim();
 
@@ -6149,7 +6149,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			// 新規投票を挿入
 			const now = new Date().toISOString();
 			for (const optId of targetOptionIds) {
-				const voteId = Number(`${Date.now() % 1000000000}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`);
+				const voteId = Number(`${Date.now() % 1000000000}${crypto.randomInt(0, 1000).toString().padStart(3, '0')}`);
 				await client.query(
 					`INSERT INTO poll_votes (id, poll_id, user_id, option_id, other_text, created_at)
 					 VALUES ($1, $2, $3, $4, $5, $6)`,

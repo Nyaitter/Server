@@ -175,7 +175,7 @@ function isAllowedIconRedirectUrl(value) {
 		candidate = `https:${candidate}`;
 	}
 	if (candidate.startsWith('/')) {
-		return true;
+		return !candidate.startsWith('//') && !/[\u0000-\u001F\u007F]/.test(candidate);
 	}
 	try {
 		const url = new URL(candidate);
