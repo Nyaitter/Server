@@ -58,7 +58,7 @@ const PostActionQueue = require('./services/PostActionQueue');
 const PostEventOutbox = require('./services/PostEventOutbox');
 const PostKeywordBackfillService = require('./services/PostKeywordBackfillService');
 const { serializeNotification } = require('./utils/serialize');
-const { getPublicUrl } = require('./utils/nyaitterAddress');
+const { getPublicUrl, getFrontendUrl } = require('./utils/nyaitterAddress');
 const { startOperatorControlServer } = require('./utils/operatorControl');
 const { getEmbeddedMailServer } = require('./services/mail/EmbeddedMailServer');
 const { isCrawler, generatePostOgpTags, generatePostHtml } = require('./services/OgpService');
@@ -454,18 +454,12 @@ if (hasStaticPage) {
                                 post,
                                 author,
                                 publicUrl,
-                                frontendUrl: config.frontendUrl || null,
+                                frontendUrl: getFrontendUrl(req),
                             });
                             res.setHeader('Content-Type', 'text/html; charset=utf-8');
                             return res.send(html);
                         }
-                        if (postPageHtmlTemplate) {
-                            const ogpTags = generatePostOgpTags({ post, author, publicUrl });
-                            let html = postPageHtmlTemplate;
-                            html = html.replace(/<title>.*?<\/title>/i, ogpTags);
-                            res.setHeader('Content-Type', 'text/html; charset=utf-8');
-                            return res.send(html);
-                        }
+                        return res.redirect(302, `${getFrontendUrl(req)}/#post/${post.id}`);
                     }
                 } catch (err) {
                     console.warn('[ogp] Failed to render post embed:', err.message);

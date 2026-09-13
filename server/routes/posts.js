@@ -16,7 +16,7 @@ const {
 	isOwnedAttachmentKey,
 	normalizeContentType,
 } = require('../adapters/storage/safeStoragePath');
-const { getPublicUrl, normalizePublicUrl } = require('../utils/nyaitterAddress');
+const { getPublicUrl, getFrontendUrl } = require('../utils/nyaitterAddress');
 const {
 	canViewPost,
 	createPostVisibilityContext,
@@ -1079,20 +1079,13 @@ router.get({
 				// Serve OGP HTML for crawlers / embed bots
 				const author = await db.getUserById(post.userId ?? post.user_id);
 				const publicUrl = getPublicUrl(req);
-				const frontendUrl = config.frontendUrl || null;
+				const frontendUrl = getFrontendUrl(req);
 				const html = generatePostHtml({ post, author, publicUrl, frontendUrl });
 				res.setHeader('Content-Type', 'text/html; charset=utf-8');
 				return res.send(html);
 			} else if (req.accepts(['html', 'json']) === 'html') {
 				// Human visitor in web browser: HTTP 302 redirect directly to SPA post hash
-				let redirectUrl = '';
-				const configuredFrontendUrl = normalizePublicUrl(config.frontendUrl);
-				if (configuredFrontendUrl) {
-					redirectUrl = `${configuredFrontendUrl}/#post/${post.id}`;
-				} else {
-					redirectUrl = `/#post/${post.id}`;
-				}
-				return res.redirect(302, redirectUrl);
+				return res.redirect(302, `${getFrontendUrl(req)}/#post/${post.id}`);
 			}
 		}
 

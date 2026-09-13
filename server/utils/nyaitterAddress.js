@@ -85,6 +85,10 @@ function getApiPublicUrl(req = null) {
   return getPublicUrl(req);
 }
 
+function getFrontendUrl(req = null) {
+  return normalizePublicUrl(config.frontendUrl) || getPublicUrl(req);
+}
+
 function getPostShareUrl(req = null) {
   const configuredShareUrl = config.postShareUrl || process.env.POST_SHARE_URL;
   if (configuredShareUrl) {
@@ -121,6 +125,7 @@ module.exports = {
   formatNyaitterId,
   getPublicUrl,
   getApiPublicUrl,
+  getFrontendUrl,
   getPostShareUrl,
   getUserNyaitterId,
   normalizePublicUrl,
