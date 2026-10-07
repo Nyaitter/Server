@@ -189,7 +189,13 @@ class TimelineCacheManager {
 		if (!post || post.id == null) return;
 		const postId = Number(post.id);
 		if (!Number.isInteger(postId) || postId <= 0) return;
-		for (const entry of this.cache.values()) {
+		for (const [key, entry] of this.cache.entries()) {
+			// Payload entries cannot be patched reliably because their shape varies by
+			// endpoint/viewer. Drop them so the next read is rebuilt from the DB.
+			if (entry.payload) {
+				this.cache.delete(key);
+				continue;
+			}
 			const cached = entry.postsById?.get(postId);
 			if (cached) entry.postsById.set(postId, { ...cached, ...post });
 		}
@@ -198,7 +204,11 @@ class TimelineCacheManager {
 	updatePostMetrics(postId, metrics = {}) {
 		const normalizedId = Number(postId);
 		if (!Number.isInteger(normalizedId) || normalizedId <= 0) return;
-		for (const entry of this.cache.values()) {
+		for (const [key, entry] of this.cache.entries()) {
+			if (entry.payload) {
+				this.cache.delete(key);
+				continue;
+			}
 			const cached = entry.postsById?.get(normalizedId);
 			if (cached) entry.postsById.set(normalizedId, { ...cached, ...metrics });
 		}
@@ -230,6 +240,7 @@ class TimelineCacheManager {
 	 */
 	onPostCreated(post) {
 		if (!post || !post.id) return;
+		if (post.scheduledAt ?? post.scheduled_at) { this.invalidateByUserId?.(post.userId); return; }
 		const postId = Number(post.id);
 		const postAuthorId = Number(post.userId ?? post.user_id);
 		const groupId = post.groupId ?? post.group_id ?? null;
@@ -334,8 +345,9 @@ class TimelineCacheManager {
 				}
 			} else if (mode === 'recommended') {
 				if (!isReply && !groupId) {
-					if (entry.payload) this.cache.delete(key);
-					else this._appendPost(entry, postId, post);
+					// Recommendation order is score based. A newly created post has not been
+					// scored for this viewer yet, so force a rebuild instead of appending it.
+					this.cache.delete(key);
 				}
 			}
 		}

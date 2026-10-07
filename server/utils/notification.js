@@ -13,6 +13,7 @@ const NOTIFICATION_TYPES = new Set([
   'group_join_request',
   'group_announcement',
   'admin_notice',
+  'scheduled_post',
   'auto_moderation',
   'login_approval',
   'moderation_assignment',
@@ -86,6 +87,7 @@ function getNotificationActionText(notification) {
     case 'group_join_request': return `${actor} さんからグループへの参加申請が届いています。`;
     case 'group_announcement': return `${actor} さんがグループアナウンスを投稿しました。`;
     case 'admin_notice': return `${actor} さんからお知らせがあります。`;
+    case 'scheduled_post': return '予約投稿を公開しました。';
     case 'auto_moderation': return '自動モデレーションによりポストの公開範囲が変更されました。';
     case 'login_approval': return '不明な場所からのログイン承認が必要です。';
     case 'moderation_assignment': return '新しい報告があなたに割り当てられました。';

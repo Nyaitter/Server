@@ -194,6 +194,7 @@ async function getDiscoverableModePage(
 		beforeId = null,
 		cursor = null,
 		ngWords = null,
+		order = 'latest',
 	},
 ) {
 	return getDiscoverablePostPage({
@@ -205,10 +206,13 @@ async function getDiscoverableModePage(
 		beforeId,
 		cursor,
 		ngWords,
+		includeJoinedGroups: mode === 'timeline' && tab === 'all',
+		order,
 		fetchCandidatePage: async ({ limit: candidateLimit, offset: candidateOffset, beforeId: candidateBeforeId, cursor: candidateCursor, cursorCreatedAt, cursorId }) => {
 			if (mode === 'timeline') {
 				return db.getTimelinePostIds({
 					tab,
+					order,
 					viewerId,
 					limit: candidateLimit,
 					offset: candidateOffset,
@@ -221,7 +225,7 @@ async function getDiscoverableModePage(
 			if (mode === 'recommended') {
 				return db.getRecommendedPostIds({
 					viewerId,
-					limit: Math.min(candidateLimit, limit + 1),
+					limit: candidateLimit,
 					offset: candidateOffset,
 					beforeId: candidateBeforeId,
 					cursor: candidateCursor,
@@ -352,6 +356,7 @@ router.post({
 		announcement,
 		group_id,
 		group_announcement,
+		scheduled_at,
 		reply_to,
 		replyTo,
 		reply_id,
@@ -394,6 +399,7 @@ router.post({
 			announcement: announcement === true,
 			groupId: group_id,
 			groupAnnouncement: group_announcement === true,
+			scheduledAt: scheduled_at,
 			replyTo: normalizedReplyTo,
 			repostTo: normalizedRepostTo,
 			replyControl: normalizedReplyControl,
@@ -435,6 +441,7 @@ router.get({
 			beforeId,
 			cursor: rawCursor,
 			ngWords: getViewerNgWords(req),
+			order: ['latest', 'oldest', 'recommended'].includes(req.query.order) ? req.query.order : 'latest',
 		});
 
 		let enriched = await serializePostsBatch(
@@ -653,7 +660,8 @@ router.get({
 	const subTypeParam = req.query.sub_type || req.query.subType || '';
 	const pinIdParam = req.query.pin_id || req.query.pinId || '';
 	const idsParam = req.query.ids || '';
-	const cacheKey = `${mode}:${tab}:${req.query.q || ''}:${userIdParam}:${subTypeParam}:${pinIdParam}:${idsParam}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawSinceId || 0}:${rawCursor || ''}`;
+	const order = ['latest', 'oldest', 'recommended'].includes(req.query.order) ? req.query.order : 'latest';
+	const cacheKey = `${mode}:${tab}:${order}:${req.query.q || ''}:${userIdParam}:${subTypeParam}:${pinIdParam}:${idsParam}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawSinceId || 0}:${rawCursor || ''}`;
 	const cachedPayload = timelineCacheManager.getPayload(cacheKey);
 	if (cachedPayload) {
 		return res.json(cachedPayload);
@@ -665,8 +673,9 @@ router.get({
 		if (cachedResult) {
 			result = cachedResult;
 		} else if (
-			isDiscoverableMode &&
+			mode === 'timeline' &&
 			(tab === 'all' || tab === 'foryou') &&
+			(tab !== 'all' || currentUserId == null) &&
 			!req.query.q &&
 			!ngWordsKey &&
 			offset === 0
@@ -690,6 +699,7 @@ router.get({
 					beforeId,
 					cursor: rawCursor,
 					ngWords,
+					order,
 				});
 				if (result?.ids) {
 					timelineCacheManager.setIds(cacheKey, result);
@@ -701,7 +711,7 @@ router.get({
 					? req.query.sub_type
 					: 'all';
 				if (db.getProfilePostIds) {
-					result = await db.getProfilePostIds({ userId, subType, limit, offset, beforeId, cursor: rawCursor });
+					result = await db.getProfilePostIds({ userId, subType, order, limit, offset, beforeId, cursor: rawCursor });
 				} else {
 					const posts = await db.getPostsByUserId(userId, offset + limit + 1, currentUserId);
 					const filtered = posts.filter((post) => (

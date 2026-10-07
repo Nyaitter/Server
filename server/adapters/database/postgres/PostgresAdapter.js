@@ -137,6 +137,7 @@ function normalizePostRow(row) {
 		groupId: groupId == null ? null : String(groupId),
 		group_id: groupId == null ? null : String(groupId),
 		groupAnnouncement,
+		scheduledAt: toIsoString(row.scheduled_at ?? row.scheduledAt),
 		group_announcement: groupAnnouncement,
 		replyControl,
 		reply_control: replyControl,
@@ -2369,8 +2370,14 @@ class PostgresAdapter extends DatabaseAdapter {
 		return normalizeGroupJoinRequestRow(rows[0] || null);
 	}
 
-	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only', cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only', order = 'latest', cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		if (order !== 'latest') { beforeId = null; cursor = null; cursorCreatedAt = null; cursorId = null; }
 		const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
+		const orderSql = order === 'oldest'
+			? 'created_at ASC, id ASC'
+			: order === 'recommended'
+				? '(COALESCE(like_count,0)*2 + COALESCE(star_count,0)*3 + COALESCE(repost_count,0)*4 + COALESCE(reply_count,0)) DESC, created_at DESC, id DESC'
+				: 'created_at DESC, id DESC';
 		const values = [String(groupId)];
 		const clauses = ['group_id = $1', subType === 'replies_only' ? 'reply_to IS NOT NULL' : 'reply_to IS NULL'];
 		if (authorId != null && authorId !== '' && Number.isInteger(Number(authorId)) && Number(authorId) >= 0) {
@@ -2393,16 +2400,16 @@ class PostgresAdapter extends DatabaseAdapter {
 			values.push(Math.max(0, Number(offset) || 0)); offsetSql = ` OFFSET $${values.length}`;
 		}
 		const { rows } = await this.pool.query(
-			`SELECT id, created_at FROM posts WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT $${limitIndex}${offsetSql}`,
+			`SELECT id, created_at FROM posts WHERE ${clauses.join(' AND ')} ORDER BY ${orderSql} LIMIT $${limitIndex}${offsetSql}`,
 			values,
 		);
 		const selectedRows = rows.slice(0, safeLimit);
 		const ids = selectedRows.map((row) => Number(row.id));
 		const lastRow = selectedRows.length > 0 ? selectedRows[selectedRows.length - 1] : null;
-		const nextCursor = rows.length > safeLimit && lastRow
+		const nextCursor = order === 'latest' && rows.length > safeLimit && lastRow
 			? (encodePostCursor(lastRow) || ids[ids.length - 1])
 			: null;
-		return { ids, has_more: rows.length > safeLimit, next_cursor: nextCursor };
+		return { ids, has_more: rows.length > safeLimit, next_cursor: nextCursor, use_offset_pagination: order !== 'latest' };
 	}
 
 	async getGroupAnnouncementPostIds(groupId, params = {}) {
@@ -2500,14 +2507,15 @@ class PostgresAdapter extends DatabaseAdapter {
 			Boolean(postData.groupAnnouncement ?? postData.group_announcement),
 			replyControl,
 			now,
+			postData.scheduledAt ?? null,
 		];
 
 		const insertQuery = hasExplicitId
-			? `INSERT INTO posts (id, user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, reply_control, created_at)
-			   VALUES ($16, $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
+			? `INSERT INTO posts (id, user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, reply_control, created_at, scheduled_at)
+			   VALUES ($17, $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16)
 			   RETURNING *`
-			: `INSERT INTO posts (user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, reply_control, created_at)
-			   VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
+			: `INSERT INTO posts (user_id, content, view_content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, reply_control, created_at, scheduled_at)
+			   VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16)
 			   RETURNING *`;
 
 		if (hasExplicitId) {
@@ -2518,21 +2526,24 @@ class PostgresAdapter extends DatabaseAdapter {
 			const { rows } = await client.query(insertQuery, values);
 			const post = normalizePostRow(rows[0] || null);
 			if (post) {
-				await this.enqueuePostEvent(
-					'post.created',
-					{ postId: Number(post.id), userId: Number(post.userId) },
-					{ postId: Number(post.id), client },
-				);
-				// reply/repost カウント更新は並列実行
-				await Promise.all([
-					post.replyTo
-						? client.query('UPDATE posts SET reply_count = reply_count + 1 WHERE id = $1', [Number(post.replyTo)])
-						: null,
-					post.repostTo
-						? client.query('UPDATE posts SET repost_count = repost_count + 1 WHERE id = $1', [Number(post.repostTo)])
-						: null,
-				].filter(Boolean));
-				if (post.replyTo) {
+				const isScheduled = Boolean(post.scheduledAt ?? post.scheduled_at);
+				if (!isScheduled) {
+					await this.enqueuePostEvent(
+						'post.created',
+						{ postId: Number(post.id), userId: Number(post.userId) },
+						{ postId: Number(post.id), client },
+					);
+					// reply/repost カウント更新は公開時だけ行う。
+					await Promise.all([
+						post.replyTo
+							? client.query('UPDATE posts SET reply_count = reply_count + 1 WHERE id = $1', [Number(post.replyTo)])
+							: null,
+						post.repostTo
+							? client.query('UPDATE posts SET repost_count = repost_count + 1 WHERE id = $1', [Number(post.repostTo)])
+							: null,
+					].filter(Boolean));
+				}
+				if (!isScheduled && post.replyTo) {
 					const parentId = Number(post.replyTo);
 					const cachedParent = this._getPostCache()?.get(parentId);
 					if (cachedParent) {
@@ -2550,7 +2561,7 @@ class PostgresAdapter extends DatabaseAdapter {
 						});
 					}
 				}
-				if (post.repostTo) {
+				if (!isScheduled && post.repostTo) {
 					const parentId = Number(post.repostTo);
 					const cachedParent = this._getPostCache()?.get(parentId);
 					if (cachedParent) {
@@ -3019,7 +3030,26 @@ class PostgresAdapter extends DatabaseAdapter {
 		return rows;
 	}
 
+	async getDueScheduledPosts(now = new Date().toISOString(), limit = 100) {
+		const { rows } = await this.pool.query('SELECT * FROM posts WHERE scheduled_at IS NOT NULL AND scheduled_at <= $1 ORDER BY scheduled_at ASC LIMIT $2', [now, limit]);
+		return rows.map(normalizePostRow);
+	}
+
+	async publishScheduledPost(postId, now = new Date().toISOString()) {
+		return this._withTransaction(async client => {
+			const { rows } = await client.query('UPDATE posts SET scheduled_at = NULL, created_at = $2 WHERE id = $1 AND scheduled_at IS NOT NULL AND scheduled_at <= $2 RETURNING *', [Number(postId), now]);
+			const post = normalizePostRow(rows[0]);
+			if (!post) return null;
+			if (post.replyTo) await client.query('UPDATE posts SET reply_count = reply_count + 1 WHERE id = $1', [post.replyTo]);
+			if (post.repostTo) await client.query('UPDATE posts SET repost_count = repost_count + 1 WHERE id = $1', [post.repostTo]);
+			this._getPostCache()?.delete(Number(postId));
+			await this.enqueuePostEvent('post.created', { postId: Number(postId), userId: post.userId }, { postId: Number(postId), client });
+			return post;
+		});
+	}
+
 	async updatePost(postId, fields) {
+
 		const sets = [];
 		const values = [];
 		if (fields.content !== undefined) {
@@ -3315,6 +3345,33 @@ class PostgresAdapter extends DatabaseAdapter {
 					ORDER BY p.created_at DESC, p.id DESC LIMIT $1 OFFSET $2`);
 				values = [normalizedLimit + 1, normalizedOffset];
 			}
+		} else if (validViewerId != null && decodedCursor) {
+			query = wrapCte(`SELECT p.* FROM posts p
+				WHERE p.reply_to IS NULL
+				  AND (p.group_id IS NULL OR EXISTS (
+					SELECT 1 FROM group_memberships gm
+					WHERE gm.group_id = p.group_id AND gm.user_id = $1 AND gm.status = 'active'
+				  ))
+				  AND (p.created_at, p.id) < ($2, $3) ORDER BY p.created_at DESC, p.id DESC LIMIT $4`);
+			values = [validViewerId, decodedCursor.createdAt, decodedCursor.id, normalizedLimit + 1];
+		} else if (validViewerId != null && normalizedBeforeId != null) {
+			query = wrapCte(`SELECT p.* FROM posts p
+				WHERE p.reply_to IS NULL
+				  AND (p.group_id IS NULL OR EXISTS (
+					SELECT 1 FROM group_memberships gm
+					WHERE gm.group_id = p.group_id AND gm.user_id = $1 AND gm.status = 'active'
+				  ))
+				  AND p.id < $2 ORDER BY p.created_at DESC, p.id DESC LIMIT $3`);
+			values = [validViewerId, normalizedBeforeId, normalizedLimit + 1];
+		} else if (validViewerId != null) {
+			query = wrapCte(`SELECT p.* FROM posts p
+				WHERE p.reply_to IS NULL
+				  AND (p.group_id IS NULL OR EXISTS (
+					SELECT 1 FROM group_memberships gm
+					WHERE gm.group_id = p.group_id AND gm.user_id = $1 AND gm.status = 'active'
+				  ))
+				ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`);
+			values = [validViewerId, normalizedLimit + 1, normalizedOffset];
 		} else if (decodedCursor) {
 			query = wrapCte(`SELECT p.* FROM posts p
 				WHERE p.group_id IS NULL AND p.reply_to IS NULL
@@ -3363,8 +3420,9 @@ class PostgresAdapter extends DatabaseAdapter {
 		const parsedViewerId = Number(viewerId);
 		const validViewerId = Number.isSafeInteger(parsedViewerId) && parsedViewerId > 0 ? parsedViewerId : null;
 
-		const candidateLimit = Math.max(60, normalizedLimit * 2) + 1;
-		const userExclusionClause = validViewerId != null ? 'AND p.user_id != $' : '';
+		// Score a wider, bounded recent window. This keeps DB work predictable while
+		// giving personalization enough candidates to make a meaningful difference.
+		const candidateLimit = Math.min(800, Math.max(240, normalizedLimit * 8)) + 1;
 		let query;
 		let params;
 
@@ -3375,7 +3433,11 @@ class PostgresAdapter extends DatabaseAdapter {
 				          COALESCE(p.star_count, 0)::int AS star_count,
 				          COALESCE(p.repost_count, 0)::int AS repost_count
 				   FROM posts p
-				   WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.user_id != $1
+				   WHERE p.reply_to IS NULL AND p.user_id != $1
+				     AND (p.group_id IS NULL OR EXISTS (
+				       SELECT 1 FROM group_memberships gm
+				       WHERE gm.group_id = p.group_id AND gm.user_id = $1 AND gm.status = 'active'
+				     ))
 				     AND (p.created_at < $2 OR (p.created_at = $2 AND p.id < $3))
 				   ORDER BY p.created_at DESC, p.id DESC
 				   LIMIT $4`;
@@ -3386,7 +3448,11 @@ class PostgresAdapter extends DatabaseAdapter {
 				          COALESCE(p.star_count, 0)::int AS star_count,
 				          COALESCE(p.repost_count, 0)::int AS repost_count
 				   FROM posts p
-				   WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.user_id != $1 AND p.id < $2
+				   WHERE p.reply_to IS NULL AND p.user_id != $1 AND p.id < $2
+				     AND (p.group_id IS NULL OR EXISTS (
+				       SELECT 1 FROM group_memberships gm
+				       WHERE gm.group_id = p.group_id AND gm.user_id = $1 AND gm.status = 'active'
+				     ))
 				   ORDER BY p.created_at DESC, p.id DESC
 				   LIMIT $3`;
 				params = [validViewerId, normalizedBeforeId, candidateLimit];
@@ -3396,7 +3462,11 @@ class PostgresAdapter extends DatabaseAdapter {
 				          COALESCE(p.star_count, 0)::int AS star_count,
 				          COALESCE(p.repost_count, 0)::int AS repost_count
 				   FROM posts p
-				   WHERE p.group_id IS NULL AND p.reply_to IS NULL AND p.user_id != $1
+				   WHERE p.reply_to IS NULL AND p.user_id != $1
+				     AND (p.group_id IS NULL OR EXISTS (
+				       SELECT 1 FROM group_memberships gm
+				       WHERE gm.group_id = p.group_id AND gm.user_id = $1 AND gm.status = 'active'
+				     ))
 				   ORDER BY p.created_at DESC, p.id DESC
 				   LIMIT $2 OFFSET $3`;
 				params = [validViewerId, candidateLimit, normalizedOffset];
@@ -3437,7 +3507,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!this._affinityCache) this._affinityCache = new Map();
 		if (!this._followCache) this._followCache = new Map();
 		if (!this._reactionCache) this._reactionCache = new Map();
-		if (!this._candidatePostsCache) this._candidatePostsCache = { posts: [], expiresAt: 0 };
+		if (!this._candidatePostsCache) this._candidatePostsCache = { posts: [], hasMore: false, expiresAt: 0 };
 		const now = Date.now();
 
 		let keywordProfile = new Map();
@@ -3470,14 +3540,14 @@ class PostgresAdapter extends DatabaseAdapter {
 							(SELECT COALESCE(jsonb_object_agg(keyword, score), '{}'::jsonb)
 							 FROM (SELECT keyword, score FROM user_keyword_affinities WHERE user_id = $1 ORDER BY score DESC LIMIT 25) _ka) AS affinities,
 							(SELECT COALESCE(jsonb_agg(following_id), '[]'::jsonb)
-							 FROM (SELECT following_id FROM follows WHERE follower_id = $1 LIMIT 100) _f) AS follows,
+							 FROM (SELECT following_id FROM follows WHERE follower_id = $1 ORDER BY created_at DESC LIMIT 500) _f) AS follows,
 							(SELECT COALESCE(jsonb_agg(post_id), '[]'::jsonb)
 							 FROM (
-								SELECT post_id FROM likes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100
+								(SELECT post_id FROM likes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
 								UNION ALL
-								SELECT post_id FROM stars WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100
+								(SELECT post_id FROM stars WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
 								UNION ALL
-								SELECT post_id FROM reposts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100
+								(SELECT post_id FROM reposts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
 							 ) _r) AS reactions`,
 						[validViewerId],
 					).then(({ rows }) => {
@@ -3508,13 +3578,13 @@ class PostgresAdapter extends DatabaseAdapter {
 		const candidateTask = (async () => {
 			if (validViewerId == null && !decodedCursor && normalizedBeforeId == null && normalizedOffset === 0 && this._candidatePostsCache.expiresAt > now && this._candidatePostsCache.posts.length > 0) {
 				candidateRows = this._candidatePostsCache.posts;
-				hasMore = candidateRows.length >= candidateLimit;
+				hasMore = this._candidatePostsCache.hasMore === true;
 			} else {
 				const { rows } = await this.pool.query(query, params);
 				hasMore = rows.length >= candidateLimit;
 				candidateRows = rows.slice(0, candidateLimit - 1);
 				if (validViewerId == null && !decodedCursor && normalizedBeforeId == null && normalizedOffset === 0) {
-					this._candidatePostsCache = { posts: candidateRows, expiresAt: now + 300000 };
+					this._candidatePostsCache = { posts: candidateRows, hasMore, expiresAt: now + 30000 };
 				}
 			}
 		})();
@@ -3544,7 +3614,8 @@ class PostgresAdapter extends DatabaseAdapter {
 		};
 	}
 
-	async getProfilePostIds({ userId, subType = 'all', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+	async getProfilePostIds({ userId, subType = 'all', order = 'latest', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		if (order !== 'latest') { beforeId = null; cursor = null; cursorCreatedAt = null; cursorId = null; }
 		const normalizedLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
 		const decodedCursor = cursorCreatedAt && cursorId
 			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
@@ -3554,6 +3625,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			? Number(beforeId)
 			: null;
 		const values = [Number(userId)];
+		const orderSql = order === 'oldest' ? 'created_at ASC, id ASC' : order === 'recommended' ? '(COALESCE(like_count,0)*2 + COALESCE(star_count,0)*3 + COALESCE(repost_count,0)*4 + COALESCE(reply_count,0)) DESC, created_at DESC, id DESC' : 'created_at DESC, id DESC';
 		const clauses = ['user_id = $1', 'group_id IS NULL'];
 		if (subType === 'posts_only') clauses.push('reply_to IS NULL');
 		if (subType === 'replies_only') clauses.push('reply_to IS NOT NULL');
@@ -3573,16 +3645,17 @@ class PostgresAdapter extends DatabaseAdapter {
 		}
 		const { rows } = await this.pool.query(
 			`SELECT * FROM posts WHERE ${clauses.join(' AND ')}
-			 ORDER BY created_at DESC, id DESC LIMIT $${limitParam}${offsetSql}`,
+			 ORDER BY ${orderSql} LIMIT $${limitParam}${offsetSql}`,
 			values,
 		);
 		const normalizedRows = rows.map(normalizePostRow).filter(Boolean);
 		const ids = normalizedRows.slice(0, normalizedLimit).map((post) => Number(post.id));
 		return {
 			ids,
+			use_offset_pagination: order !== 'latest',
 			posts: normalizedRows.slice(0, normalizedLimit),
 			has_more: rows.length > normalizedLimit,
-			next_cursor: rows.length > normalizedLimit && ids.length > 0
+			next_cursor: order === 'latest' && rows.length > normalizedLimit && ids.length > 0
 				? (encodePostCursor(normalizedRows[normalizedLimit - 1]) || ids[ids.length - 1])
 				: null,
 		};
@@ -4183,8 +4256,11 @@ class PostgresAdapter extends DatabaseAdapter {
 
 		if (tags && (liked || unliked)) {
 			const delta = liked ? 1 : -1;
-			this._adjustUserKeywordAffinitiesForTags(this.pool, uId, tags, delta).catch(() => {});
+			this._adjustUserKeywordAffinitiesForTags(this.pool, uId, tags, delta)
+				.then(() => this._affinityCache?.delete(uId))
+				.catch(() => {});
 		}
+		this._reactionCache?.delete(uId);
 
 		const result = { liked, count };
 		const cachedPost = this._getPostCache()?.get(pId);
@@ -4259,9 +4335,12 @@ class PostgresAdapter extends DatabaseAdapter {
 		});
 
 		if (tags && (starred || unstarred)) {
-			const delta = starred ? 1 : -1;
-			this._adjustUserKeywordAffinitiesForTags(this.pool, uId, tags, delta).catch(() => {});
+			const delta = starred ? 3 : -3;
+			this._adjustUserKeywordAffinitiesForTags(this.pool, uId, tags, delta)
+				.then(() => this._affinityCache?.delete(uId))
+				.catch(() => {});
 		}
+		this._reactionCache?.delete(uId);
 
 		const result = { starred, count };
 		const cachedPost = this._getPostCache()?.get(pId);
@@ -4357,7 +4436,8 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async repostPost(userId, postId) {
-		return this._withTransaction(async (client) => {
+		const normalizedUserId = Number(userId);
+		const repost = await this._withTransaction(async (client) => {
 			const original = await client.query('SELECT * FROM posts WHERE id = $1', [Number(postId)]);
 			if (!original.rows[0]) throw new Error('Post not found');
 
@@ -4410,6 +4490,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 			return post;
 		});
+		this._reactionCache?.delete(normalizedUserId);
+		return repost;
 	}
 
 	async getReposts(userId) {
@@ -5572,15 +5654,33 @@ class PostgresAdapter extends DatabaseAdapter {
 			`SELECT
 				COALESCE((
 					SELECT array_agg(following_id ORDER BY created_at DESC, following_id ASC)
-					FROM follows WHERE follower_id = $1
+					FROM (
+						SELECT following_id, created_at
+						FROM follows
+						WHERE follower_id = $1
+						ORDER BY created_at DESC, following_id ASC
+						LIMIT 1000
+					) recent_follows
 				), ARRAY[]::INTEGER[]) AS follow_ids,
 				COALESCE((
 					SELECT array_agg(post_id ORDER BY created_at DESC)
-					FROM likes WHERE user_id = $1
+					FROM (
+						SELECT post_id, created_at
+						FROM likes
+						WHERE user_id = $1
+						ORDER BY created_at DESC
+						LIMIT 1000
+					) recent_likes
 				), ARRAY[]::INTEGER[]) AS like_ids,
 				COALESCE((
 					SELECT array_agg(post_id ORDER BY created_at DESC)
-					FROM stars WHERE user_id = $1
+					FROM (
+						SELECT post_id, created_at
+						FROM stars
+						WHERE user_id = $1
+						ORDER BY created_at DESC
+						LIMIT 1000
+					) recent_stars
 				), ARRAY[]::INTEGER[]) AS star_ids,
 				(
 					SELECT post_id FROM pinned_posts WHERE user_id = $1
@@ -5623,15 +5723,33 @@ class PostgresAdapter extends DatabaseAdapter {
 			SELECT
 				COALESCE((
 					SELECT array_agg(following_id ORDER BY created_at DESC, following_id ASC)
-					FROM follows WHERE follower_id = $1
+					FROM (
+						SELECT following_id, created_at
+						FROM follows
+						WHERE follower_id = $1
+						ORDER BY created_at DESC, following_id ASC
+						LIMIT 1000
+					) recent_follows
 				), ARRAY[]::INTEGER[]) AS follow_ids,
 				COALESCE((
 					SELECT array_agg(post_id ORDER BY created_at DESC)
-					FROM likes WHERE user_id = $1
+					FROM (
+						SELECT post_id, created_at
+						FROM likes
+						WHERE user_id = $1
+						ORDER BY created_at DESC
+						LIMIT 1000
+					) recent_likes
 				), ARRAY[]::INTEGER[]) AS like_ids,
 				COALESCE((
 					SELECT array_agg(post_id ORDER BY created_at DESC)
-					FROM stars WHERE user_id = $1
+					FROM (
+						SELECT post_id, created_at
+						FROM stars
+						WHERE user_id = $1
+						ORDER BY created_at DESC
+						LIMIT 1000
+					) recent_stars
 				), ARRAY[]::INTEGER[]) AS star_ids,
 				(
 					SELECT post_id FROM pinned_posts WHERE user_id = $1

@@ -352,7 +352,7 @@ const MIGRATION_TABLES = [
 	'likes', 'stars', 'reposts', 'pinned_posts', 'follows', 'dm_channels', 'dm_messages',
 		'group_dms', 'dm_e2e_keys', 'notifications', 'push_subscriptions', 'moderation_reports', 'logs',
 		'groups', 'group_roles', 'group_memberships', 'group_invites', 'group_join_requests',
-		'user_keyword_affinities', 'polls', 'poll_votes',
+	'user_keyword_affinities', 'polls', 'poll_votes', 'authorized_apps',
 ];
 const MIGRATION_COLUMNS = {
 	users: ['id', 'scid', 'name', 'handle', 'nyaitter_address', 'auth_provider', 'provider_domain', 'external_id', 'external_profile', 'uuid', 'settings', 'bio', 'header_image', 'icon_data', 'verify', 'freeze', 'admin', 'shadow', 'block', 'account_operation', 'created_at'],
@@ -382,10 +382,11 @@ const MIGRATION_COLUMNS = {
 	user_keyword_affinities: ['user_id', 'keyword', 'score', 'updated_at'],
 	polls: ['id', 'post_id', 'user_id', 'title', 'options', 'allow_multiple', 'allow_other', 'show_results_before_voting', 'expires_at', 'closed', 'closed_notified', 'created_at'],
 	poll_votes: ['id', 'poll_id', 'user_id', 'option_id', 'other_text', 'created_at'],
+	authorized_apps: ['id', 'user_id', 'app_id', 'app_token_hash', 'app_name', 'app_icon_url', 'scopes', 'access_token_id', 'access_token_hash', 'created_at', 'updated_at', 'last_used_at'],
 };
-const MIGRATION_JSON_COLUMNS = new Set(['external_profile', 'settings', 'block', 'attachments', 'tags', 'participants', 'member', 'post', 'unread', 'target', 'target_snapshot', 'excluded_admin_ids', 'resolution', 'permissions', 'options']);
+const MIGRATION_JSON_COLUMNS = new Set(['external_profile', 'settings', 'block', 'attachments', 'tags', 'participants', 'member', 'post', 'unread', 'target', 'target_snapshot', 'excluded_admin_ids', 'resolution', 'permissions', 'options', 'scopes']);
 const MIGRATION_BOOLEAN_COLUMNS = new Set(['verify', 'admin', 'shadow', 'mask', 'lock', 'announcement', 'group_announcement', 'is_system', 'read', 'clicked']);
-const MIGRATION_INSERT_ORDER = ['users', 'groups', 'group_roles', 'group_memberships', 'group_invites', 'group_join_requests', 'posts', 'dm_channels', 'group_dms', 'dm_e2e_keys', 'sessions', 'trusted_login_ips', 'login_approvals', 'bot_tokens', 'follows', 'likes', 'stars', 'reposts', 'pinned_posts', 'user_keyword_affinities', 'dm_messages', 'notifications', 'push_subscriptions', 'moderation_reports', 'logs'];
+const MIGRATION_INSERT_ORDER = ['users', 'groups', 'group_roles', 'group_memberships', 'group_invites', 'group_join_requests', 'posts', 'dm_channels', 'group_dms', 'dm_e2e_keys', 'sessions', 'trusted_login_ips', 'login_approvals', 'bot_tokens', 'authorized_apps', 'follows', 'likes', 'stars', 'reposts', 'pinned_posts', 'user_keyword_affinities', 'dm_messages', 'notifications', 'push_subscriptions', 'moderation_reports', 'logs'];
 
 function migrationValue(column, value) {
 	if (value == null) return null;
@@ -976,6 +977,86 @@ export default {
 				const userId = Number(parts[2]);
 				const tokenId = decodeURIComponent(parts[4]);
 				const res = await db.prepare('DELETE FROM bot_tokens WHERE user_id = ? AND token_id = ?').bind(userId, tokenId).run();
+				return json({ success: res.meta.changes > 0 });
+			}
+
+			if (method === 'POST' && pathname.match(/^\/users\/(\d+)\/authorized-apps$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const now = new Date().toISOString();
+				const scopes = JSON.stringify(Array.isArray(body.scopes) ? body.scopes : []);
+				await db.prepare(
+					`INSERT INTO authorized_apps (user_id, app_id, app_token_hash, app_name, app_icon_url, scopes, access_token_id, access_token_hash, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(user_id, app_id, app_token_hash) DO UPDATE SET
+					   app_name = excluded.app_name,
+					   app_icon_url = excluded.app_icon_url,
+					   scopes = excluded.scopes,
+					   access_token_id = COALESCE(excluded.access_token_id, authorized_apps.access_token_id),
+					   access_token_hash = COALESCE(excluded.access_token_hash, authorized_apps.access_token_hash),
+					   updated_at = excluded.updated_at`
+				).bind(userId, String(body.appId), String(body.appTokenHash), String(body.appName || ''), body.appIconUrl || null, scopes, body.accessTokenId || null, body.accessTokenHash || null, now, now).run();
+				const row = await db.prepare('SELECT * FROM authorized_apps WHERE user_id = ? AND app_id = ? AND app_token_hash = ?')
+					.bind(userId, String(body.appId), String(body.appTokenHash)).first();
+				return json(row ? { ...row, scopes: parseJsonSafe(row.scopes, []) } : null);
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/authorized-apps\/lookup$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const row = await db.prepare('SELECT * FROM authorized_apps WHERE user_id = ? AND app_id = ? AND app_token_hash = ?')
+					.bind(userId, url.searchParams.get('appId') || '', url.searchParams.get('appTokenHash') || '').first();
+				return json(row ? { ...row, scopes: parseJsonSafe(row.scopes, []) } : null);
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/authorized-apps$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const { results } = await db.prepare('SELECT * FROM authorized_apps WHERE user_id = ? ORDER BY created_at DESC').bind(userId).all();
+				return json((results || []).map((row) => ({ ...row, scopes: parseJsonSafe(row.scopes, []) })));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/authorized-apps\/by-token\/([^/]+)$/)) {
+				const accessTokenId = decodeURIComponent(pathname.split('/')[3]);
+				const row = await db.prepare('SELECT * FROM authorized_apps WHERE access_token_id = ?').bind(accessTokenId).first();
+				return json(row ? { ...row, scopes: parseJsonSafe(row.scopes, []) } : null);
+			}
+
+			if (method === 'GET' && pathname.match(/^\/authorized-apps\/(\d+)$/)) {
+				const id = Number(pathname.split('/')[2]);
+				const userId = url.searchParams.has('userId') ? Number(url.searchParams.get('userId')) : null;
+				const row = userId === null
+					? await db.prepare('SELECT * FROM authorized_apps WHERE id = ?').bind(id).first()
+					: await db.prepare('SELECT * FROM authorized_apps WHERE id = ? AND user_id = ?').bind(id, userId).first();
+				return json(row ? { ...row, scopes: parseJsonSafe(row.scopes, []) } : null);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/authorized-apps\/(\d+)\/scopes$/)) {
+				const id = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const now = new Date().toISOString();
+				const scopes = JSON.stringify(Array.isArray(body.scopes) ? body.scopes : []);
+				if (body.userId !== undefined) {
+					await db.prepare('UPDATE authorized_apps SET scopes = ?, access_token_id = ?, access_token_hash = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+						.bind(scopes, body.accessTokenId || null, body.accessTokenHash || null, now, id, Number(body.userId)).run();
+				} else {
+					await db.prepare('UPDATE authorized_apps SET scopes = ?, access_token_id = ?, access_token_hash = ?, updated_at = ? WHERE id = ?')
+						.bind(scopes, body.accessTokenId || null, body.accessTokenHash || null, now, id).run();
+				}
+				const row = await db.prepare('SELECT * FROM authorized_apps WHERE id = ?').bind(id).first();
+				return json(row ? { ...row, scopes: parseJsonSafe(row.scopes, []) } : null);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/authorized-apps\/(\d+)\/last-used$/)) {
+				const id = Number(pathname.split('/')[2]);
+				await db.prepare('UPDATE authorized_apps SET last_used_at = ? WHERE id = ?').bind(new Date().toISOString(), id).run();
+				return json({ success: true });
+			}
+
+			if (method === 'POST' && pathname.match(/^\/authorized-apps\/(\d+)\/delete$/)) {
+				const id = Number(pathname.split('/')[2]);
+				const userId = url.searchParams.has('userId') ? Number(url.searchParams.get('userId')) : null;
+				const res = userId === null
+					? await db.prepare('DELETE FROM authorized_apps WHERE id = ?').bind(id).run()
+					: await db.prepare('DELETE FROM authorized_apps WHERE id = ? AND user_id = ?').bind(id, userId).run();
 				return json({ success: res.meta.changes > 0 });
 			}
 
@@ -2137,12 +2218,12 @@ export default {
 			}
 
 			if (method === 'GET' && pathname.match(/^\/groups\/[^/]+\/(posts|announcements)$/)) {
-				const groupId = decodeURIComponent(pathname.split('/')[2]); const onlyAnnouncements = pathname.endsWith('/announcements'); const subType = url.searchParams.get('subType') === 'replies_only' ? 'replies_only' : 'posts_only'; const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 30), 100)); const offset = Math.max(0, Number(url.searchParams.get('offset') || 0)); const beforeId = Number(url.searchParams.get('beforeId')) || null; const authorId = Number.isInteger(Number(url.searchParams.get('authorId'))) && Number(url.searchParams.get('authorId')) >= 0 ? Number(url.searchParams.get('authorId')) : null;
-				const decodedCursor = decodePostCursor(url.searchParams.get('cursor'));
+				const groupId = decodeURIComponent(pathname.split('/')[2]); const onlyAnnouncements = pathname.endsWith('/announcements'); const subType = url.searchParams.get('subType') === 'replies_only' ? 'replies_only' : 'posts_only'; const order = ['oldest', 'recommended'].includes(url.searchParams.get('order')) ? url.searchParams.get('order') : 'latest'; const orderSql = order === 'oldest' ? 'created_at ASC, id ASC' : order === 'recommended' ? '(COALESCE(like_count,0)*2 + COALESCE(star_count,0)*3 + COALESCE(repost_count,0)*4 + COALESCE(reply_count,0)) DESC, created_at DESC, id DESC' : 'created_at DESC, id DESC'; const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 30), 100)); const offset = Math.max(0, Number(url.searchParams.get('offset') || 0)); const beforeId = order === 'latest' ? (Number(url.searchParams.get('beforeId')) || null) : null; const authorId = Number.isInteger(Number(url.searchParams.get('authorId'))) && Number(url.searchParams.get('authorId')) >= 0 ? Number(url.searchParams.get('authorId')) : null;
+				const decodedCursor = order === 'latest' ? decodePostCursor(url.searchParams.get('cursor')) : null;
 				const clauses = ['group_id = ?']; const values = [groupId]; if (onlyAnnouncements) clauses.push('group_announcement = 1'); else clauses.push(subType === 'replies_only' ? 'reply_to IS NOT NULL' : 'reply_to IS NULL'); if (authorId != null) { clauses.push('user_id = ?'); values.push(authorId); }
 				if (decodedCursor) { clauses.push('(created_at < ? OR (created_at = ? AND id < ?))'); values.push(decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id); } else if (beforeId) { clauses.push('id < ?'); values.push(beforeId); }
 				values.push(limit + 1); let offsetSql = ''; if (!beforeId && !decodedCursor) { values.push(offset); offsetSql = ' OFFSET ?'; }
-				const { results } = await db.prepare(`SELECT id, created_at FROM posts WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ?${offsetSql}`).bind(...values).all(); const rows = results || []; const selectedRows = rows.slice(0, limit); const ids = selectedRows.map((row) => Number(row.id)); const lastRow = selectedRows.length > 0 ? selectedRows[selectedRows.length - 1] : null; const nextCursor = rows.length > limit && lastRow ? (encodePostCursor(lastRow) || ids.at(-1) || null) : null; return json({ ids, has_more: rows.length > limit, next_cursor: nextCursor });
+				const { results } = await db.prepare(`SELECT id, created_at FROM posts WHERE ${clauses.join(' AND ')} ORDER BY ${orderSql} LIMIT ?${offsetSql}`).bind(...values).all(); const rows = results || []; const selectedRows = rows.slice(0, limit); const ids = selectedRows.map((row) => Number(row.id)); const lastRow = selectedRows.length > 0 ? selectedRows[selectedRows.length - 1] : null; const nextCursor = order === 'latest' && rows.length > limit && lastRow ? (encodePostCursor(lastRow) || ids.at(-1) || null) : null; return json({ ids, has_more: rows.length > limit, next_cursor: nextCursor, use_offset_pagination: order !== 'latest' });
 			}
 
 			if (method === 'GET' && pathname === '/group-posts/search') {
@@ -2154,6 +2235,22 @@ export default {
 				const { results } = await db.prepare(`SELECT p.id, p.created_at FROM posts p JOIN group_memberships gm ON gm.group_id = p.group_id WHERE ${clauses.join(' AND ')} ORDER BY p.created_at DESC, p.id DESC LIMIT ?${offsetSql}`).bind(...values).all(); const rows = results || []; const selectedRows = rows.slice(0, limit); const ids = selectedRows.map((row) => Number(row.id)); const lastRow = selectedRows.length > 0 ? selectedRows[selectedRows.length - 1] : null; const nextCursor = rows.length > limit && lastRow ? (encodePostCursor(lastRow) || ids.at(-1) || null) : null; return json({ ids, has_more: rows.length > limit, next_cursor: nextCursor });
 			}
 
+			if (method === 'GET' && pathname === '/posts/scheduled/due') {
+				const now = new Date(url.searchParams.get('now') || Date.now()).toISOString();
+				const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 100));
+				const { results } = await db.prepare('SELECT * FROM posts WHERE scheduled_at IS NOT NULL AND scheduled_at <= ? ORDER BY scheduled_at ASC LIMIT ?').bind(now, limit).all();
+				return json((results || []).map(normalizePostRow));
+			}
+			if (method === 'POST' && /^\/posts\/\d+\/publish-scheduled$/.test(pathname)) {
+				const postId = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const now = new Date(body.now || Date.now()).toISOString();
+				const published = await db.prepare('UPDATE posts SET scheduled_at = NULL, created_at = ? WHERE id = ? AND scheduled_at IS NOT NULL AND scheduled_at <= ? RETURNING *').bind(now, postId, now).first();
+				if (published?.reply_to) await db.prepare('UPDATE posts SET reply_count = reply_count + 1 WHERE id = ?').bind(published.reply_to).run();
+				if (published?.repost_to) await db.prepare('UPDATE posts SET repost_count = repost_count + 1 WHERE id = ?').bind(published.repost_to).run();
+				if (published) await adjustUserKeywordAffinitiesForTags(db, Number(published.user_id), normalizePostTags(published.tags), 1);
+				return json(published ? normalizePostRow(published) : null);
+			}
 			if (method === 'POST' && pathname === '/posts') {
 				const postData = await request.json();
 				const userId = Number(postData.userId);
@@ -2169,6 +2266,7 @@ export default {
 				const tagsGeneratedAt = postData.tagsGeneratedAt || null;
 				const groupId = postData.groupId ?? postData.group_id ?? null;
 				const groupAnnouncement = postData.groupAnnouncement ?? postData.group_announcement ? 1 : 0;
+				const scheduledAt = postData.scheduledAt ?? null;
 				const now = postData.createdAt ? new Date(postData.createdAt).toISOString() : new Date().toISOString();
 				const hasExplicitId = postData.id != null && Number.isSafeInteger(Number(postData.id)) && Number(postData.id) > 0;
 
@@ -2176,19 +2274,19 @@ export default {
 				if (hasExplicitId) {
 					createdId = Number(postData.id);
 					await db.prepare(
-						`INSERT INTO posts (id, user_id, content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-					).bind(createdId, userId, content, attachments, mask, lock, announcement, replyTo, repostTo, tags, tagsGeneratedAt, groupId, groupAnnouncement, now).run();
+						`INSERT INTO posts (id, user_id, content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at, scheduled_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					).bind(createdId, userId, content, attachments, mask, lock, announcement, replyTo, repostTo, tags, tagsGeneratedAt, groupId, groupAnnouncement, now, scheduledAt).run();
 				} else {
 					const res = await db.prepare(
-						`INSERT INTO posts (user_id, content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-					).bind(userId, content, attachments, mask, lock, announcement, replyTo, repostTo, tags, tagsGeneratedAt, groupId, groupAnnouncement, now).run();
+						`INSERT INTO posts (user_id, content, attachments, mask, lock, announcement, reply_to, repost_to, tags, tags_generated_at, group_id, group_announcement, created_at, scheduled_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					).bind(userId, content, attachments, mask, lock, announcement, replyTo, repostTo, tags, tagsGeneratedAt, groupId, groupAnnouncement, now, scheduledAt).run();
 					createdId = res.meta.last_row_id;
 				}
 
 				const created = await db.prepare('SELECT * FROM posts WHERE id = ?').bind(createdId).first();
-				await adjustUserKeywordAffinitiesForTags(db, userId, normalizedTags, 1);
+				if (!scheduledAt) await adjustUserKeywordAffinitiesForTags(db, userId, normalizedTags, 1);
 				return json(normalizePostRow(created));
 			}
 
@@ -2503,16 +2601,16 @@ export default {
 					let queryRes;
 					if (decodedCursor) {
 						queryRes = await db.prepare(
-							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE group_id IS NULL AND reply_to IS NULL AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?`
-						).bind(decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id, limit + 1).all();
+							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE (group_id IS NULL OR EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.group_id = posts.group_id AND gm.user_id = ? AND gm.status = 'active')) AND reply_to IS NULL AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?`
+						).bind(viewerId ?? -1, decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id, limit + 1).all();
 					} else if (beforeId != null) {
 						queryRes = await db.prepare(
-							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE group_id IS NULL AND reply_to IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
-						).bind(beforeId, limit + 1).all();
+							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE (group_id IS NULL OR EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.group_id = posts.group_id AND gm.user_id = ? AND gm.status = 'active')) AND reply_to IS NULL AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?`
+						).bind(viewerId ?? -1, beforeId, limit + 1).all();
 					} else {
 						queryRes = await db.prepare(
-							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE group_id IS NULL AND reply_to IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
-						).bind(limit + 1, offset).all();
+							`SELECT ${includePosts ? '*' : 'id'} FROM posts WHERE (group_id IS NULL OR EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.group_id = posts.group_id AND gm.user_id = ? AND gm.status = 'active')) AND reply_to IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+						).bind(viewerId ?? -1, limit + 1, offset).all();
 					}
 					results = queryRes.results || [];
 				}
@@ -2684,11 +2782,13 @@ export default {
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/post-ids$/)) {
 				const userId = Number(pathname.split('/')[2]);
+				const order = ['oldest','recommended'].includes(url.searchParams.get('order')) ? url.searchParams.get('order') : 'latest';
+				const orderSql = order === 'oldest' ? 'created_at ASC, id ASC' : order === 'recommended' ? '(COALESCE(like_count,0)*2 + COALESCE(star_count,0)*3 + COALESCE(repost_count,0)*4 + COALESCE(reply_count,0)) DESC, created_at DESC, id DESC' : 'created_at DESC, id DESC';
 				const subType = url.searchParams.get('subType') || 'all';
 				const includePosts = url.searchParams.get('includePosts') === 'true';
 				const limit = Math.min(Number(url.searchParams.get('limit') || 30), 100);
-				const decodedCursor = decodePostCursor(url.searchParams.get('cursor'));
-				const beforeId = Number.isSafeInteger(Number(url.searchParams.get('beforeId'))) && Number(url.searchParams.get('beforeId')) > 0
+				const decodedCursor = order === 'latest' ? decodePostCursor(url.searchParams.get('cursor')) : null;
+				const beforeId = order === 'latest' && Number.isSafeInteger(Number(url.searchParams.get('beforeId'))) && Number(url.searchParams.get('beforeId')) > 0
 					? Number(url.searchParams.get('beforeId'))
 					: null;
 				const offset = (beforeId == null && !decodedCursor) ? Number(url.searchParams.get('offset') || 0) : 0;
@@ -2705,8 +2805,8 @@ export default {
 					bindings.push(beforeId);
 				}
 				sql += (decodedCursor || beforeId != null)
-					? ' ORDER BY created_at DESC, id DESC LIMIT ?'
-					: ' ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?';
+					? ` ORDER BY ${orderSql} LIMIT ?`
+					: ` ORDER BY ${orderSql} LIMIT ? OFFSET ?`;
 				bindings.push(limit + 1);
 				if (!decodedCursor && beforeId == null) bindings.push(offset);
 
@@ -2719,11 +2819,12 @@ export default {
 					: selectedRows;
 				const posts = includePosts ? hydratedRows.map(normalizePostRow) : null;
 				const lastRow = selectedRows.length > 0 ? selectedRows[selectedRows.length - 1] : null;
-				const nextCursor = rows.length > limit && lastRow
+				const nextCursor = order === 'latest' && rows.length > limit && lastRow
 					? (encodePostCursor(lastRow) || ids[ids.length - 1])
 					: null;
 				return json({
 					ids,
+					use_offset_pagination: order !== 'latest',
 					...(posts ? { posts } : {}),
 					has_more: rows.length > limit,
 					next_cursor: nextCursor,

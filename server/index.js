@@ -54,6 +54,7 @@ const { ModerationReportService } = require('./services/ModerationReportService'
 const { startModerationAssignmentScheduler } = require('./services/ModerationAssignmentScheduler');
 const { AutoModerationService } = require('./services/AutoModerationService');
 const { startPollExpirationScheduler } = require('./services/PollExpirationScheduler');
+const { startScheduledPostPublisher } = require('./services/ScheduledPostPublisher');
 const PostActionQueue = require('./services/PostActionQueue');
 const PostEventOutbox = require('./services/PostEventOutbox');
 const PostKeywordBackfillService = require('./services/PostKeywordBackfillService');
@@ -559,6 +560,7 @@ const storageAdapter = createStorageAdapter();
 let operatorControl = null;
 let moderationScheduler = null;
 let pollExpirationScheduler = null;
+let scheduledPostPublisher = null;
 let postEventOutbox = null;
 
 const pushNotificationService = new PushNotificationService({
@@ -630,6 +632,7 @@ const turnstileSiteKey = config.turnstile?.siteKey || '';
 
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
     pollExpirationScheduler = startPollExpirationScheduler(dbAdapter, realtimeConnections, pushNotificationService);
+    scheduledPostPublisher = startScheduledPostPublisher(dbAdapter, realtimeConnections, pushNotificationService);
     operatorControl = await startOperatorControlServer({
         dbAdapter,
         shutdown,
@@ -728,6 +731,8 @@ async function shutdown(signal) {
         moderationScheduler = null;
         pollExpirationScheduler?.stop();
         pollExpirationScheduler = null;
+        scheduledPostPublisher?.stop();
+        scheduledPostPublisher = null;
         autoModerationService.stop();
         postKeywordBackfillService.stop();
         postKeywordBackfillQueue.stop();

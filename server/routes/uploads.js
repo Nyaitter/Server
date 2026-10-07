@@ -21,6 +21,8 @@ const router = api.createRouter({
 
 const { createRateLimiter } = require('../middleware/rateLimit');
 const uploadLimiter = createRateLimiter(config.rateLimit.upload);
+const maxFileUploadSizeMB = config.limits.maxFileUploadSizeMB;
+const maxFileUploadSizeBytes = maxFileUploadSizeMB * 1024 * 1024;
 
 function getStorageAdapter(req) {
 	return req.app.locals.storageAdapter;
@@ -84,7 +86,7 @@ router.put({
 	auth: 'required',
 }, requireAuth, uploadLimiter, express.raw({
 	type: '*/*',
-	limit: `${config.limits.maxFileUploadSizeMB || 5}mb`,
+	limit: `${maxFileUploadSizeMB}mb`,
 }), async (req, res) => {
 	const storage = getStorageAdapter(req);
 	if (!storage || typeof storage.uploadToId !== 'function') {
@@ -99,8 +101,7 @@ router.put({
 		if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
 			return res.status(400).json({ error: 'File body is required' });
 		}
-		const maxSize = (config.limits.maxFileUploadSizeMB || 5) * 1024 * 1024;
-		if (req.body.length > maxSize) return res.status(413).json({ error: `File too large (max ${config.limits.maxFileUploadSizeMB}MB)` });
+		if (req.body.length > maxFileUploadSizeBytes) return res.status(413).json({ error: `File too large (max ${maxFileUploadSizeMB}MB)` });
 		const result = await storage.uploadToId({
 			file: req.body,
 			id: uploadId,
@@ -195,13 +196,13 @@ router.post({
 		return res.status(400).json({ error: 'Invalid base64 file data' });
 	}
 
-	const maxSize = (config.limits.maxFileUploadSizeMB || 10) * 1024 * 1024;
+	const maxSize = maxFileUploadSizeBytes;
 	if (buffer.length === 0) {
 		return res.status(400).json({ error: 'File must not be empty' });
 	}
 	if (buffer.length > maxSize) {
 		return res.status(413).json({
-			error: `File too large (max ${config.limits.maxFileUploadSizeMB}MB)`,
+			error: `File too large (max ${maxFileUploadSizeMB}MB)`,
 		});
 	}
 

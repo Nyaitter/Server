@@ -316,6 +316,7 @@ function canViewPostWithContext(post, context) {
 	if (authorId == null) return false;
 	const author = context.authorsById?.get(authorId) || null;
 	const groupId = getPostGroupId(post);
+	if (post.scheduledAt ?? post.scheduled_at) return context.viewerId != null && Number(context.viewerId) === Number(authorId);
 
 	// グループ投稿は投稿者自身を含め、現在も参加状態がactiveのメンバーだけが閲覧できる。
 	// 退出後は過去投稿も閲覧できないというグループ境界を最初に適用する。
@@ -408,13 +409,13 @@ function getPostSearchText(post) {
  * 検索除外ユーザーの投稿を発見可能な一覧へ載せるか判定する。
  * ngWords が指定されている場合は、ポストのテキスト内にNGワードが含まれていれば除外する。
  */
-async function filterDiscoverablePosts(db, posts, viewerId = null, visibilityContext = null, { ngWords = null } = {}) {
+async function filterDiscoverablePosts(db, posts, viewerId = null, visibilityContext = null, { ngWords = null, includeJoinedGroups = false } = {}) {
 	const values = (posts || []).filter(Boolean);
 	const context = visibilityContext || await createPostVisibilityContext(db, values, viewerId);
 	const activeNgWords = ngWords instanceof Set ? ngWords : normalizeNgWords(ngWords);
 	return values.filter((post) => {
-		// グループ投稿はグループ専用画面・タブでのみ公開する。
-		if (getPostGroupId(post)) return false;
+		// allでは現在の参加者だけにグループ投稿を公開する。
+		if (getPostGroupId(post) && (!includeJoinedGroups || !canViewPostWithContext(post, context))) return false;
 		const authorId = getPostAuthorId(post);
 		const author = context.authorsById?.get(authorId) || null;
 		if (author?.shadow) {

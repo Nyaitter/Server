@@ -61,13 +61,23 @@ function normalizeIp(ip) {
 
   // IPv6
   if (value.includes(':')) {
-    // 展開またはプレフィックス抽出
-    const cleanIpv6 = value.replace(/^\[|\]$/g, '').split('%')[0]; // スコープIDやブラケット除去
-    const parts = cleanIpv6.split(':').filter(Boolean);
-    if (parts.length >= 4) {
-      return `${parts.slice(0, 4).join(':')}::/64`;
-    }
-    return cleanIpv6;
+    const cleanIpv6 = value.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase();
+    const halves = cleanIpv6.split('::');
+    if (halves.length > 2) return cleanIpv6;
+
+    const parseSide = (side) => side
+      ? side.split(':').filter(Boolean).map((part) => part.padStart(4, '0'))
+      : [];
+    const left = parseSide(halves[0]);
+    const right = parseSide(halves[1]);
+    const missing = 8 - left.length - right.length;
+    if (missing < 0 || (halves.length === 1 && missing !== 0)) return cleanIpv6;
+
+    const expanded = halves.length === 2
+      ? [...left, ...Array(missing).fill('0000'), ...right]
+      : left;
+    if (expanded.length !== 8) return cleanIpv6;
+    return `${expanded.slice(0, 4).map((part) => part.replace(/^0+(?=[0-9a-f])/i, '') || '0').join(':')}::/64`;
   }
 
   return value;

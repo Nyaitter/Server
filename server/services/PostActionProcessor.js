@@ -212,6 +212,19 @@ async function processCreatePostAction(context, payload) {
     await resolvePostingUser(context.authRequest, context.db, payload.postAsUserId),
   );
   const userId = Number(postingUser.id);
+  const rawSchedule = payload.scheduledAt ?? payload.scheduled_at;
+  const scheduleTime = rawSchedule ? new Date(rawSchedule).getTime() : null;
+  if (rawSchedule && !Number.isFinite(scheduleTime)) {
+    const error = new Error('予約日時が正しくありません');
+    error.statusCode = 400;
+    throw error;
+  }
+  const scheduledAt = rawSchedule ? new Date(scheduleTime).toISOString() : null;
+  if (scheduledAt && scheduleTime <= Date.now()) {
+    const error = new Error('予約日時は現在より後を指定してください');
+    error.statusCode = 400;
+    throw error;
+  }
   const content = typeof payload.content === 'string' ? payload.content.trim() : '';
   const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
   const replyTo = normalizeTargetPostId(payload.replyTo);
@@ -409,6 +422,7 @@ async function processCreatePostAction(context, payload) {
     announcement: isAnnouncement,
     groupId,
     groupAnnouncement,
+    scheduledAt,
     replyControl,
     reply_control: replyControl,
     replyTo,
@@ -437,6 +451,11 @@ async function processCreatePostAction(context, payload) {
     idempotencyCache.set(idempotencyKey, { post, createdAt: now });
   }
   recentUserPostSignatures.set(userId, { signature, createdAt: now, post });
+  if (scheduledAt) {
+    timelineCacheManager.clear();
+    invalidateImmutablePostCache(post.id);
+    return post;
+  }
 
   const replyTarget = replyTo ? relatedPosts.get(replyTo) : null;
   const repostTarget = repostTo ? relatedPosts.get(repostTo) : null;
@@ -619,13 +638,19 @@ async function processEditPostAction(context, { postId, userId, content, attachm
             if (!permitted) {
               if (typeof context.db.adminDeletePost === 'function') await context.db.adminDeletePost(reply.id);
               else if (typeof context.db.deletePost === 'function') await context.db.deletePost(reply.id, reply.userId);
+              timelineCacheManager.onPostDeleted(reply.id);
+              invalidateImmutablePostCache(reply.id);
               continue;
             }
           }
-          await context.db.updatePost(reply.id, {
+          const updatedReply = await context.db.updatePost(reply.id, {
             reply_control: replyControl,
             replyControl,
           }).catch(() => {});
+          if (updatedReply) {
+            timelineCacheManager.updatePost(updatedReply);
+            invalidateImmutablePostCache(reply.id);
+          }
         }
       }
     } catch (cleanupError) {
@@ -640,6 +665,8 @@ async function processEditPostAction(context, { postId, userId, content, attachm
 }
 
 module.exports = {
+  publishNewTimelinePost,
+  notifyPostAction,
   processCreatePostAction,
   processDeletePostAction,
   processEditPostAction,

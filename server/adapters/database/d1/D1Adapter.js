@@ -74,6 +74,7 @@ function normalizePost(post) {
 	post.announcement = !!post.announcement;
 	post.groupId = post.groupId ?? post.group_id ?? null;
 	post.group_id = post.groupId;
+	post.scheduledAt = post.scheduledAt ?? post.scheduled_at ?? null;
 	post.groupAnnouncement = !!(post.groupAnnouncement ?? post.group_announcement);
 	post.group_announcement = post.groupAnnouncement;
 	post.replyControl = post.replyControl ?? post.reply_control ?? 'everyone';
@@ -1047,11 +1048,13 @@ class D1Adapter extends DatabaseAdapter {
 		return normalizeGroupJoinRequest(await this._write(`/group-join-requests/${this._groupPath(requestId)}`, fields, 'PATCH'));
 	}
 
-	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only', cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only', order = 'latest', cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		if (order !== 'latest') { beforeId = null; cursor = null; cursorCreatedAt = null; cursorId = null; }
 		const decodedCursor = cursorCreatedAt && cursorId
 			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
 			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query(`/groups/${this._groupPath(groupId)}/posts`, {
+			order,
 			limit: this._limit(limit, 30, 100),
 			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : Math.max(0, Number(offset) || 0),
 			beforeId: beforeId ?? undefined,
@@ -1166,7 +1169,17 @@ class D1Adapter extends DatabaseAdapter {
 		});
 	}
 
+	async getDueScheduledPosts(now = new Date().toISOString(), limit = 100) {
+		const posts = await this._read(this._query('/posts/scheduled/due', { now, limit }), { cacheSeconds: 0 });
+		return (posts || []).map(normalizePostRow);
+	}
+
+	async publishScheduledPost(postId, now = new Date().toISOString()) {
+		return normalizePostRow(await this._write(`/posts/${requireId(postId, 'postId')}/publish-scheduled`, { now }));
+	}
+
 	async updatePost(postId, fields) {
+
 		const post = await this._write(`/posts/${requireId(postId, 'postId', 1)}`, fields);
 		return normalizePost(post);
 	}
@@ -1234,11 +1247,13 @@ class D1Adapter extends DatabaseAdapter {
 		}), { cacheSeconds: 0 });
 	}
 
-	async getProfilePostIds({ userId, subType = 'all', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+	async getProfilePostIds({ userId, subType = 'all', order = 'latest', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		if (order !== 'latest') { beforeId = null; cursor = null; cursorCreatedAt = null; cursorId = null; }
 		const decodedCursor = cursorCreatedAt && cursorId
 			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
 			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query(`/users/${requireId(userId, 'userId')}/post-ids`, {
+			order,
 			subType: String(subType || 'all'),
 			limit: this._limit(limit, 30),
 			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : this._offset(offset),

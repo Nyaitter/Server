@@ -317,6 +317,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			for (const row of data.tables[table]) {
 				target.set(`${row.user_id}:${row.post_id}`, row.created_at);
 				if (countMap) countMap.set(row.post_id, (countMap.get(row.post_id) || 0) + 1);
+				if (table === 'reposts') this._updateRepostIndexes(row.user_id, row.post_id, true);
 			}
 		}
 		for (const row of data.tables.dm_channels) {
@@ -408,12 +409,14 @@ class InMemoryAdapter extends DatabaseAdapter {
 			if (Number.isInteger(parentId) && parentId > 0) {
 				if (!this.replyIdsByParent.has(parentId)) this.replyIdsByParent.set(parentId, []);
 				this.replyIdsByParent.get(parentId).unshift(postId);
-				const nextCount = (this.replyCountByParent.get(parentId) || 0) + 1;
-				this.replyCountByParent.set(parentId, nextCount);
-				const parentPost = this.posts.get(parentId);
-				if (parentPost) {
-					parentPost.reply_count = nextCount;
-					parentPost.replyCount = nextCount;
+				if (!(post.scheduledAt ?? post.scheduled_at)) {
+					const nextCount = (this.replyCountByParent.get(parentId) || 0) + 1;
+					this.replyCountByParent.set(parentId, nextCount);
+					const parentPost = this.posts.get(parentId);
+					if (parentPost) {
+						parentPost.reply_count = nextCount;
+						parentPost.replyCount = nextCount;
+					}
 				}
 			}
 		}
@@ -455,15 +458,17 @@ class InMemoryAdapter extends DatabaseAdapter {
 			if (Number.isInteger(parentId) && parentId > 0) {
 				const replies = this.replyIdsByParent.get(parentId);
 				removeId(replies);
-				const nextCount = Math.max(0, (this.replyCountByParent.get(parentId) || 0) - 1);
-				if (nextCount === 0) this.replyCountByParent.delete(parentId);
-				else this.replyCountByParent.set(parentId, nextCount);
-				if (!replies || replies.length === 0) this.replyIdsByParent.delete(parentId);
-				const parentPost = this.posts.get(parentId);
-				if (parentPost) {
-					parentPost.reply_count = nextCount;
-					parentPost.replyCount = nextCount;
+				if (!(post.scheduledAt ?? post.scheduled_at)) {
+					const nextCount = Math.max(0, (this.replyCountByParent.get(parentId) || 0) - 1);
+					if (nextCount === 0) this.replyCountByParent.delete(parentId);
+					else this.replyCountByParent.set(parentId, nextCount);
+					const parentPost = this.posts.get(parentId);
+					if (parentPost) {
+						parentPost.reply_count = nextCount;
+						parentPost.replyCount = nextCount;
+					}
 				}
+				if (!replies || replies.length === 0) this.replyIdsByParent.delete(parentId);
 			}
 		}
 		this.likeCountByPost.delete(postId);
@@ -512,6 +517,34 @@ class InMemoryAdapter extends DatabaseAdapter {
 			if (!postIds) return;
 			postIds.delete(normalizedPostId);
 			if (postIds.size === 0) index.delete(normalizedUserId);
+		}
+
+		_updateRepostIndexes(userId, postId, active) {
+			const normalizedUserId = Number(userId);
+			const normalizedPostId = Number(postId);
+			if (!Number.isInteger(normalizedUserId) || !Number.isInteger(normalizedPostId)) return;
+			const updateIndex = (index, key, value) => {
+				if (active) {
+					if (!index.has(key)) index.set(key, new Set());
+					index.get(key).add(value);
+					return;
+				}
+				const values = index.get(key);
+				if (!values) return;
+				values.delete(value);
+				if (values.size === 0) index.delete(key);
+			};
+			updateIndex(this.repostsByUser, normalizedUserId, normalizedPostId);
+			updateIndex(this.repostsByPost, normalizedPostId, normalizedUserId);
+		}
+
+		_rebuildRepostIndexes() {
+			this.repostsByUser.clear();
+			this.repostsByPost.clear();
+			for (const key of this.reposts.keys()) {
+				const [userId, postId] = String(key).split(':').map(Number);
+				this._updateRepostIndexes(userId, postId, true);
+			}
 		}
 
 			_adjustUserKeywordAffinitiesForTags(userId, tags, delta) {
@@ -1610,12 +1643,21 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return { ids, has_more: window.length > safeLimit, next_cursor: nextCursor };
 	}
 
-	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only', cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+	async getGroupPostIds(groupId, { limit = 30, offset = 0, beforeId = null, authorId = null, subType = 'posts_only', order = 'latest', cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 		const normalizedAuthorId = authorId == null || authorId === ''
 			? null
 			: (Number.isInteger(Number(authorId)) && Number(authorId) >= 0 ? Number(authorId) : null);
 		const replyOnly = subType === 'replies_only';
-		const sourceIds = this.groupPostIdsByGroup.get(String(groupId)) || [];
+		const sourceIds = [...(this.groupPostIdsByGroup.get(String(groupId)) || [])];
+		if (order === 'oldest') sourceIds.reverse();
+		if (order === 'recommended') {
+			const score = (id) => (this.likeCountByPost.get(id) || 0) * 2
+				+ (this.starCountByPost.get(id) || 0) * 3
+				+ (this.repostCountByPost.get(id) || 0) * 4
+				+ (this.replyCountByParent.get(id) || 0);
+			sourceIds.sort((a, b) => score(b) - score(a) || Number(b) - Number(a));
+		}
+		if (order !== 'latest') { beforeId = null; cursor = null; cursorCreatedAt = null; cursorId = null; }
 		return this._groupPostResult(sourceIds, limit, offset, beforeId, (post) =>
 			(replyOnly ? post.replyTo != null : post.replyTo == null)
 			&& (normalizedAuthorId == null || Number(post.userId) === normalizedAuthorId), { cursor, cursorCreatedAt, cursorId });
@@ -1661,6 +1703,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			lock: !!postData.lock,
 			announcement: !!postData.announcement,
 			groupId: postData.groupId ?? postData.group_id ?? null,
+			scheduledAt: postData.scheduledAt ?? postData.scheduled_at ?? null,
 			group_id: postData.groupId ?? postData.group_id ?? null,
 			groupAnnouncement: !!(postData.groupAnnouncement ?? postData.group_announcement),
 			group_announcement: !!(postData.groupAnnouncement ?? postData.group_announcement),
@@ -1682,8 +1725,10 @@ class InMemoryAdapter extends DatabaseAdapter {
 		};
 		this.posts.set(id, post);
 		this._addPostIndexes(post);
-		this._adjustUserKeywordAffinitiesForTags(post.userId, post.tags, 1);
-		await this.enqueuePostEvent('post.created', { postId: id, userId: Number(post.userId) }, { postId: id });
+		if (!post.scheduledAt) {
+			this._adjustUserKeywordAffinitiesForTags(post.userId, post.tags, 1);
+			await this.enqueuePostEvent('post.created', { postId: id, userId: Number(post.userId) }, { postId: id });
+		}
 		return post;
 	}
 
@@ -1703,6 +1748,23 @@ class InMemoryAdapter extends DatabaseAdapter {
 		};
 		this.postEvents.set(event.id, event);
 		return { ...event, payload: structuredClone(event.payload) };
+	}
+
+	async getDueScheduledPosts(now = new Date().toISOString(), limit = 100) {
+		return [...this.posts.values()].filter(post => post.scheduledAt && post.scheduledAt <= now)
+			.sort((a,b) => a.scheduledAt.localeCompare(b.scheduledAt)).slice(0, limit);
+	}
+
+	async publishScheduledPost(postId, now = new Date().toISOString()) {
+		const post = this.posts.get(Number(postId));
+		if (!post?.scheduledAt || post.scheduledAt > now) return null;
+		this._removePostIndexes(post);
+		post.scheduledAt = null;
+		post.createdAt = now;
+		this._addPostIndexes(post);
+		this._adjustUserKeywordAffinitiesForTags(post.userId, post.tags, 1);
+		await this.enqueuePostEvent('post.created', { postId: Number(post.id), userId: Number(post.userId) }, { postId: Number(post.id) });
+		return post;
 	}
 
 	async claimPostEvents(limit = 50, workerId = null) {
@@ -2539,6 +2601,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			const repostKey = `${post.userId}:${post.repostTo}`;
 			if (this.reposts.delete(repostKey)) {
 				const originalId = Number(post.repostTo);
+				this._updateRepostIndexes(post.userId, originalId, false);
 				this.repostCountByPost.set(originalId, Math.max(0, (this.repostCountByPost.get(originalId) || 1) - 1));
 			}
 		}
@@ -2560,6 +2623,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 		for (const key of Array.from(this.reposts.keys())) {
 			if (key.endsWith(`:${postId}`)) {
 				this.reposts.delete(key);
+				const [repostUserId, repostPostId] = key.split(':').map(Number);
+				this._updateRepostIndexes(repostUserId, repostPostId, false);
 			}
 		}
 		for (const key of Array.from(this.pinnedPosts.keys())) {
@@ -2581,6 +2646,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			const repostKey = `${post.userId}:${post.repostTo}`;
 			if (this.reposts.delete(repostKey)) {
 				const originalId = Number(post.repostTo);
+				this._updateRepostIndexes(post.userId, originalId, false);
 				this.repostCountByPost.set(originalId, Math.max(0, (this.repostCountByPost.get(originalId) || 1) - 1));
 			}
 		}
@@ -2600,7 +2666,11 @@ class InMemoryAdapter extends DatabaseAdapter {
 				}
 			}
 		for (const key of Array.from(this.reposts.keys())) {
-			if (key.endsWith(`:${postId}`)) this.reposts.delete(key);
+			if (key.endsWith(`:${postId}`)) {
+				this.reposts.delete(key);
+				const [repostUserId, repostPostId] = key.split(':').map(Number);
+				this._updateRepostIndexes(repostUserId, repostPostId, false);
+			}
 		}
 		for (const key of Array.from(this.pinnedPosts.keys())) {
 			if (key.endsWith(`:${postId}`)) this.pinnedPosts.delete(key);
@@ -2657,6 +2727,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		}
 
 			this.reposts.set(key, new Date().toISOString());
+			this._updateRepostIndexes(userId, postId, true);
 			this.repostCountByPost.set(postId, (this.repostCountByPost.get(postId) || 0) + 1);
 
 		const repostId = this.nextPostId++;
@@ -2678,18 +2749,15 @@ class InMemoryAdapter extends DatabaseAdapter {
 
 	async getReposts(userId) {
 		const result = [];
-		for (const key of this.reposts.keys()) {
-			const [uId, postId] = key.split(':').map(Number);
-			if (uId === userId) {
-				const post = this.posts.get(postId);
-				if (post) {
-					result.push({
-						id: post.id,
-						content: post.content,
-						repostOf: postId,
-						createdAt: post.createdAt,
-					});
-				}
+		for (const postId of this.repostsByUser.get(Number(userId)) || []) {
+			const post = this.posts.get(Number(postId));
+			if (post) {
+				result.push({
+					id: post.id,
+					content: post.content,
+					repostOf: Number(postId),
+					createdAt: post.createdAt,
+				});
 			}
 		}
 		return result;
@@ -3408,8 +3476,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 
 		
-			async getProfilePostIds({ userId, subType = 'all', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
-			const normalizedLimit = Math.max(1, Number(limit) || 30);
+			async getProfilePostIds({ userId, subType = 'all', order = 'latest', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		if (order !== 'latest') { beforeId = null; cursor = null; cursorCreatedAt = null; cursorId = null; }
+			const normalizedLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
 			const decodedCursor = cursorCreatedAt && cursorId
 				? { createdAt: cursorCreatedAt, id: Number(cursorId) }
 				: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
@@ -3418,7 +3487,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 				? Number(beforeId)
 				: null;
 			const normalizedOffset = normalizedBeforeId == null && !decodedCursor ? Math.max(0, Number(offset) || 0) : 0;
-			const sourceIds = this.postIdsByUser.get(Number(userId)) || [];
+			const sourceIds = [...(this.postIdsByUser.get(Number(userId)) || [])];
+			if (order === 'oldest') sourceIds.reverse();
+			if (order === 'recommended') sourceIds.sort((a,b) => { const score = id => (this.likeCountByPost.get(id)||0)*2 + (this.starCountByPost.get(id)||0)*3 + (this.repostCountByPost.get(id)||0)*4 + (this.replyCountByParent.get(id)||0); return score(b)-score(a) || b-a; });
 			const matched = sourceIds.filter((id) => {
 				const post = this.posts.get(id);
 				if (!post || post.groupId || post.group_id || (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)) return false;
@@ -3432,8 +3503,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 			const ids = window.slice(0, normalizedLimit);
 			return {
 				ids,
+				use_offset_pagination: order !== 'latest',
 				has_more: window.length > normalizedLimit,
-				next_cursor: window.length > normalizedLimit && ids.length > 0
+				next_cursor: order === 'latest' && window.length > normalizedLimit && ids.length > 0
 					? (encodePostCursor(this.posts.get(ids[ids.length - 1])) || ids[ids.length - 1])
 					: null,
 			};
@@ -3457,10 +3529,16 @@ class InMemoryAdapter extends DatabaseAdapter {
 					? new Set([...(this.followingIdsByUser.get(Number(viewerId)) || new Set())])
 					: new Set((followIds || []).map(Number)))
 				: null;
+			const activeGroupIds = viewerId == null
+				? new Set()
+				: new Set([...(this.groupIdsByUser.get(Number(viewerId)) || new Set())].filter((groupId) =>
+					this.groupMemberships.get(this._groupMemberKey(groupId, viewerId))?.status === 'active'));
 			const matched = [];
 			for (const id of this.postIdsNewest) {
 				const post = this.posts.get(id);
-				if (!post || post.groupId || post.group_id || post.replyTo != null) continue;
+				if (!post || post.replyTo != null) continue;
+				const groupId = post.groupId ?? post.group_id ?? null;
+				if (groupId && (tab === 'following' || tab === 'announce' || !activeGroupIds.has(String(groupId)))) continue;
 				if (decodedCursor && targetCreatedAt != null && targetId != null) {
 					const postTime = new Date(post.createdAt || 0).getTime();
 					if (postTime > targetCreatedAt) continue;
@@ -3491,7 +3569,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		}
 
 		async getRecommendedPostIds({ viewerId = null, limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
-			const normalizedLimit = Math.max(1, Number(limit) || 30);
+			const normalizedLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
 			const decodedCursor = cursorCreatedAt && cursorId
 				? { createdAt: cursorCreatedAt, id: Number(cursorId) }
 				: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
@@ -3500,27 +3578,21 @@ class InMemoryAdapter extends DatabaseAdapter {
 				? Number(beforeId)
 				: null;
 			const normalizedOffset = normalizedBeforeId == null && !decodedCursor ? Math.max(0, Number(offset) || 0) : 0;
-			const scoringBlockSize = Math.max(240, normalizedLimit * 8);
+			const scoringBlockSize = Math.min(800, Math.max(240, normalizedLimit * 8));
 			const normalizedViewerId = Number.isInteger(Number(viewerId)) ? Number(viewerId) : null;
 			const directFollowIds = normalizedViewerId == null
 				? new Set()
 				: new Set(this.followingIdsByUser.get(normalizedViewerId) || []);
-			const secondDegreeFollowIds = new Set();
-			for (const followedUserId of directFollowIds) {
-				for (const candidateUserId of this.followingIdsByUser.get(followedUserId) || []) {
-					if (candidateUserId !== normalizedViewerId && !directFollowIds.has(candidateUserId)) {
-						secondDegreeFollowIds.add(candidateUserId);
-					}
-				}
-			}
+			const activeGroupIds = normalizedViewerId == null
+				? new Set()
+				: new Set([...(this.groupIdsByUser.get(normalizedViewerId) || new Set())].filter((groupId) =>
+					this.groupMemberships.get(this._groupMemberKey(groupId, normalizedViewerId))?.status === 'active'));
 
 			const candidateSource = [];
 			for (const id of this.postIdsNewest) {
 				const post = this.posts.get(id);
 				if (
 					!post
-					|| post.groupId
-					|| post.group_id
 					|| post.replyTo != null
 					|| (normalizedViewerId != null && Number(post.userId ?? post.user_id) === normalizedViewerId)
 					|| (normalizedBeforeId != null && Number(id) >= normalizedBeforeId)
@@ -3529,6 +3601,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 				) {
 					continue;
 				}
+				const groupId = post.groupId ?? post.group_id ?? null;
+				if (groupId && !activeGroupIds.has(String(groupId))) continue;
 				candidateSource.push(post);
 				if (candidateSource.length >= normalizedOffset + scoringBlockSize + 1) break;
 			}
@@ -3546,9 +3620,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				: new Set([
 					...(this.likedPostIdsByUser.get(normalizedViewerId) || []),
 					...(this.starredPostIdsByUser.get(normalizedViewerId) || []),
-					...([...this.reposts.keys()]
-						.filter((k) => k.startsWith(`${normalizedViewerId}:`))
-						.map((k) => Number(k.split(':')[1]))),
+					...(this.repostsByUser.get(normalizedViewerId) || []),
 				]);
 
 			const scored = scoreRecommendedPosts(candidates, {
@@ -3877,6 +3949,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			rekeyUserPostMap(this.stars);
 			rekeyUserPostMap(this.reposts);
 			rekeyUserPostMap(this.pinnedPosts);
+			this._rebuildRepostIndexes();
 			for (const index of [this.likedPostIdsByUser, this.starredPostIdsByUser]) {
 				const values = index.get(previousId);
 				if (values) {
@@ -3981,6 +4054,17 @@ class InMemoryAdapter extends DatabaseAdapter {
 				}
 			}
 			this.groupMemberships = updatedMemberships;
+			this.groupIdsByUser.clear();
+			this.groupMemberIdsByGroup.clear();
+			for (const membership of this.groupMemberships.values()) {
+				const membershipUserId = Number(membership.user_id ?? membership.userId);
+				const membershipGroupId = String(membership.group_id ?? membership.groupId);
+				if (!Number.isInteger(membershipUserId) || !membershipGroupId) continue;
+				if (!this.groupIdsByUser.has(membershipUserId)) this.groupIdsByUser.set(membershipUserId, new Set());
+				this.groupIdsByUser.get(membershipUserId).add(membershipGroupId);
+				if (!this.groupMemberIdsByGroup.has(membershipGroupId)) this.groupMemberIdsByGroup.set(membershipGroupId, new Set());
+				this.groupMemberIdsByGroup.get(membershipGroupId).add(membershipUserId);
+			}
 
 			for (const invite of this.groupInvites.values()) {
 				if (Number(invite.inviter_id) === previousId) invite.inviter_id = nextId;
@@ -3992,16 +4076,11 @@ class InMemoryAdapter extends DatabaseAdapter {
 			}
 
 			// authorized apps and affinities
-			const updatedAuthorizedApps = new Map();
-			for (const [key, app] of this.authorizedApps.entries()) {
-				if (Number(app.user_id) === previousId) {
-					app.user_id = nextId;
-					updatedAuthorizedApps.set(`${nextId}:${app.app_id}:${app.app_token_hash}`, app);
-				} else {
-					updatedAuthorizedApps.set(key, app);
-				}
+			this.authorizedAppLookup.clear();
+			for (const [id, app] of this.authorizedApps.entries()) {
+				if (Number(app.userId) === previousId) app.userId = nextId;
+				this.authorizedAppLookup.set(`${app.userId}:${app.appId}:${app.appTokenHash}`, id);
 			}
-			this.authorizedApps = updatedAuthorizedApps;
 
 			const updatedAffinities = new Map();
 			for (const [key, affinity] of this.userKeywordAffinities.entries()) {
@@ -4130,6 +4209,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		for (const key of [...this.likes.keys()]) if (key.startsWith(`${normalizedUserId}:`)) this.likes.delete(key);
 		for (const key of [...this.stars.keys()]) if (key.startsWith(`${normalizedUserId}:`)) this.stars.delete(key);
 		for (const key of [...this.reposts.keys()]) if (key.startsWith(`${normalizedUserId}:`)) this.reposts.delete(key);
+		this._rebuildRepostIndexes();
 		for (const key of [...this.pinnedPosts.keys()]) if (key.startsWith(`${normalizedUserId}:`)) this.pinnedPosts.delete(key);
 		this.moderationReports.forEach((report, id) => {
 			if (Number(report.reporterUserId) === normalizedUserId) this.moderationReports.delete(id);

@@ -101,6 +101,21 @@ function serializeDmMember(user) {
 	};
 }
 
+async function appendSystemEvent(req, dmId, actorId, content) {
+	const db = getDbAdapter(req);
+	const message = { id: crypto.randomUUID(), type: 'system', userid: Number(actorId), content, created_at: new Date().toISOString() };
+	const updated = await db.appendToGroupDm(dmId, message, Number(actorId));
+	if (!updated) throw new Error('DM system event could not be saved');
+	const actor = await db.getUserById(actorId);
+	await publishDmMessage(req, updated.member || [], dmId, message, actor ? serializeDmMember(actor) : null);
+	await publishDmUnreadCounts(req, updated.member || [], dmId);
+	return updated;
+}
+
+function invitationEvent(actorId, invitedIds) {
+	return `@${actorId}が@${invitedIds[0]}${invitedIds.length > 1 ? `、ほか${invitedIds.length - 1}人のユーザー` : ''}を招待しました`;
+}
+
 async function buildDmPayload(db, dms, userId, { includePosts = true } = {}) {
 	const memberIds = [...new Set((dms || []).flatMap((dm) => dm.member || []))];
 	let users = [];
@@ -595,12 +610,18 @@ router.post({
 			}
 		}
 
-		const dm = await db.createGroupDm({
+		let dm = await db.createGroupDm({
 			hostId: userId,
 			member: memberIds,
 			accepted: acceptedMembers,
 			title: typeof title === 'string' ? title.trim() : '',
 		});
+		dm = await appendSystemEvent(req, dm.id, userId, `@${userId}が参加しました`);
+		const invitedIds = memberIds.filter(id => Number(id) !== Number(userId));
+		if (invitedIds.length) dm = await appendSystemEvent(req, dm.id, userId, invitationEvent(userId, invitedIds));
+		for (const id of acceptedMembers.filter(id => Number(id) !== Number(userId))) {
+			dm = await appendSystemEvent(req, dm.id, id, `@${id}が参加しました`);
+		}
 
 		res.status(201).json({ dm: await serializeGroupDm(db, dm, userId), created: true });
 	} catch (err) {
@@ -665,6 +686,8 @@ router.put({
 		}
 
 		const updates = {};
+		const previousMemberIds = [...dm.member];
+		const previousHostId = dm.host_id;
 		const isHost = dm.host_id === userId;
 
 			if (body.post !== undefined) {
@@ -743,9 +766,17 @@ router.put({
 			});
 		}
 
-			const updated = await db.updateGroupDm(dmId, updates);
+			let updated = await db.updateGroupDm(dmId, updates);
+			const newlyInvited = (updates.member || []).filter(id => !previousMemberIds.includes(id));
+			if (newlyInvited.length) updated = await appendSystemEvent(req, dmId, userId, invitationEvent(userId, newlyInvited));
+			for (const id of newlyInvited.filter(id => getAcceptedDmMemberIds(updated).includes(id))) {
+				updated = await appendSystemEvent(req, dmId, id, `@${id}が参加しました`);
+			}
+			if (updates.host_id !== undefined && Number(updates.host_id) !== Number(previousHostId)) {
+				updated = await appendSystemEvent(req, dmId, userId, `@${userId}がホスト権限を@${updates.host_id}に委譲しました`);
+			}
 			if (updates.member) {
-				await publishDmUnreadCounts(req, [...dm.member, ...updated.member], dmId);
+				await publishDmUnreadCounts(req, [...previousMemberIds, ...updated.member], dmId);
 			}
 			res.json({
 			dm: await serializeGroupDm(db, updated, userId),
@@ -830,6 +861,7 @@ router.post({
 		if (!currentAccepted.includes(userId)) {
 			currentAccepted.push(userId);
 			await db.updateGroupDm(dmId, { accepted: currentAccepted });
+			await appendSystemEvent(req, dmId, userId, `@${userId}が参加しました`);
 		}
 
 		const updated = await db.appendToGroupDm(dmId, msg, userId);
@@ -865,8 +897,11 @@ router.post({
 		if (!dm) return res.status(404).json({ error: 'DM が見つかりません' });
 
 		const accepted = getAcceptedDmMemberIds(dm);
-		if (!accepted.includes(Number(userId))) accepted.push(Number(userId));
-		const updated = await db.updateGroupDm(dmId, { accepted });
+		if (!dm.member.includes(Number(userId))) return res.status(403).json({ error: 'Forbidden' });
+		const newlyJoined = !accepted.includes(Number(userId));
+		if (newlyJoined) accepted.push(Number(userId));
+		let updated = await db.updateGroupDm(dmId, { accepted });
+		if (newlyJoined) updated = await appendSystemEvent(req, dmId, userId, `@${userId}が参加しました`);
 		await publishDmUnreadCounts(req, [userId], dmId);
 		res.json({ success: true, dm: await serializeGroupDm(db, updated || dm, userId) });
 	} catch (err) {
@@ -948,6 +983,7 @@ router.post({
 		}
 
 		await db.leaveGroupDm(dmId, userId);
+		await appendSystemEvent(req, dmId, userId, `@${userId}が退出しました`);
 		await publishDmUnreadCounts(req, [userId], dmId);
 		res.json({ success: true });
 	} catch (err) {

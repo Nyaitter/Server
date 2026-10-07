@@ -811,6 +811,9 @@ async function serializePostsBatch(
 		canViewPostWithContext(post, visibilityContext),
 	]));
 	const postKeywordBackfillService = db?.postKeywordBackfillService;
+	const groupIds = [...new Set(allPosts.filter(post => visibleByPostId.get(Number(post.id)))
+		.map(post => post.groupId ?? post.group_id).filter(Boolean).map(String))];
+	const groupsById = new Map(await Promise.all(groupIds.map(async id => [id, await db.getGroupById(id)])));
 	if (postKeywordBackfillService) {
 		for (const post of allPosts) {
 			if (!visibleByPostId.get(Number(post.id))) continue;
@@ -935,6 +938,13 @@ async function serializePostsBatch(
 		const brief = getBriefUser(author);
 		const serialized = {
 			...base,
+			group_id: post.groupId ?? post.group_id ?? null,
+			scheduled_at: post.scheduledAt ?? post.scheduled_at ?? null,
+			group_announcement: Boolean(post.groupAnnouncement ?? post.group_announcement),
+			group: (() => {
+				const group = groupsById.get(String(post.groupId ?? post.group_id));
+				return group ? { id: group.id, name: group.name, icon_data: group.iconData ?? group.icon_data ?? null } : null;
+			})(),
 			user: brief,
 			author: brief,
 			reply_control: effectiveReplyControl,

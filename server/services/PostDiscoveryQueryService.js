@@ -31,6 +31,8 @@ async function getDiscoverablePostPage({
 	beforeId = null,
 	cursor = null,
 	ngWords = null,
+	includeJoinedGroups = false,
+	order = 'latest',
 	fetchCandidatePage,
 }) {
 	if (typeof fetchCandidatePage !== 'function') {
@@ -148,7 +150,7 @@ async function getDiscoverablePostPage({
 			viewablePosts,
 			viewerId,
 			candidateVisibilityContext,
-			{ ngWords },
+			{ ngWords, includeJoinedGroups },
 		);
 
 		for (const post of discoverablePosts) {
@@ -187,7 +189,7 @@ async function getDiscoverablePostPage({
 	const posts = collectedPosts.slice(0, normalizedLimit);
 	const ids = posts.map((post) => Number(post.id));
 	const lastPost = posts.length > 0 ? posts[posts.length - 1] : null;
-	const nextCursor = !requiresOffsetPagination && (hasMore || collectedPosts.length > normalizedLimit) && lastPost
+	const nextCursor = !requiresOffsetPagination && order === 'latest' && (hasMore || collectedPosts.length > normalizedLimit) && lastPost
 		? (encodePostCursor(lastPost) || ids[ids.length - 1])
 		: null;
 	return {
