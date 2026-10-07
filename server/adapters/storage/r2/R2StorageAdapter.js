@@ -15,7 +15,14 @@ const {
   getOriginalFileNameFromStorageKey,
   normalizeFolder,
   normalizeStorageKey,
+  normalizeContentType,
+  CONTENT_TYPE_EXTENSIONS,
 } = require('../safeStoragePath');
+
+function getSafeServingContentType(value) {
+  const type = normalizeContentType(value);
+  return CONTENT_TYPE_EXTENSIONS.has(type) ? type : 'application/octet-stream';
+}
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -165,7 +172,7 @@ class R2StorageAdapter extends StorageAdapter {
         Bucket: this.bucket,
         Key: targetKey,
         Body: file,
-        ContentType: contentType || 'application/octet-stream',
+        ContentType: getSafeServingContentType(contentType),
         CacheControl: this.cacheControl || undefined,
       }),
       // 読み込みストリームは失敗後に先頭から再利用できないため、再試行は
@@ -230,7 +237,7 @@ class R2StorageAdapter extends StorageAdapter {
       Bucket: this.bucket,
       Key: destinationKey,
       Body: source.buffer,
-      ContentType: source.contentType || 'application/octet-stream',
+      ContentType: getSafeServingContentType(source.contentType),
       CacheControl: this.cacheControl || undefined,
     }));
     return {
@@ -306,7 +313,7 @@ class R2StorageAdapter extends StorageAdapter {
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: normalizedKey,
-      ContentType: contentType,
+      ContentType: getSafeServingContentType(contentType),
       CacheControl: this.cacheControl || undefined,
     });
 

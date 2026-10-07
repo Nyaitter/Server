@@ -256,6 +256,7 @@ async function serializeUser(db, user, viewerId = null, publicUrl = null) {
 	}
 	if (groupBadges && groupBadges.length > 0) {
 		userGroupBadgesCache.set(Number(id), { badges: groupBadges, expiresAt: Date.now() + BADGES_CACHE_TTL_MS });
+		pruneUserGroupBadgesCache();
 	}
 
 	return {
@@ -341,9 +342,8 @@ async function serializePublicProfile(
 	let groupBadges = Array.isArray(user.group_badges)
 		? user.group_badges
 		: (Array.isArray(stats?.group_badges || stats?.groupBadges) ? (stats.group_badges || stats.groupBadges) : null);
-	if (groupBadges === null && Array.isArray(knownGroups)) {
+	if (Array.isArray(knownGroups)) {
 		groupBadges = knownGroups
-			.filter((g) => Boolean(g.icon_data || g.iconData) && (g.visibility === 'open' || g.visibility === 'open_invite'))
 			.map((g) => ({
 				id: String(g.id),
 				name: String(g.name || ''),
@@ -379,6 +379,7 @@ async function serializePublicProfile(
 	}
 	if (groupBadges && groupBadges.length > 0) {
 		userGroupBadgesCache.set(Number(user.id), { badges: groupBadges, expiresAt: Date.now() + BADGES_CACHE_TTL_MS });
+		pruneUserGroupBadgesCache();
 	}
 
 	return {

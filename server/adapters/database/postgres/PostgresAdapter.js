@@ -3031,8 +3031,8 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async getDueScheduledPosts(now = new Date().toISOString(), limit = 100) {
-		const { rows } = await this.pool.query('SELECT * FROM posts WHERE scheduled_at IS NOT NULL AND scheduled_at <= $1 ORDER BY scheduled_at ASC LIMIT $2', [now, limit]);
-		return rows.map(normalizePostRow);
+		const { rows } = await this.pool.query('SELECT id FROM posts WHERE scheduled_at IS NOT NULL AND scheduled_at <= $1 ORDER BY scheduled_at ASC LIMIT $2', [now, limit]);
+		return rows;
 	}
 
 	async publishScheduledPost(postId, now = new Date().toISOString()) {

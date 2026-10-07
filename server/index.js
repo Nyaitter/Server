@@ -113,6 +113,7 @@ const userFilesStaticOptions = {
     lastModified: true,
     setHeaders: (res) => {
         res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'");
     },
 };
 

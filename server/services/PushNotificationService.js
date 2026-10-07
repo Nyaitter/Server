@@ -1,13 +1,14 @@
 const webpush = require('web-push');
 const config = require('../config');
-const { getPublicUrl, normalizePublicUrl } = require('../utils/nyaitterAddress');
+const { isAllowedPushEndpoint } = require('../utils/pushEndpoint');
+const { getApiPublicUrl } = require('../utils/nyaitterAddress');
 const { getNotificationText, getNotificationActionText, getNotificationBodyText, getNotificationTargetHash } = require('../utils/notification');
 
 function getPushIconUrl(notification, publicUrl = null) {
   const fromUserId = Number(notification?.from?.id);
   if (!Number.isInteger(fromUserId) || fromUserId < 1) return null;
 
-  const origin = normalizePublicUrl(publicUrl) || getPublicUrl();
+  const origin = getApiPublicUrl();
   const apiEndpoint = config.server?.apiEndpoint === '/'
     ? ''
     : String(config.server?.apiEndpoint || '/server').replace(/\/+$/, '');
@@ -78,11 +79,17 @@ class PushNotificationService {
     });
 
     const result = { attempted: subscriptions.length, delivered: 0, removed: 0, skipped: 0 };
-    await Promise.all(subscriptions.map(async (subscription) => {
-      const sessionStatus = await this._getSessionStatus(
-        userId,
-        subscription.sessionToken,
-      );
+    const sessionChecks = new Map();
+    const sendSubscription = async (subscription) => {
+      if (!isAllowedPushEndpoint(subscription.endpoint)) {
+        result.skipped += 1;
+        return;
+      }
+      if (!sessionChecks.has(subscription.sessionToken)) {
+        sessionChecks.set(subscription.sessionToken,
+          this._getSessionStatus(userId, subscription.sessionToken));
+      }
+      const sessionStatus = await sessionChecks.get(subscription.sessionToken);
       if (sessionStatus !== 'valid') {
         result.skipped += 1;
         if (sessionStatus === 'invalid') {
@@ -107,6 +114,7 @@ class PushNotificationService {
         await webpush.sendNotification(subscription, payload, {
           TTL: 300,
           urgency: 'normal',
+          timeout: 10000,
           topic: notification?.id ? `nyaitter-${notification.id}`.slice(0, 32) : 'nyaitter-notification',
         });
         result.delivered += 1;
@@ -122,6 +130,13 @@ class PushNotificationService {
           return;
         }
         console.warn('[push] Delivery failed:', error.message || error);
+      }
+    };
+    let nextIndex = 0;
+    await Promise.all(Array.from({ length: Math.min(4, subscriptions.length) }, async () => {
+      while (nextIndex < subscriptions.length) {
+        const subscription = subscriptions[nextIndex++];
+        await sendSubscription(subscription);
       }
     }));
 

@@ -1,5 +1,5 @@
 const timelineCacheManager = require('../utils/TimelineCacheManager');
-const { serializeNotification } = require('../utils/serialize');
+const { serializeNotifications } = require('../utils/serialize');
 const { getPublicUrl } = require('../utils/nyaitterAddress');
 const { publishNewTimelinePost } = require('./PostActionProcessor');
 
@@ -46,9 +46,11 @@ function startScheduledPostPublisher(
             target: { kind: 'post', id: postId },
             message: '予約投稿を公開しました。',
           });
-          const structured = notification
-            ? await serializeNotification(dbAdapter, notification, getPublicUrl())
-            : null;
+          const [structured] = notification
+            ? await serializeNotifications(dbAdapter, [notification], getPublicUrl(), {
+                targetPosts: [published],
+              })
+            : [];
           if (structured && realtimeConnections) {
             await realtimeConnections.publishNewNotification(userId, structured, dbAdapter);
             if (pushNotificationService?.enabled) {

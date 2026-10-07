@@ -335,6 +335,7 @@ async function handleUserIcon(req, res) {
 			// R2/D1・ローカルストレージに保存されたアイコンはキーだけをDBへ保存する。
 			// キーを相対リダイレクトすると現在の /server/api/users/... 配下として解決されるため、
 			if (!/^(?:https?:)?\/\//i.test(iconData) && !iconData.startsWith('/')) {
+				if (await sendStoredIcon(req, res, iconData)) return;
 				const storage = getStorageAdapter(req);
 				if (storage && typeof storage.getPublicUrl === 'function') {
 					try {
@@ -371,6 +372,16 @@ async function handleUserIcon(req, res) {
 	}
 
 	return res.redirect(302, '/emoji/neko.svg');
+}
+
+async function getAllActiveUserGroups(db, userId) {
+	const groups = [];
+	const limit = 200;
+	for (let offset = 0; ; offset += limit) {
+		const page = await db.getUserGroups(userId, { status: 'active', limit, offset });
+		groups.push(...page);
+		if (page.length < limit) return groups;
+	}
 }
 
 router.get({
@@ -506,7 +517,7 @@ router.get({
 
 		if (viewerId != null) {
 			if (viewerId === userId) {
-				targetGroups = await db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 });
+				targetGroups = await getAllActiveUserGroups(db, userId);
 				groups = targetGroups.map((group) => ({
 					id: String(group.id),
 					name: group.name || '',
@@ -530,7 +541,7 @@ router.get({
 			} else {
 				const [viewerGroups, fetchedTargetGroups] = await Promise.all([
 					db.getUserGroups(viewerId, { status: 'active', limit: 200, offset: 0 }),
-					db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 }),
+					getAllActiveUserGroups(db, userId),
 				]);
 				targetGroups = fetchedTargetGroups;
 				const targetGroupIds = new Set(targetGroups.map((group) => String(group.id)));
@@ -549,7 +560,7 @@ router.get({
 		}
 
 		if (targetGroups === null && typeof db.getUserGroups === 'function') {
-			targetGroups = await db.getUserGroups(userId, { status: 'active', limit: 200, offset: 0 });
+			targetGroups = await getAllActiveUserGroups(db, userId);
 		}
 
 		const profile = await serializePublicProfile(

@@ -1,5 +1,6 @@
 const api = require('../utils/ApiRegistry');
 const config = require('../config');
+const { isAllowedPushEndpoint } = require('../utils/pushEndpoint');
 const {
   requireAuth,
   extractToken,
@@ -28,7 +29,7 @@ function validateEndpoint(endpoint) {
   if (typeof endpoint !== 'string' || endpoint.length < 16 || endpoint.length > 4096) return false;
   try {
     const url = new URL(endpoint);
-    return url.protocol === 'https:';
+    return isAllowedPushEndpoint(url.href);
   } catch (_) {
     return false;
   }

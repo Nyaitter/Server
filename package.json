@@ -21,7 +21,7 @@
     "express": "^4.19.2",
     "kuromoji": "^0.1.2",
     "pg": "^8.23.0",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.5",
     "swagger-autogen": "^2.23.7",
     "swagger-ui-express": "^5.0.1",
     "web-push": "^3.6.7",
@@ -31,7 +31,9 @@
     "node": ">=20.9.0"
   },
   "overrides": {
-    "qs": "^6.16.0"
+    "qs": "^6.16.0",
+    "proxy-addr": "^2.0.8",
+    "brace-expansion": "^1.1.21"
   },
   "devDependencies": {
     "@emoji-mart/data": "1.2.1",
