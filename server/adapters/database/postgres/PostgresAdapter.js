@@ -1856,7 +1856,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const query = userId !== null
 			? 'SELECT * FROM authorized_apps WHERE id = $1 AND user_id = $2'
 			: 'SELECT * FROM authorized_apps WHERE id = $1';
-		const params = userId !== null ? [Number(id), Number(userId)] : [Number(id)];
+		const params = userId !== null ? [String(id), Number(userId)] : [String(id)];
 		const { rows } = await this.pool.query(query, params);
 		return this._mapAuthorizedApp(rows[0]);
 	}
@@ -1874,8 +1874,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			   WHERE id = $1
 			   RETURNING *`;
 		const params = userId !== null
-			? [Number(id), Number(userId), scopesJson, accessTokenId, accessTokenHash, now]
-			: [Number(id), scopesJson, accessTokenId, accessTokenHash, now];
+			? [String(id), Number(userId), scopesJson, accessTokenId, accessTokenHash, now]
+			: [String(id), scopesJson, accessTokenId, accessTokenHash, now];
 		const { rows } = await this.pool.query(query, params);
 		return this._mapAuthorizedApp(rows[0]);
 	}
@@ -1884,7 +1884,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const now = new Date().toISOString();
 		await this.pool.query(
 			'UPDATE authorized_apps SET last_used_at = $2 WHERE id = $1',
-			[Number(id), now],
+			[String(id), now],
 		);
 		return true;
 	}
@@ -1893,7 +1893,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		const query = userId !== null
 			? 'DELETE FROM authorized_apps WHERE id = $1 AND user_id = $2'
 			: 'DELETE FROM authorized_apps WHERE id = $1';
-		const params = userId !== null ? [Number(id), Number(userId)] : [Number(id)];
+		const params = userId !== null ? [String(id), Number(userId)] : [String(id)];
 		const { rowCount } = await this.pool.query(query, params);
 		return (rowCount || 0) > 0;
 	}

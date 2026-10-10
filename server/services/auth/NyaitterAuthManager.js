@@ -292,6 +292,7 @@ class NyaitterAuthManager {
     return {
       request_id: requestData.requestId,
       app_id: requestData.appId,
+      application_id: requestData.appTokenHash,
       name: requestData.name,
       icon_url: requestData.iconUrl,
       redirect_uri: requestData.redirectUri,
@@ -567,6 +568,7 @@ class NyaitterAuthManager {
     return apps.map((app) => ({
       id: app.id,
       app_id: app.appId,
+      application_id: app.appTokenHash,
       app_name: app.appName,
       app_icon_url: app.appIconUrl,
       scopes: app.scopes,
@@ -607,6 +609,7 @@ class NyaitterAuthManager {
     return {
       id: updated.id,
       app_id: updated.appId,
+      application_id: updated.appTokenHash,
       app_name: updated.appName,
       app_icon_url: updated.appIconUrl,
       scopes: updated.scopes,
@@ -619,11 +622,18 @@ class NyaitterAuthManager {
     if (!db || typeof db.deleteAuthorizedApp !== 'function') {
       throw new Error('データベースが連携アプリ削除に対応していません');
     }
-    const success = await db.deleteAuthorizedApp(id, userId);
-    if (!success) {
-      const err = new Error('連携アプリが見つからないか、既に削除されています。');
-      err.status = 404;
+    if (!/^[1-9]\d{0,18}$/.test(String(id)) || BigInt(id) > 9223372036854775807n) {
+      const err = new Error('連携レコードIDが正しくありません。');
+      err.status = 400;
       throw err;
+    }
+    const record = await db.getAuthorizedAppById(id, userId);
+    if (!record) return { success: true };
+    await db.deleteAuthorizedApp(record.id, userId);
+    // A concurrent DELETE may already have removed the row. Check the resulting
+    // state rather than interpreting every adapter's deletion result as boolean.
+    if (await db.getAuthorizedAppById(record.id, userId)) {
+      throw new Error('連携アプリの削除を完了できませんでした。もう一度お試しください。');
     }
     return { success: true };
   }
