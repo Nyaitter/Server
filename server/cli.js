@@ -4,6 +4,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const { spawn } = require('child_process');
 const {
     getOperatorSocketPath,
@@ -18,22 +19,25 @@ const POLL_INTERVAL_MS = 100;
 
 function printUsage() {
     console.log(`
-Nyaitter ローカル管理CLI
+nscli — Nyaitter ローカル管理CLI
 
 使用方法:
-  npm run cli -- admin grant <#ユーザーID>
-  npm run cli -- admin revoke <#ユーザーID>
-  npm run cli -- server start
-  npm run cli -- server stop
-  npm run cli -- server restart
-  npm run cli -- server status
-    npm run cli -- maintenance enable
-    npm run cli -- maintenance disable
-    npm run cli -- maintenance status
-  npm run cli -- nmt start
-  npm run cli -- nmt stop
-  npm run cli -- nmt restart
-  npm run cli -- nmt status
+  nscli  admin grant <#ユーザーID>
+  nscli  admin revoke <#ユーザーID>
+  nscli  server start
+  nscli  server stop
+  nscli  server restart
+  nscli  server status
+    nscli  maintenance enable
+    nscli  maintenance disable
+    nscli  maintenance status
+  nscli  nmt start
+  nscli  nmt stop
+  nscli  nmt restart
+  nscli  nmt status
+  nscli extension-key create --name <拡張名> --scope nyaitter-auth --redirect-origin <URL> [--output <保存先>]
+  nscli extension-key list
+  nscli extension-key revoke <キーID>
 
 環境変数:
   NYAITTER_OPERATOR_SOCKET  ローカル制御ソケットのパス
@@ -293,6 +297,41 @@ async function main(argv) {
     if (!group || group === '--help' || group === '-h' || group === 'help') {
         printUsage();
         return;
+    }
+
+    if (group === 'extension-key') {
+        const service = require('./services/ExtensionKeyService');
+        if (command === 'create') {
+            const options = { redirectOrigins: [] };
+            for (let index = 2; index < argv.length; index++) {
+                const flag = argv[index];
+                const value = argv[++index];
+                if (!value || value.startsWith('--')) throw new Error(`${flag} の値を指定してください。`);
+                if (flag === '--name') options.name = value;
+                else if (flag === '--scope' || flag === '--scopes') options.scopes = value.split(',').map(scope => scope.trim()).filter(Boolean);
+                else if (flag === '--redirect-origin') options.redirectOrigins.push(value);
+                else if (flag === '--output') options.outputPath = path.resolve(value);
+                else throw new Error(`未対応のオプション: ${flag}`);
+            }
+            const created = await service.createKey(options);
+            console.log(`拡張キーを生成しました: ${created.id} (${created.name})`);
+            if (options.outputPath) console.log(`保存先: ${options.outputPath}`);
+            else console.log(`APIキー（再表示できません）: ${created.key}`);
+            return;
+        }
+        if (command === 'list') {
+            console.table((await service.listKeys()).map(key => ({
+                id: key.id, name: key.name, scopes: key.scopes.join(','),
+                status: key.revokedAt ? 'revoked' : 'active', redirectOrigins: key.redirectOrigins.join(','),
+            })));
+            return;
+        }
+        if (command === 'revoke') {
+            if (!/^[a-f0-9]{32}$/.test(argument || '')) throw new Error('一覧に表示されるキーIDを指定してください。');
+            await service.revokeKey(argument);
+            console.log(`拡張キーを失効しました: ${argument}`);
+            return;
+        }
     }
 
     if (group === 'admin') {

@@ -2,8 +2,9 @@
 
 const api = require('../utils/ApiRegistry');
 const config = require('../config');
-const { requireAuthAllowFrozen } = require('../middleware/auth');
-const { serializeUserBrief } = require('../utils/serialize');
+const { requireAuthAllowFrozen, invalidateSessionPrincipalCache } = require('../middleware/auth');
+const { serializeUserBrief, invalidateUserBriefCache } = require('../utils/serialize');
+const timelineCacheManager = require('../utils/TimelineCacheManager');
 const { getPublicUrl } = require('../utils/nyaitterAddress');
 const {
   normalizeUserId,
@@ -233,27 +234,36 @@ router.delete({
   const imposterId = normalizeUserId(req.params.imposterId);
   if (!imposterId) return res.status(400).json({ error: 'インポスターIDが必要です。' });
 
+  const db = getDbAdapter(req);
+  let deletionStarted = false;
   try {
-    const { db, imposter } = await getManageableImposter(req, imposterId);
+    const { imposter } = await getManageableImposter(req, imposterId);
     if (!imposter) return res.status(403).json({ error: 'インポスターの削除権限がありません。' });
 
     const metadata = getImposterMetadata(imposter);
-    if (metadata.parent_id !== req.user.id) {
+    if (metadata.parent_id !== normalizeUserId(req.user.id)) {
       return res.status(403).json({ error: 'インポスターの削除は親アカウントのみ実行できます。' });
     }
 
-    const attachments = await db.getAttachmentsByUserId?.(imposter.id);
-    if (Array.isArray(attachments) && attachments.length > 0) {
-      await deleteStoredAttachments(
-        req.app.locals.storageAdapter,
-        attachments.map((entry) => entry.key || entry.id).filter(Boolean),
-      );
-    }
-
-    await db.deleteAccount(imposter.id);
+    deletionStarted = Boolean(await db.beginAccountOperation(imposter.id, 'deleting'));
+    if (!deletionStarted) return res.status(409).json({ error: 'インポスターは別のアカウント操作中です。しばらく待って再試行してください。' });
+    invalidateSessionPrincipalCache(imposter.id);
+    const attachmentKeys = await db.getAccountAttachmentKeys(imposter.id);
+    req.app.locals.realtime?.closeUser?.(imposter.id, 1012, 'Imposter account deletion');
+    await db.invalidateAllSessions(imposter.id);
+    const deleted = await db.deleteAccount(imposter.id);
+    if (!deleted) throw new Error('Imposter account deletion did not complete');
+    invalidateSessionPrincipalCache(imposter.id);
+    invalidateUserBriefCache(imposter.id);
+    timelineCacheManager.clear();
+    await deleteStoredAttachments(req.app.locals.storageAdapter, attachmentKeys);
     res.json({ success: true });
   } catch (error) {
     console.error('[imposters] delete error:', error);
+    if (deletionStarted) {
+      await db.finishAccountOperation(imposterId, 'deleting').catch(() => {});
+      invalidateSessionPrincipalCache(imposterId);
+    }
     res.status(500).json({ error: 'インポスターの削除に失敗しました。' });
   }
 });

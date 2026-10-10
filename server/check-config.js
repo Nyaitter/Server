@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
 const { parseDuration, parseIntegerRange } = require('./utils/settingFormats');
+const { normalizeProviders } = require('./utils/aiSettings');
 
 const SERVER_DIR = __dirname;
 const ENV_PATH = path.join(SERVER_DIR, '.env');
@@ -414,29 +415,26 @@ function inspect() {
         );
     }
 
-    const autoModApiKey = firstSetting(
-        ['AUTOMOD_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY'],
-        config,
-        ['autoMod.apiKey', 'automod.apiKey', 'geminiModeration.apiKey'],
-    );
-    const autoModModel = firstSetting(
-        ['AUTOMOD_MODEL', 'GEMINI_MODEL', 'OPENAI_MODEL'],
-        config,
-        ['autoMod.model', 'automod.model', 'geminiModeration.model'],
-    );
-    const autoModPrompt = firstSetting(
-        ['AUTOMOD_PROMPT', 'AUTOMOD_MOD_PROMPT', 'GEMINI_MOD_PROMPT'],
-        config,
-        ['autoMod.prompt', 'automod.prompt', 'geminiModeration.prompt'],
-    );
-    const autoModSpecified = [autoModApiKey, autoModModel, autoModPrompt].filter(isNonEmptyString).length;
-    if (autoModSpecified > 0 && autoModSpecified < 3) {
-        addIssue(
-            'warning',
-            'AUTOMOD_SETTINGS_INCOMPLETE',
-            'AutoModの設定が一部のみ指定されています。',
-            'AUTOMOD_API_KEY, AUTOMOD_MODEL, AUTOMOD_PROMPT をすべて設定するか、すべて未設定にしてください。',
-        );
+    const configuredProviders = firstSetting(['AI_PROVIDERS', 'MODEL_PROVIDERS'], config, ['ai.providers', 'modelProviders', 'AI_PROVIDERS']);
+    const autoModPrompt = firstSetting(['AUTOMOD_PROMPT', 'AUTOMOD_MOD_PROMPT', 'GEMINI_MOD_PROMPT'], config, ['autoMod.prompt', 'automod.prompt', 'geminiModeration.prompt']);
+    if (configuredProviders !== undefined && configuredProviders !== '') {
+        try {
+            const providers = normalizeProviders(configuredProviders);
+            const selection = String(firstSetting(['AUTOMOD_AI_PROVIDER', 'AUTOMOD_PROVIDER'], config, ['autoMod.aiProvider', 'autoMod.provider', 'automod.provider']) || 'auto').toLowerCase();
+            if (autoModPrompt && !providers.some(provider => selection === 'auto' || provider.type === selection || provider.id.toLowerCase() === selection)) {
+                addIssue('warning', 'AUTOMOD_PROVIDER_MISSING', 'AutoModに対応するプロバイダーがありません。', 'AI_PROVIDERSとAUTOMOD_AI_PROVIDERを設定してください。');
+            }
+            for (const provider of providers) {
+                if (['openai', 'gemini'].includes(provider.type) && !provider.apikey && !provider.url) {
+                    addIssue('warning', 'AI_PROVIDER_KEY_MISSING', '直接APIを利用するプロバイダーのAPIキーが未設定です。', 'AI_PROVIDERSのapikeyを設定してください。');
+                }
+            }
+        } catch (error) {
+            addIssue('error', 'AI_PROVIDERS_INVALID', error.message, 'AI_PROVIDERSまたはai.providersをJSON配列で設定してください。');
+        }
+    } else if (autoModPrompt) {
+        const legacyKey = firstSetting(['AUTOMOD_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY'], config, ['autoMod.apiKey', 'automod.apiKey', 'geminiModeration.apiKey']);
+        if (!legacyKey) addIssue('warning', 'AUTOMOD_SETTINGS_INCOMPLETE', 'AutoModのプロバイダーが未設定です。', 'AI_PROVIDERSとAUTOMOD_AI_PROVIDERを設定してください。');
     }
 
     if (isProduction) {

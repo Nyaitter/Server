@@ -66,12 +66,13 @@ AUTH_METHOD_EMAIL_ENABLED=false   # メール認証
 AIを使って、ルール違反や不適切な投稿を自動で見分けます。
 
 ```dotenv
-AUTOMOD_API_KEY=あなたのAPIキー
-AUTOMOD_MODEL=gpt-4o-mini
+AI_PROVIDERS=[{"type":"openai","apikey":"あなたのAPIキー","defmodel":"gpt-6-sol"}]
+AUTOMOD_AI_PROVIDER=auto
+# AUTOMOD_AI_MODEL=特定のモデルを使う場合だけ指定
 AUTOMOD_PROMPT=基本的には緩めに判断してください。過度に不適切な場合のみ対応するようにしてください。
 ```
 
-※ コミュニティルールが設定されている場合は、AI が自動でそのルールも読み込んで判定します。詳しい設定は [`server/help/automod.md`](./help/automod.md) を確認してください。
+※ コミュニティルールが設定されている場合は、AI が自動でそのルールも読み込んで判定します。詳しい設定は[AIプロバイダーの設定](./help/ai-providers.md)と[AutoMod設定ガイド](./help/automod.md)を確認してください。
 
 ---
 

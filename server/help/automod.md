@@ -8,35 +8,20 @@ OpenAI 互換 API や Google Gemini が利用できます。
 
 ## 設定手順
 
-`server/.env` に以下の設定を追加して、サーバーを再起動します。
+最初に[AIプロバイダーの設定](./ai-providers.md)に従って利用するサービスを登録します。
 
-### 1. OpenAI または OpenAI 互換サービスを使う場合
-
-OpenAI、Groq、OpenRouter、ローカル LLMを使う場合の設定です。
+次に、`server/.env`でAutoModの利用先と判定基準を指定し、サーバーを再起動します。
 
 ```dotenv
-# API キー
-AUTOMOD_API_KEY=sk-...
-
-# モデル名
-AUTOMOD_MODEL=gpt-4o-mini
-
-# 判定基準
-AUTOMOD_PROMPT=基本的には緩めに判断してください。過度に不適切な場合のみ対応するようにしてください。
-
-# 互換エンドポイント
-# AUTOMOD_ENDPOINT=https://api.openai.com/v1
-```
-
-### 2. Google Gemini を使う場合
-
-Google AI Studio で取得した API キーを使う場合の設定です。
-
-```dotenv
-AUTOMOD_API_KEY=あなたのGemini_APIキー
-AUTOMOD_MODEL=gemini-2.5-flash-lite
+AUTOMOD_AI_PROVIDER=auto
+# モデルを指定する場合だけ設定
+# AUTOMOD_AI_MODEL=gpt-6-sol
 AUTOMOD_PROMPT=基本的には緩めに判断してください。過度に不適切な場合のみ対応するようにしてください。
 ```
+
+`auto`は登録順にサービスを選択します。特定のサービスを使う場合は`openai`、`gemini`、`codex`など、登録した種類または`id`に変更します。
+
+config.jsonでは`autoMod.aiProvider`、`autoMod.aiModel`、`autoMod.prompt`を設定します。モデルは省略でき、プロバイダーの既定モデルや取得済みモデル一覧から選択されます。
 
 ---
 

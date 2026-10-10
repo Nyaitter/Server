@@ -1,4 +1,5 @@
 const { parseDuration, parseIntegerRange } = require('./utils/settingFormats');
+const { normalizeProviders } = require('./utils/aiSettings');
 
 const isProduction = (process.env.NODE_ENV || 'development') === 'production';
 
@@ -43,6 +44,26 @@ function readSetting(envNames, configPaths, fallback) {
     if (value !== undefined && value !== null && value !== '') return value;
   }
   return fallback;
+}
+
+function aiProviderSettings() {
+  const configured = readSetting(['AI_PROVIDERS', 'MODEL_PROVIDERS'], ['ai.providers', 'modelProviders', 'AI_PROVIDERS'], undefined);
+  if (configured !== undefined) return normalizeProviders(configured);
+  const providers = [];
+  const legacyKey = readSetting(['AUTOMOD_API_KEY'], ['autoMod.apiKey', 'automod.apiKey', 'geminiModeration.apiKey'], '');
+  const legacyEndpoint = readSetting(['AUTOMOD_ENDPOINT', 'AUTOMOD_BASE_URL', 'OPENAI_BASE_URL'], ['autoMod.endpoint', 'autoMod.baseUrl', 'automod.endpoint'], '');
+  const inferredType = legacyEndpoint || process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
+  const legacySelection = String(readSetting(['AUTOMOD_PROVIDER'], ['autoMod.provider', 'automod.provider'], inferredType)).trim().toLowerCase();
+  const legacyType = legacySelection === 'auto' ? inferredType : legacySelection;
+  if (legacyKey) providers.push({ type: legacyType, apikey: legacyKey, url: legacyEndpoint,
+    defmodel: readSetting(['AUTOMOD_MODEL', 'GEMINI_MODEL', 'OPENAI_MODEL'], ['autoMod.model', 'automod.model', 'geminiModeration.model'], '') });
+  for (const type of ['openai', 'gemini']) {
+    const apikey = process.env[`${type.toUpperCase()}_API_KEY`];
+    if (apikey && !providers.some(provider => provider.type === type && provider.apikey === apikey)) {
+      providers.push({ type, apikey, defmodel: process.env[`${type.toUpperCase()}_MODEL`] || '', url: type === 'openai' ? process.env.OPENAI_BASE_URL || '' : '' });
+    }
+  }
+  return normalizeProviders(providers);
 }
 
 function rangeSetting(label, envNames, configPaths, fallback, minimum = 0) {
@@ -215,6 +236,11 @@ const configuredUserFilesEndpoint = process.env.NYAITTER_USER_FILES_ENDPOINT !==
   : get('userFiles.endpoint', undefined);
 
 const config = {
+  ai: {
+    providers: aiProviderSettings(),
+    modelDbPath: require('path').resolve(__dirname, readSetting(['AI_MODEL_DB_PATH'], ['ai.modelDbPath'], 'data/models.json')),
+    workDir: require('path').resolve(__dirname, readSetting(['AI_WORK_DIR'], ['ai.workDir'], 'data/ai/requests')),
+  },
   server: {
     port: parseInt(process.env.PORT, 10) || get('server.port', 3000),
     jsonBodyLimit: process.env.JSON_BODY_LIMIT || get('server.jsonBodyLimit', '2mb'),
@@ -303,6 +329,7 @@ const config = {
     geminiApiKey: process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || get('nmt.geminiApiKey', ''),
     openaiApiKey: process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || get('nmt.openaiApiKey', ''),
     aiModel: process.env.NMT_AI_MODEL || get('nmt.aiModel', 'auto'),
+    aiProvider: process.env.NMT_AI_PROVIDER || get('nmt.aiProvider', 'auto'),
   },
 
   cors: {
@@ -699,42 +726,13 @@ const config = {
 	    },
 	  },
 
-	  autoMod: (() => {
-		    const apiKey = readSetting(
-		      ['AUTOMOD_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY'],
-		      ['autoMod.apiKey', 'automod.apiKey', 'geminiModeration.apiKey', 'AUTOMOD_API_KEY', 'GEMINI_API_KEY'],
-		      '',
-		    );
-		    const model = readSetting(
-		      ['AUTOMOD_MODEL', 'GEMINI_MODEL', 'OPENAI_MODEL'],
-		      ['autoMod.model', 'automod.model', 'geminiModeration.model', 'AUTOMOD_MODEL', 'GEMINI_MODEL'],
-		      '',
-		    );
-		    const prompt = readSetting(
-		      ['AUTOMOD_PROMPT', 'AUTOMOD_MOD_PROMPT', 'GEMINI_MOD_PROMPT'],
-		      ['autoMod.prompt', 'automod.prompt', 'geminiModeration.prompt', 'AUTOMOD_PROMPT', 'GEMINI_MOD_PROMPT'],
-		      '',
-		    );
-		    const endpoint = readSetting(
-		      ['AUTOMOD_ENDPOINT', 'AUTOMOD_BASE_URL', 'OPENAI_BASE_URL'],
-		      ['autoMod.endpoint', 'autoMod.baseUrl', 'automod.endpoint', 'geminiModeration.endpoint'],
-		      '',
-		    );
-		    const configuredProvider = readSetting(
-		      ['AUTOMOD_PROVIDER'],
-		      ['autoMod.provider', 'automod.provider'],
-		      '',
-		    );
-		    const provider = configuredProvider
-		      ? String(configuredProvider).trim().toLowerCase()
-		      : (endpoint || process.env.OPENAI_API_KEY ? 'openai' : 'gemini');
-
-		    return {
-		      apiKey,
-		      model,
-		      prompt,
-		      endpoint,
-		      provider,
+  autoMod: (() => {
+    const provider = String(readSetting(['AUTOMOD_AI_PROVIDER', 'AUTOMOD_PROVIDER'], ['autoMod.aiProvider', 'autoMod.provider', 'automod.provider'], 'auto')).trim().toLowerCase();
+    const model = readSetting(['AUTOMOD_AI_MODEL', 'AUTOMOD_MODEL'], ['autoMod.aiModel', 'autoMod.model', 'automod.model', 'geminiModeration.model'], '');
+    const prompt = readSetting(['AUTOMOD_PROMPT', 'AUTOMOD_MOD_PROMPT', 'GEMINI_MOD_PROMPT'], ['autoMod.prompt', 'automod.prompt', 'geminiModeration.prompt'], '');
+    const providers = aiProviderSettings();
+    return {
+      provider, model, prompt,
 		      maxImages: exactIntegerSetting(
 		        'AutoMod max images',
 		        ['AUTOMOD_MAX_IMAGES', 'AUTOMOD_MOD_MAX_IMAGES', 'GEMINI_MOD_MAX_IMAGES'],
@@ -749,9 +747,9 @@ const config = {
 		        500,
 		        1,
 		      ),
-		      enabled: Boolean(apiKey && model && prompt),
-		    };
-		  })(),
+      enabled: Boolean(prompt && providers.some(item => provider === 'auto' || item.type === provider || item.id.toLowerCase() === provider)),
+    };
+  })(),
 
 		  get geminiModeration() {
 		    return this.autoMod;
@@ -998,13 +996,8 @@ function validateConfig() {
     }
   }
 
-  const autoModSettings = [
-    config.autoMod.apiKey,
-    config.autoMod.model,
-    config.autoMod.prompt,
-  ].filter(Boolean);
-  if (autoModSettings.length > 0 && !config.autoMod.enabled) {
-    console.warn('[config] AutoMod is disabled until AUTOMOD_API_KEY (or GEMINI_API_KEY), AUTOMOD_MODEL (or GEMINI_MODEL), and AUTOMOD_PROMPT (or GEMINI_MOD_PROMPT) are all configured');
+  if (config.autoMod.prompt && !config.autoMod.enabled) {
+    console.warn('[config] AutoMod is disabled; configure AI_PROVIDERS and select a matching AUTOMOD_AI_PROVIDER');
   }
 
   if (config.server.port < 1 || config.server.port > 65535) {

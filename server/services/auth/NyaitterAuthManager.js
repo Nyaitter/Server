@@ -46,6 +46,12 @@ const STANDARD_SCOPES = {
     description: '通知一覧を確認します。',
     defaultRequired: false,
   },
+  'storage:access': {
+    id: 'storage:access',
+    name: 'ストレージへのアクセス',
+    description: 'あなたのストレージにファイルやプロジェクトを保存し、閲覧・更新・削除します。',
+    defaultRequired: false,
+  },
   'continuous_access': {
     id: 'continuous_access',
     name: '継続してアカウントにアクセス',

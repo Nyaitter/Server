@@ -28,18 +28,20 @@ npm start
 サーバーの状態確認や起動・停止は、プロジェクト外からも次のCLIで実行できます。
 
 ```bash
-/path/to/Server/NyaitterServerCLI server status
-/path/to/Server/NyaitterServerCLI nmt status
+/path/to/Server/nscli server status
+/path/to/Server/nscli nmt status
 ```
 
-このCLIは内部で`npm run cli`を実行します。
+PowerShellでは`./nscli.ps1`を使います。PATHから呼び出す場合は、このリポジトリで`npm link`を実行してください。
+
+Nditorなどの連携キーは`nscli extension-key create`で発行できます。[拡張APIキーの設定](server/help/extension-keys.md)を確認してください。
 
 緊急メンテナンス中は、サーバーの起動を拒否できます。拒否中もエラー終了せず、警告だけを表示します。
 
 ```bash
-/path/to/Server/NyaitterServerCLI maintenance enable
-/path/to/Server/NyaitterServerCLI maintenance status
-/path/to/Server/NyaitterServerCLI maintenance disable
+/path/to/Server/nscli maintenance enable
+/path/to/Server/nscli maintenance status
+/path/to/Server/nscli maintenance disable
 ```
 
 解除後にサーバーを起動する場合は、`server start`またはPM2の再起動を実行してください。

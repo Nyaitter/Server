@@ -1,5 +1,5 @@
 const express = require('express');
-const { optionalAuth, requireAuth, requireAuthAllowFrozen } = require('../middleware/auth');
+const { optionalAuth, requireAuth, requireAuthAllowFrozen, invalidateSessionPrincipalCache } = require('../middleware/auth');
 const crypto = require('crypto');
 const config = require('../config');
 const { isWithinRange, describeIntegerRange } = require('../utils/settingFormats');
@@ -81,12 +81,24 @@ async function deleteStoredAccountAttachments(storage, keys) {
 async function deleteOwnedImposterAccounts(req, db, storage, parentId) {
 	const imposters = await listOwnedImposters(db, parentId);
 	for (const imposter of imposters) {
-		req.app.locals.realtime?.closeUser?.(imposter.id, 1012, 'Parent account deletion');
-		const attachmentKeys = await db.getAccountAttachmentKeys(imposter.id);
-		await db.invalidateAllSessions(imposter.id);
-		const deleted = await db.deleteAccount(imposter.id);
-		if (!deleted) throw new Error(`Imposter account deletion did not complete: ${imposter.id}`);
-		await deleteStoredAccountAttachments(storage, attachmentKeys);
+		const started = await db.beginAccountOperation(imposter.id, 'deleting');
+		if (!started) throw new Error(`Imposter account operation could not be started: ${imposter.id}`);
+		invalidateSessionPrincipalCache(imposter.id);
+		try {
+			req.app.locals.realtime?.closeUser?.(imposter.id, 1012, 'Parent account deletion');
+			const attachmentKeys = await db.getAccountAttachmentKeys(imposter.id);
+			await db.invalidateAllSessions(imposter.id);
+			const deleted = await db.deleteAccount(imposter.id);
+			if (!deleted) throw new Error(`Imposter account deletion did not complete: ${imposter.id}`);
+			invalidateSessionPrincipalCache(imposter.id);
+			invalidateUserBriefCache(imposter.id);
+			timelineCacheManager.clear();
+			await deleteStoredAccountAttachments(storage, attachmentKeys);
+		} catch (error) {
+			await db.finishAccountOperation(imposter.id, 'deleting').catch(() => {});
+			invalidateSessionPrincipalCache(imposter.id);
+			throw error;
+		}
 	}
 }
 

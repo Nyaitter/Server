@@ -362,6 +362,7 @@ const restRoutes = [
     ['rule', require('./routes/rules')],
     ['auth/nyaitter-auth', require('./routes/nyaitterAuth')],
     ['nyaitter-auth', require('./routes/nyaitterAuth')],
+    ['internal/extensions', require('./routes/extensions')],
     ['oembed', require('./routes/oembed')],
     ['spec', require('./routes/spec')],
     ['docs', require('./routes/docs')],
