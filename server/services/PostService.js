@@ -1,4 +1,5 @@
 const { extractViewContent } = require('../utils/viewContent');
+const { updateUserReaction } = require('../utils/UserReactionCache');
 
 class PostService {
   constructor({ dbAdapter, storageAdapter }) {
@@ -103,7 +104,9 @@ class PostService {
       throw new Error('DatabaseAdapter does not support likes yet');
     }
 
-    return this.db.toggleLike(userId, postId);
+    const result = await this.db.toggleLike(userId, postId);
+    updateUserReaction(this.db,userId,postId,'like',result.liked);
+    return result;
   }
 
   async getLikeCount(postId) {
@@ -117,7 +120,9 @@ class PostService {
     if (!this.db.toggleStar) {
       throw new Error('DatabaseAdapter does not support stars yet');
     }
-    return this.db.toggleStar(userId, postId);
+    const result = await this.db.toggleStar(userId, postId);
+    updateUserReaction(this.db,userId,postId,'star',result.starred);
+    return result;
   }
 
   async getStarCount(postId) {

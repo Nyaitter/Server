@@ -1228,6 +1228,7 @@ router.put({
 		}
 		invalidateUserBriefCache(userId);
 		updateUserBriefCache(updated, getPublicUrl(req));
+		invalidateSessionPrincipalCache(userId);
 		timelineCacheManager.updatePostAuthor(userId, {
 			name: updated.name,
 			bio: updated.bio,

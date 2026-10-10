@@ -10,12 +10,14 @@ const {
 	isPrivatePost,
 } = require('./postVisibility');
 const { extractViewContent } = require('./viewContent');
+const { getUserReactions, invalidateUserReactions } = require('./UserReactionCache');
 const { getVisibleDmUnreadCount } = require('../services/DmVisibilityService');
 
 const USER_BRIEF_CACHE_LIMIT = 5000;
 const userBriefCache = new Map();
 
 function invalidateUserBriefCache(userId) {
+	invalidateUserReactions(userId);
 	if (userId == null) return;
 	const id = Number(userId);
 	userBriefCache.delete(`${id}:public`);
@@ -24,6 +26,7 @@ function invalidateUserBriefCache(userId) {
 }
 
 function clearUserBriefCache() {
+	invalidateUserReactions();
 	userBriefCache.clear();
 	userGroupBadgesCache.clear();
 }
@@ -540,6 +543,15 @@ async function fetchUsersByIds(db, userIds) {
 }
 
 async function fetchPostMetrics(db, allPosts, currentUserId, knownViewer = null) {
+	const reactions = currentUserId != null ? await getUserReactions(db,currentUserId) : null;
+	const metrics = await fetchPostMetricsFromAdapter(db,allPosts,reactions ? null : currentUserId,knownViewer);
+	if (!reactions) return metrics;
+	return metrics.map(metric => ({...metric,
+		liked_by_me:reactions.like.has(Number(metric.post_id)),
+		starred_by_me:reactions.star.has(Number(metric.post_id))}));
+}
+
+async function fetchPostMetricsFromAdapter(db, allPosts, currentUserId, knownViewer = null) {
 	const ids = [...new Set((allPosts || []).map((p) => Number(p?.id ?? p)).filter(Number.isInteger))];
 	if (ids.length === 0) return [];
 

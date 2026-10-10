@@ -1,5 +1,6 @@
 const express = require('express');
 const PostService = require('../services/PostService');
+const { applyUserReactionsToPayload } = require('../utils/UserReactionCache');
 const { extractPostKeywords } = require('../services/PostKeywordService');
 const { extractViewContent } = require('../utils/viewContent');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
@@ -158,7 +159,7 @@ function resolvePaginationCursor(query = {}) {
 }
 
 function getViewerNgWords(req) {
-	const ngWordsSetting = req.user?.settings?.ng_words;
+	const ngWordsSetting = req.user?.visibilityUser?.settings?.ng_words ?? req.user?.settings?.ng_words;
 	if (!ngWordsSetting) return null;
 	const words = normalizeNgWords(ngWordsSetting);
 	return words.size > 0 ? words : null;
@@ -664,7 +665,7 @@ router.get({
 	const cacheKey = `${mode}:${tab}:${order}:${req.query.q || ''}:${userIdParam}:${subTypeParam}:${pinIdParam}:${idsParam}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawSinceId || 0}:${rawCursor || ''}`;
 	const cachedPayload = timelineCacheManager.getPayload(cacheKey);
 	if (cachedPayload) {
-		return res.json(cachedPayload);
+		return res.json(await applyUserReactionsToPayload(db,cachedPayload,currentUserId));
 	}
 	const cachedResult = timelineCacheManager.getIds(cacheKey);
 
