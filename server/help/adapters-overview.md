@@ -1,23 +1,23 @@
 # 保存先の選び方
 
-Nyaitter は「データベース」と「ファイル保存先」を自由に組み合わせて設定できます。
+データベースとファイルの保存先は、自由に組み合わせられます。
 
-## 1. データベースの選び方 (`DB_ADAPTER`)
+## データベース（`DB_ADAPTER`）
 
-| 設定値 | 保存先 | 特徴 |
+| 設定値 | 保存先 | こんな場合に使う |
 |---|---|---|
-| `DB_ADAPTER=memory` | メモリ | 設定不要ですぐ動かせます。サーバーを再起動するとデータは消えます。 |
-| `DB_ADAPTER=postgres` | PostgreSQL | 最も標準的で安定したデータベースです。 |
-| `DB_ADAPTER=d1` | Cloudflare D1 | Cloudflare のインフラでサーバーレス運用したい場合に使用します。 |
+| `memory` | メモリ | すぐ試したい。サーバーを再起動するとデータは消えます。 |
+| `postgres` | PostgreSQL | 安定して運用したい。 |
+| `d1` | Cloudflare D1 | Cloudflare 上で運用したい。 |
 
-> データベースを設定した後は、必ず `npm run migrate` を実行して初期化してください。
+データベースを設定したら、必ず `npm run migrate` を実行してください。
 
-## 2. ファイル保存先の選び方 (`STORAGE_ADAPTER`)
+## ファイル保存先（`STORAGE_ADAPTER`）
 
-| 設定値 | 保存先 | 特徴 |
+| 設定値 | 保存先 | こんな場合に使う |
 |---|---|---|
-| `STORAGE_ADAPTER=local` | サーバー本体のディスク | サーバー1台で動かす場合に簡単です。 |
-| `STORAGE_ADAPTER=r2` | Cloudflare R2 | 複数サーバー構成や、大量の画像・動画を扱う場合に適しています。 |
+| `local` | サーバー本体のディスク | サーバー 1 台で動かしたい。 |
+| `r2` | Cloudflare R2 | 複数サーバーで動かしたい。画像や動画が多い。 |
 
 ## 関連ドキュメント
 
@@ -25,4 +25,3 @@ Nyaitter は「データベース」と「ファイル保存先」を自由に�
 - [Cloudflare D1 設定ガイド](./database-d1-worker.md)
 - [ローカル保存 設定ガイド](./storage-local.md)
 - [Cloudflare R2 設定ガイド](./storage-r2.md)
-

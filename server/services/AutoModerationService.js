@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getAiService } = require('./ai/AiService');
+const { createNotificationIfAllowed } = require('./NotificationDeliveryService');
 
 const MODERATION_LEVELS = Object.freeze({
   safe: 1,
@@ -87,10 +88,9 @@ function getImageMimeType(attachment, sourceContentType) {
 }
 
 class AutoModerationService {
-  constructor({ dbAdapter, storageAdapter, publishNotification, moderationConfig = {}, aiService }) {
+  constructor({ dbAdapter, storageAdapter, moderationConfig = {}, aiService }) {
     this.db = dbAdapter;
     this.storage = storageAdapter;
-    this.publishNotification = publishNotification;
     this.config = moderationConfig;
     this.ai = aiService || getAiService();
     this.maxPendingJobs = Math.max(1, Number(moderationConfig.maxPendingJobs) || 500);
@@ -212,27 +212,13 @@ class AutoModerationService {
     const updated = await this.db.updatePost(post.id, fields);
     if (!updated) return;
 
-    try {
-      const LogHubManager = require('./managementTool/LogHubManager');
-      LogHubManager.appendExternalLog({
-        type: 'moderation',
-        level: 'warn',
-        source: 'automod',
-        message: `[AutoMod] ポスト #${post.id} (ユーザー #${post.userId}) にモデレーション適用: ${name} (mask: ${Boolean(fields.mask)}, lock: ${Boolean(fields.lock)})`,
-        details: { postId: post.id, userId: post.userId, level: name, fields },
-      });
-    } catch (_) {}
-
-    const notification = await this.db.createNotification({
+    await createNotificationIfAllowed(this.db, {
       userId: Number(post.userId),
       type: 'auto_moderation',
       fromUserId: null,
       target: { kind: 'post', id: Number(post.id) },
       message: MODERATION_MESSAGES[name],
     });
-    if (notification && typeof this.publishNotification === 'function') {
-      await this.publishNotification(Number(post.userId), notification);
-    }
   }
 
   async _classify(post) {

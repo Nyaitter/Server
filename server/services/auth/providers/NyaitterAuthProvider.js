@@ -195,6 +195,7 @@ class NyaitterAuthProvider extends BaseAuthProvider {
         name: userData.name,
         icon_data: userData.icon_data || null,
         me: userData.me || null,
+        header_image: userData.header_image || null,
         scid: userData.scid || null,
         handle: userData.handle || null,
       },
@@ -241,6 +242,8 @@ class NyaitterAuthProvider extends BaseAuthProvider {
       provider_domain: identity.providerDomain || null,
       external_profile: profile || null,
       icon_data: profile?.icon_data || null,
+      me: profile?.me || null,
+      header_image: profile?.header_image || null,
     });
 
     if (typeof db.linkAuthProvider === 'function') {

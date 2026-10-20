@@ -22,11 +22,6 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-function getAdminDisplayName(req) {
-  const user = req.user?.visibilityUser || req.user || {};
-  return user.name || user.username || user.scratch_name || `#${req.user?.id ?? 'unknown'}`;
-}
-
 function serializeReportBrief(report) {
   if (!report) return null;
   return {
@@ -140,7 +135,11 @@ router.get({
     }
     const report = await service.getReportById(reportId);
     if (!report) return res.status(404).json({ error: '通報が見つかりません' });
-    res.json({ report: serializeReport(report) });
+    let targetState = null;
+    if (typeof service.getTargetState === 'function') {
+      targetState = await service.getTargetState(report);
+    }
+    res.json({ report: { ...serializeReport(report), target_state: targetState } });
   } catch (error) {
     console.error('[reports] get error:', error);
     res.status(500).json({ error: '通報詳細の取得に失敗しました' });
@@ -161,17 +160,6 @@ router.patch({
     }
     const { status, note, action } = req.body || {};
     const updated = await service.updateReportStatus(reportId, { status, note, action, moderatorId: req.user.id });
-
-    try {
-      const LogHubManager = require('../services/managementTool/LogHubManager');
-      LogHubManager.appendExternalLog({
-        type: 'moderation',
-        level: 'info',
-        source: 'moderation',
-        message: `[Moderation] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) が通報 #${reportId} を更新 (status: ${status}, action: ${action || 'none'})`,
-        details: { moderatorId: req.user.id, reportId, status, note, action },
-      });
-    } catch (_) {}
 
     res.json({ success: true, report: updated });
   } catch (error) {
@@ -207,17 +195,6 @@ router.post({
       const actions = req.body?.actions || req.body || {};
       resolved = await service.resolveReport({ reportId, adminId: req.user.id, actions });
     }
-
-    try {
-      const LogHubManager = require('../services/managementTool/LogHubManager');
-      LogHubManager.appendExternalLog({
-        type: 'admin',
-        level: 'info',
-        source: 'request',
-        message: `[Request] 管理者 @${getAdminDisplayName(req)} (#${req.user.id}) がリクエスト #${reportId} を対応完了`,
-        details: { moderatorId: req.user.id, reportId, body: req.body },
-      });
-    } catch (_) {}
 
     res.json({ success: true, report: resolved });
   } catch (error) {

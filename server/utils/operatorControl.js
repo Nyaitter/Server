@@ -114,28 +114,6 @@ function createCommandHandler({ dbAdapter, shutdown, getStatus, managers = {} })
       };
     }
 
-    // ── エラー管理 ─────────────────────────────────────────────────────────
-    if (command.action === 'get-errors') {
-      if (!managers.errorManager) return { ok: false, error: 'ErrorManager not available' };
-      try {
-        const errors = managers.errorManager.getErrors(command.filters || {});
-        return { ok: true, errors };
-      } catch (err) {
-        return { ok: false, error: err.message };
-      }
-    }
-
-    if (command.action === 'update-error-status') {
-      if (!managers.errorManager) return { ok: false, error: 'ErrorManager not available' };
-      try {
-        const updated = managers.errorManager.updateStatus(command.errorId, command.status);
-        if (!updated) return { ok: false, error: 'Error not found' };
-        return { ok: true, error: updated };
-      } catch (err) {
-        return { ok: false, error: err.message };
-      }
-    }
-
     // ── セキュリティ ───────────────────────────────────────────────────────
     if (command.action === 'get-security-events') {
       if (!managers.securityManager) return { ok: false, error: 'SecurityManager not available' };
@@ -211,17 +189,7 @@ function createCommandHandler({ dbAdapter, shutdown, getStatus, managers = {} })
       }
     }
 
-    // ── ログ転送 ──────────────────────────────────────
-    if (command.action === 'push-log') {
-      if (!managers.logHub) return { ok: false, error: 'LogHub not available' };
-      try {
-        managers.logHub.addLog(command.log);
-        return { ok: true };
-      } catch (err) {
-        return { ok: false, error: err.message };
-      }
-    }
-
+    // ── 通知 ───────────────────────────────────────────────────────────────
     if (command.action === 'push-admin-notification') {
       if (!managers.pushNotificationService) return { ok: false, error: 'Push service not available' };
       const notification = command.notification || {};
@@ -271,6 +239,31 @@ async function removeStaleSocket(socketPath) {
     return;
   }
 
+  if (!fs.existsSync(socketPath)) return;
+  const state = await new Promise((resolve, reject) => {
+    const probe = net.createConnection(socketPath);
+    probe.once('connect', () => {
+      probe.end(`${JSON.stringify({ action: 'status' })}\n`);
+      probe.resume();
+      resolve('active');
+    });
+    probe.once('end', () => probe.destroy());
+    probe.once('error', error => {
+      if (error.code === 'ENOENT') resolve('missing');
+      else if (error.code === 'ECONNREFUSED') resolve('stale');
+      else reject(error);
+    });
+    probe.setTimeout(1000, () => {
+      probe.destroy();
+      reject(new Error('Operator socket did not respond'));
+    });
+  });
+  if (state === 'active') {
+    const error = new Error('Operator socket is already in use; set NYAITTER_OPERATOR_SOCKET for another server');
+    error.code = 'EADDRINUSE';
+    throw error;
+  }
+  if (state === 'missing') return;
   try {
     await fs.promises.unlink(socketPath);
   } catch (error) {

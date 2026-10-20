@@ -4,6 +4,15 @@ const { isAllowedPushEndpoint } = require('../utils/pushEndpoint');
 const { getApiPublicUrl } = require('../utils/nyaitterAddress');
 const { getNotificationText, getNotificationActionText, getNotificationBodyText, getNotificationTargetHash } = require('../utils/notification');
 
+function getPushNotificationUrl(notification) {
+  const isCall = notification?.type === 'dm_call' || notification?.type === 'group_call';
+  if (isCall && notification?.target?.kind === 'dm') {
+    const id = encodeURIComponent(String(notification.target.id));
+    return `/?push_open_type=dm_call&push_open_target=${id}#dm/${id}`;
+  }
+  return getNotificationTargetHash(notification?.target, notification?.from?.id);
+}
+
 function getPushIconUrl(notification, publicUrl = null) {
   const fromUserId = Number(notification?.from?.id);
   if (!Number.isInteger(fromUserId) || fromUserId < 1) return null;
@@ -66,7 +75,7 @@ class PushNotificationService {
       title: actionText.slice(0, 100),
       body: bodyText.slice(0, 200),
       tag: notification?.id ? `notification-${notification.id}` : 'notification',
-      url: getNotificationTargetHash(notification?.target, notification?.from?.id),
+      url: getPushNotificationUrl(notification),
       user_id: userId,
       notification_id: notification?.id || null,
       icon: getPushIconUrl(notification, publicUrl),

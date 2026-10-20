@@ -33,6 +33,29 @@ class DatabaseAdapter {
 	async decideLoginApproval(userId, id, decision) { throw new Error('decideLoginApproval() must be implemented'); }
 	async consumeLoginApproval(id, pollTokenHash) { throw new Error('consumeLoginApproval() must be implemented'); }
 
+	// ==================== Account Recovery ====================
+
+	async createAccountRecoveryRequest(data) { throw new Error('createAccountRecoveryRequest() must be implemented'); }
+	async getAccountRecoveryRequest(id) { throw new Error('getAccountRecoveryRequest() must be implemented'); }
+	async getAccountRecoveryRequestByToken(id, tokenHash) { throw new Error('getAccountRecoveryRequestByToken() must be implemented'); }
+	async getActiveAccountRecoveryRequest(userId, ipHash) { throw new Error('getActiveAccountRecoveryRequest() must be implemented'); }
+	async rotateAccountRecoveryToken(id, tokenHash) { throw new Error('rotateAccountRecoveryToken() must be implemented'); }
+	async listAccountRecoveryRequestsToNotify(cutoff) { throw new Error('listAccountRecoveryRequestsToNotify() must be implemented'); }
+	async markAccountRecoveryNotified(id, notifiedAt) { throw new Error('markAccountRecoveryNotified() must be implemented'); }
+	async listDueAccountRecoveryRequests(now) { throw new Error('listDueAccountRecoveryRequests() must be implemented'); }
+	async decideAccountRecoveryRequest(userId, id, decision) { throw new Error('decideAccountRecoveryRequest() must be implemented'); }
+	async approveDueAccountRecoveryRequest(id, decidedBy) { throw new Error('approveDueAccountRecoveryRequest() must be implemented'); }
+	async consumeAccountRecoveryRequest(id, tokenHash) { throw new Error('consumeAccountRecoveryRequest() must be implemented'); }
+	async blockLoginIp(userId, data) { throw new Error('blockLoginIp() must be implemented'); }
+	async getBlockedLoginIp(userId, ipHash) { throw new Error('getBlockedLoginIp() must be implemented'); }
+	async listBlockedLoginIps(userId) { throw new Error('listBlockedLoginIps() must be implemented'); }
+	async unblockLoginIp(userId, ipHash) { throw new Error('unblockLoginIp() must be implemented'); }
+
+	// 復旧のブロック時に、侵害された認証プロバイダーの連携を確実に解除する。
+	// 通常のunlinkAuthProviderと異なり、保留中のログイン方法が2つ以上ある場合だけ実行し、
+	// primaryの外部IDが残って再ログインできてしまうケースも無効化する。
+	async revokeAuthProvider(userId, provider) { throw new Error('revokeAuthProvider() must be implemented'); }
+
 	/**
 	 * SCIDでユーザーを取得
 	 * @param {string} scid
@@ -66,14 +89,17 @@ class DatabaseAdapter {
 				isPrimary: true,
 				createdAt: user.created_at || user.createdAt || new Date(),
 			});
-		} else if (user.auth_provider && user.external_id) {
+		}
+		const hasExternal = records.some((r) => String(r.provider).toLowerCase() === String(user.auth_provider || '').toLowerCase()
+			&& String(r.providerUserId) === String(user.external_id));
+		if (!hasExternal && user.auth_provider && user.external_id) {
 			records.push({
 				id: 0,
 				userId: targetId,
 				provider: user.auth_provider,
 				providerUserId: user.external_id,
 				providerProfile: user.external_profile || {},
-				isPrimary: true,
+				isPrimary: records.length === 0,
 				createdAt: user.created_at || user.createdAt || new Date(),
 			});
 		}
@@ -225,6 +251,29 @@ class DatabaseAdapter {
 	async getGroupAnnouncementPostIds(groupId, params = {}) { throw new Error('getGroupAnnouncementPostIds() must be implemented'); }
 	async searchGroupPostIds(userId, query, params = {}) { throw new Error('searchGroupPostIds() must be implemented'); }
 
+	// ==================== Spaces（音声・テキストチャンネルの部屋） ====================
+	async createSpace(spaceData) { throw new Error('createSpace() must be implemented'); }
+	async getSpaceById(spaceId) { throw new Error('getSpaceById() must be implemented'); }
+	async updateSpace(spaceId, fields) { throw new Error('updateSpace() must be implemented'); }
+	async deleteSpace(spaceId) { throw new Error('deleteSpace() must be implemented'); }
+	async listSpaces(params = {}) { throw new Error('listSpaces() must be implemented'); }
+	async listUserSpaces(userId, params = {}) { throw new Error('listUserSpaces() must be implemented'); }
+	async countSpacesByOwner(ownerId) { throw new Error('countSpacesByOwner() must be implemented'); }
+	async createSpaceChannel(channelData) { throw new Error('createSpaceChannel() must be implemented'); }
+	async getSpaceChannel(channelId) { throw new Error('getSpaceChannel() must be implemented'); }
+	async listSpaceChannels(spaceId) { throw new Error('listSpaceChannels() must be implemented'); }
+	async updateSpaceChannel(channelId, fields) { throw new Error('updateSpaceChannel() must be implemented'); }
+	async deleteSpaceChannel(channelId) { throw new Error('deleteSpaceChannel() must be implemented'); }
+	async createSpaceMember(memberData) { throw new Error('createSpaceMember() must be implemented'); }
+	async getSpaceMember(spaceId, userId) { throw new Error('getSpaceMember() must be implemented'); }
+	async listSpaceMembers(spaceId, params = {}) { throw new Error('listSpaceMembers() must be implemented'); }
+	async deleteSpaceMember(spaceId, userId) { throw new Error('deleteSpaceMember() must be implemented'); }
+	async updateSpaceMemberCount(spaceId) { throw new Error('updateSpaceMemberCount() must be implemented'); }
+	async createSpaceMessage(messageData) { throw new Error('createSpaceMessage() must be implemented'); }
+	async listSpaceMessages(channelId, params = {}) { throw new Error('listSpaceMessages() must be implemented'); }
+	async getSpaceMessageById(messageId) { throw new Error('getSpaceMessageById() must be implemented'); }
+	async deleteSpaceMessage(messageId) { throw new Error('deleteSpaceMessage() must be implemented'); }
+
 	async createPost(postData) {
 		throw new Error('createPost() must be implemented');
 	}
@@ -285,6 +334,10 @@ class DatabaseAdapter {
 		throw new Error('getPostsByUserId() must be implemented');
 	}
 
+	async getScheduledPostsByUser(userId, now = new Date().toISOString(), options = {}) {
+		throw new Error('getScheduledPostsByUser() must be implemented');
+	}
+
 	
 	async getReplyPostIds(parentPostId, limit = 50, offset = 0) {
 		throw new Error('getReplyPostIds() must be implemented');
@@ -300,6 +353,14 @@ class DatabaseAdapter {
 
 	async getRecommendedPostIds(params = {}) {
 		throw new Error('getRecommendedPostIds() must be implemented');
+	}
+
+	async recordPostFeedback(userId, postId, kind = 'not_interested') {
+		throw new Error('recordPostFeedback() must be implemented');
+	}
+
+	async getPostFeedbackForUser(userId) {
+		throw new Error('getPostFeedbackForUser() must be implemented');
 	}
 
 	async getProfilePostIds(params = {}) {
@@ -368,21 +429,6 @@ class DatabaseAdapter {
 
 	async getPinnedPostId(userId) {
 		throw new Error('getPinnedPostId() must be implemented');
-	}
-
-	
-	async hasUserLikedPost(userId, postId) {
-		throw new Error('hasUserLikedPost() must be implemented');
-	}
-
-	
-	async getStarCount(postId) {
-		throw new Error('getStarCount() must be implemented');
-	}
-
-	
-	async hasUserStarredPost(userId, postId) {
-		throw new Error('hasUserStarredPost() must be implemented');
 	}
 
 	
@@ -537,11 +583,6 @@ class DatabaseAdapter {
 	}
 
 	
-	async getPinnedPosts(userId) {
-		throw new Error('getPinnedPosts() must be implemented');
-	}
-
-	
 	async createNotification(notificationData) {
 		throw new Error('createNotification() must be implemented');
 	}
@@ -593,8 +634,9 @@ class DatabaseAdapter {
 	async listModerationReportsForAdmin(adminId, options = {}) { throw new Error('listModerationReportsForAdmin() must be implemented'); }
 	async getModerationAdminWorkloads(excludedAdminIds = []) { throw new Error('getModerationAdminWorkloads() must be implemented'); }
 	async assignModerationReport(reportId, assignment) { throw new Error('assignModerationReport() must be implemented'); }
-	async getOverdueModerationReports(cutoff) { throw new Error('getOverdueModerationReports() must be implemented'); }
+	async getOverdueModerationReports(cutoff, claimStaleBeforeIso) { throw new Error('getOverdueModerationReports() must be implemented'); }
 	async getUnassignedModerationReports(limit = 100) { throw new Error('getUnassignedModerationReports() must be implemented'); }
+	async claimModerationReport(reportId, adminId, claimedAtIso) { throw new Error('claimModerationReport() must be implemented'); }
 	async resolveModerationReport(reportId, adminId, resolution) { throw new Error('resolveModerationReport() must be implemented'); }
 	async deleteModerationReport(reportId) { throw new Error('deleteModerationReport() must be implemented'); }
 

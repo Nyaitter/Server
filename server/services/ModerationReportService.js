@@ -5,6 +5,8 @@ const config = require('../config');
 const REPORT_TARGET_KINDS = new Set(['user', 'post', 'dm', 'dm_message']);
 const REPORT_DESCRIPTION_MAX_LENGTH = config.moderation?.descriptionMaxLength || 2000;
 const REPORT_REASSIGN_AFTER_MS = config.moderation?.reassignAfterMs || (24 * 60 * 60 * 1000);
+// 破壊的処理前の lease(claimed_at) が「作業中」と見なされる猶予。この間だけ再割り当てスイープが行を飛ばす。
+const REPORT_CLAIM_STALE_AFTER_MS = config.moderation?.claimStaleAfterMs || (5 * 60 * 1000);
 
 function assignmentNotificationMessage() {
   return '新しいリクエストが割り当てられました。';
@@ -40,6 +42,22 @@ function snapshotUser(user) {
   };
 }
 
+function contentModerationNotificationMessage(applied) {
+  if (applied.deletePost) {
+    return '運営による審査の結果、あなたのポストを削除しました。';
+  }
+  if (applied.makePrivate && applied.maskPost) {
+    return '運営による審査の結果、あなたのポストを限定公開にしワンクッションを付与しました。';
+  }
+  if (applied.makePrivate) {
+    return '運営による審査の結果、あなたのポストを限定公開にしました。';
+  }
+  if (applied.maskPost) {
+    return '運営による審査の結果、あなたのポストにワンクッションを付与しました。';
+  }
+  return '';
+}
+
 function attachmentKeys(attachments) {
   const parsed = typeof attachments === 'string'
     ? (() => { try { return JSON.parse(attachments); } catch (_) { return []; } })()
@@ -51,13 +69,13 @@ function attachmentKeys(attachments) {
 }
 
 class ModerationReportService {
-  constructor({ dbAdapter, storageAdapter = null, publishNotification = null, now = () => new Date(), config: serviceConfig = null } = {}) {
+  constructor({ dbAdapter, storageAdapter = null, now = () => new Date(), config: serviceConfig = null } = {}) {
     this.db = dbAdapter;
     this.storage = storageAdapter;
-    this.publishNotification = publishNotification;
     this.now = now;
     this.descriptionMaxLength = serviceConfig?.descriptionMaxLength || config.moderation?.descriptionMaxLength || REPORT_DESCRIPTION_MAX_LENGTH;
     this.reassignAfterMs = serviceConfig?.reassignAfterMs || config.moderation?.reassignAfterMs || REPORT_REASSIGN_AFTER_MS;
+    this.claimStaleAfterMs = serviceConfig?.claimStaleAfterMs || config.moderation?.claimStaleAfterMs || REPORT_CLAIM_STALE_AFTER_MS;
   }
 
   async createReport({ reporterUserId, reporterId: altReporterId, targetKind, targetId, description = '' }) {
@@ -153,6 +171,19 @@ class ModerationReportService {
     return this.db.getModerationReportById(id);
   }
 
+  async getTargetState(report) {
+    if (!report || report.targetKind !== 'post') return null;
+    const postId = Number(report.targetSnapshot?.post?.id ?? report.targetId);
+    if (!Number.isSafeInteger(postId) || postId < 1) return null;
+    const post = await this.db.getPostById(postId);
+    if (!post) return { exists: false, mask: false, lock: false };
+    return {
+      exists: true,
+      mask: Boolean(post.mask),
+      lock: Boolean(post.lock),
+    };
+  }
+
   async listReports({ status = 'assigned', limit = 50, offset = 0, adminId = null } = {}) {
     if (adminId != null && typeof this.db.listModerationReportsForAdmin === 'function') {
       return this.db.listModerationReportsForAdmin(adminId, { status, limit, offset });
@@ -173,6 +204,8 @@ class ModerationReportService {
     if (status === 'resolved' || status === 'closed') {
       const actions = {};
       if (action === 'delete_post') actions.deletePost = true;
+      if (action === 'mask' || action === 'cushion') actions.maskPost = true;
+      if (action === 'make_private' || action === 'privatize' || action === 'private') actions.makePrivate = true;
       if (action === 'freeze') actions.freeze = true;
       if (action === 'search_exclude') actions.searchExclude = true;
       if (note) actions.notice = note;
@@ -264,7 +297,7 @@ class ModerationReportService {
     return candidates[crypto.randomInt(candidates.length)];
   }
 
-  async _assignReport(report, { expectedAdminId, excludedAdminIds } = {}) {
+  async _assignReport(report, { expectedAdminId, excludedAdminIds, claimStaleBefore } = {}) {
     if (!report || report.status === 'resolved') return null;
     const excluded = [...new Set((excludedAdminIds || report.excludedAdminIds || [])
       .map(Number)
@@ -278,19 +311,19 @@ class ModerationReportService {
       assignedAt: this.now().toISOString(),
     };
     if (expectedAdminId !== undefined) assignment.expectedAdminId = expectedAdminId;
+    if (claimStaleBefore) assignment.claimStaleBefore = claimStaleBefore;
     const assigned = await this.db.assignModerationReport(report.id, assignment);
     if (assigned) await this._notifyAssignment(assigned);
     return assigned;
   }
 
   async _notifyAssignment(report) {
-    const notification = await createNotificationIfAllowed(this.db, {
+    await createNotificationIfAllowed(this.db, {
       userId: report.assignedAdminId,
       type: 'moderation_assignment',
       message: assignmentNotificationMessage(report),
       target: { kind: 'route', value: `#admin/reports/${report.id}` },
     });
-    if (notification) await this._publishNotification(report.assignedAdminId, notification);
   }
 
   async _deleteCompletedRequest(report) {
@@ -303,21 +336,11 @@ class ModerationReportService {
   }
 
   async _notifyReporter(report, actionTaken) {
-    const notification = await createNotificationIfAllowed(this.db, {
+    await createNotificationIfAllowed(this.db, {
       userId: report.reporterUserId,
       type: actionTaken ? 'moderation_action_taken' : 'moderation_no_action',
       target: { kind: 'route', value: '#notifications' },
     });
-    if (notification) await this._publishNotification(report.reporterUserId, notification);
-  }
-
-  async _publishNotification(userId, notification) {
-    if (typeof this.publishNotification !== 'function') return;
-    try {
-      await this.publishNotification(userId, notification);
-    } catch (error) {
-      console.warn('[moderation] notification delivery failed:', error.message);
-    }
   }
 
   async runAssignmentSweep() {
@@ -329,7 +352,9 @@ class ModerationReportService {
     }
 
     const cutoff = new Date(this.now().getTime() - this.reassignAfterMs).toISOString();
-    const overdue = await this.db.getOverdueModerationReports(cutoff);
+    // lease が生きている行はスイープから外す。判定を JS 側でやると read→assign の窓が残って二重対応が消えない。
+    const claimStaleBefore = new Date(this.now().getTime() - this.claimStaleAfterMs).toISOString();
+    const overdue = await this.db.getOverdueModerationReports(cutoff, claimStaleBefore);
     for (const report of overdue) {
       const excluded = [...new Set([
         ...(report.excludedAdminIds || []),
@@ -338,6 +363,7 @@ class ModerationReportService {
       const result = await this._assignReport(report, {
         expectedAdminId: report.assignedAdminId,
         excludedAdminIds: excluded,
+        claimStaleBefore,
       });
       if (result) assigned.push(result);
     }
@@ -368,6 +394,8 @@ class ModerationReportService {
 
     const normalizedActions = {
       deletePost: Boolean(actions.deletePost),
+      maskPost: Boolean(actions.maskPost),
+      makePrivate: Boolean(actions.makePrivate),
       searchExclude: Boolean(actions.searchExclude),
       freeze: Boolean(actions.freeze),
       freezeReason: String(actions.freezeReason || '').trim(),
@@ -380,8 +408,9 @@ class ModerationReportService {
     if (normalizedActions.freeze && !normalizedActions.freezeReason) {
       throw new Error('凍結する場合は理由が必要です');
     }
-    if (normalizedActions.deletePost && report.targetKind !== 'post') {
-      throw new Error('ポスト以外は削除できません');
+    const touchesPost = normalizedActions.deletePost || normalizedActions.maskPost || normalizedActions.makePrivate;
+    if (touchesPost && report.targetKind !== 'post') {
+      throw new Error('ポスト以外はポストへの対応を実行できません');
     }
 
     const candidateUserIds = this.getReviewTargetUserIds(report);
@@ -390,7 +419,20 @@ class ModerationReportService {
       throw new Error('対応対象ユーザーが報告対象に含まれていません');
     }
 
-    const applied = { deletePost: false, searchExclude: false, freeze: false, notice: false };
+    // 破壊的処理の前に lease を取る: read から resolve までの窓でスイープが割り直しても、
+    // claim が assigned_admin_id 一致を要求するので旧担当者はここで止まる。
+    // lease であり排他ロックではないので、現担当者の再試行は毎回成功させる。
+    const claimed = await this.db.claimModerationReport(report.id, adminId, this.now().toISOString());
+    if (!claimed) throw new Error('報告はすでに別の管理者により処理されています');
+
+    const applied = {
+      deletePost: false,
+      maskPost: false,
+      makePrivate: false,
+      searchExclude: false,
+      freeze: false,
+      notice: false,
+    };
     if (normalizedActions.deletePost) {
       const postId = Number(report.targetSnapshot?.post?.id || report.targetId);
       const post = await this.db.getPostById(postId);
@@ -398,6 +440,19 @@ class ModerationReportService {
         await this._deletePostAttachments(post.attachments);
         applied.deletePost = true;
       }
+    }
+
+    if (!applied.deletePost && (normalizedActions.maskPost || normalizedActions.makePrivate)) {
+      const postId = Number(report.targetSnapshot?.post?.id || report.targetId);
+      const post = await this.db.getPostById(postId);
+      if (!post) throw new Error('対象のポストが見つかりません');
+      const postUpdates = {};
+      if (normalizedActions.maskPost) postUpdates.mask = true;
+      if (normalizedActions.makePrivate) postUpdates.lock = true;
+      const updated = await this.db.updatePost(postId, postUpdates);
+      if (!updated) throw new Error('ポストの公開範囲を変更できませんでした');
+      applied.maskPost = normalizedActions.maskPost;
+      applied.makePrivate = normalizedActions.makePrivate;
     }
 
     if (normalizedActions.searchExclude || normalizedActions.freeze) {
@@ -410,21 +465,10 @@ class ModerationReportService {
       applied.freeze = normalizedActions.freeze;
     }
 
-    if (normalizedActions.notice) {
-      const notification = await this.db.createNotification({
-        userId: normalizedActions.targetUserId,
-        type: 'admin_notice',
-        fromUserId: adminId,
-        message: normalizedActions.notice,
-        target: { kind: 'route', value: '#notifications' },
-      });
-      if (notification) {
-        await this._publishNotification(normalizedActions.targetUserId, notification);
-      }
-      applied.notice = true;
-    }
+    // resolution は resolveModerationReport 呼び出し時にシリアライズされるため、applied.notice は通知発行に先立ち確定させる。
+    if (normalizedActions.notice) applied.notice = true;
 
-    const actionTaken = applied.deletePost || applied.searchExclude || applied.freeze;
+    const actionTaken = applied.deletePost || applied.maskPost || applied.makePrivate || applied.searchExclude || applied.freeze;
     const resolution = {
       actionTaken,
       applied,
@@ -434,6 +478,35 @@ class ModerationReportService {
     };
     const resolved = await this.db.resolveModerationReport(report.id, adminId, resolution);
     if (!resolved) throw new Error('報告はすでに別の管理者により処理されています');
+
+    if (normalizedActions.notice) {
+      // 運営からの通知はブロック関係に関わらず届ける。
+      await createNotificationIfAllowed(this.db, {
+        userId: normalizedActions.targetUserId,
+        type: 'admin_notice',
+        fromUserId: adminId,
+        message: normalizedActions.notice,
+        target: { kind: 'route', value: '#notifications' },
+      }, { bypassBlockCheck: true });
+    }
+
+    const contentNotificationMessage = contentModerationNotificationMessage(applied);
+    if (contentNotificationMessage) {
+      const authorId = Number(report.targetSnapshot?.subjectUser?.id);
+      if (Number.isSafeInteger(authorId) && authorId > 0) {
+        const postId = Number(report.targetSnapshot?.post?.id || report.targetId);
+        await createNotificationIfAllowed(this.db, {
+          userId: authorId,
+          type: 'moderation_action',
+          fromUserId: null,
+          message: contentNotificationMessage,
+          target: applied.deletePost || !Number.isSafeInteger(postId) || postId < 1
+            ? { kind: 'route', value: '#notifications' }
+            : { kind: 'post', id: postId },
+        });
+      }
+    }
+
     await this._notifyReporter(resolved, actionTaken);
     await this._deleteCompletedRequest(resolved);
     return resolved;
@@ -451,6 +524,9 @@ class ModerationReportService {
       throw new Error('異議申し立ての判断が不正です');
     }
 
+    const claimed = await this.db.claimModerationReport(appeal.id, adminId, this.now().toISOString());
+    if (!claimed) throw new Error('異議申し立てはすでに別の管理者により処理されています');
+
     const appellantId = Number(appeal.reporterUserId);
     if (decision === 'approved') {
       const updated = await this.db.updateUserProfile(appellantId, { freeze: null });
@@ -465,12 +541,11 @@ class ModerationReportService {
     const resolved = await this.db.resolveModerationReport(appeal.id, adminId, resolution);
     if (!resolved) throw new Error('異議申し立てはすでに別の管理者により処理されています');
 
-    const notification = await this.db.createNotification({
+    await createNotificationIfAllowed(this.db, {
       userId: appellantId,
       type: decision === 'approved' ? 'appeal_approved' : 'appeal_rejected',
       target: { kind: 'route', value: '#notifications' },
     });
-    if (notification) await this._publishNotification(appellantId, notification);
     await this._deleteCompletedRequest(resolved);
     return resolved;
   }
@@ -487,6 +562,9 @@ class ModerationReportService {
       throw new Error('認証申請の判断が不正です');
     }
 
+    const claimed = await this.db.claimModerationReport(application.id, adminId, this.now().toISOString());
+    if (!claimed) throw new Error('認証申請はすでに別の管理者により処理されています');
+
     const applicantId = Number(application.reporterUserId);
     if (decision === 'approved') {
       const updated = await this.db.updateUserProfile(applicantId, { verify: true });
@@ -501,12 +579,11 @@ class ModerationReportService {
     const resolved = await this.db.resolveModerationReport(application.id, adminId, resolution);
     if (!resolved) throw new Error('認証申請はすでに別の管理者により処理されています');
 
-    const notification = await this.db.createNotification({
+    await createNotificationIfAllowed(this.db, {
       userId: applicantId,
       type: decision === 'approved' ? 'verification_approved' : 'verification_rejected',
       target: { kind: 'route', value: '#notifications' },
     });
-    if (notification) await this._publishNotification(applicantId, notification);
     await this._deleteCompletedRequest(resolved);
     return resolved;
   }

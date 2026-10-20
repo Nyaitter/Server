@@ -51,23 +51,21 @@ const { generalLimiter, authLimiter } = require('./middleware/rateLimit');
 const ConnectionManager = require('./services/realtime/ConnectionManager');
 const PushNotificationService = require('./services/PushNotificationService');
 const { ModerationReportService } = require('./services/ModerationReportService');
+const { configureNotificationDelivery } = require('./services/NotificationDeliveryService');
 const { startModerationAssignmentScheduler } = require('./services/ModerationAssignmentScheduler');
 const { AutoModerationService } = require('./services/AutoModerationService');
 const { startPollExpirationScheduler } = require('./services/PollExpirationScheduler');
 const { startScheduledPostPublisher } = require('./services/ScheduledPostPublisher');
+const { AccountRecoveryService } = require('./services/auth/AccountRecoveryService');
+const { startAccountRecoveryScheduler } = require('./services/AccountRecoveryScheduler');
 const PostActionQueue = require('./services/PostActionQueue');
 const PostEventOutbox = require('./services/PostEventOutbox');
 const PostKeywordBackfillService = require('./services/PostKeywordBackfillService');
-const { serializeNotification } = require('./utils/serialize');
 const { getPublicUrl, getFrontendUrl } = require('./utils/nyaitterAddress');
 const { startOperatorControlServer } = require('./utils/operatorControl');
 const { getEmbeddedMailServer } = require('./services/mail/EmbeddedMailServer');
 const { isCrawler, generatePostOgpTags, generatePostHtml } = require('./services/OgpService');
-const LogHubManager = require('./services/managementTool/LogHubManager');
-const ErrorManager = require('./services/managementTool/ErrorManager');
-
-// NyaitterServer の標準出力を NMT ログ監視に連携（NMT プロセスには干渉しない）
-LogHubManager.hookServerProcess('server');
+const { getGuestCallSession } = require('./services/GuestCallSessionService');
 
 let embeddedMailServer = null;
 
@@ -118,7 +116,7 @@ const userFilesStaticOptions = {
 };
 
 // 通常ポートのユーザーファイル配信は、同名のAPIアップロード操作ルートより先に登録する。
-// express.staticはGET/HEAD以外を通過させるため、POST /<api>/uploadsは従来どおりAPIが処理する。
+// express.staticはGET/HEAD以外を通過させるため、POST /<api>/uploadsはAPIルートが処理する。
 if (userFilesEndpoint && !userFilesPort) {
     app.use(userFilesEndpoint, express.static(uploadsDir, userFilesStaticOptions));
 }
@@ -127,10 +125,13 @@ const realtimeConnections = new ConnectionManager();
 realtimeConnections.startHeartbeat(30000);
 const realtimeServer = new WebSocketServer({
     noServer: true,
-    maxPayload: 8 * 1024,
+    maxPayload: 64 * 1024,
     perMessageDeflate: false,
 });
 app.locals.realtime = realtimeConnections;
+const { CallService } = require('./services/CallService');
+const calls = new CallService(realtimeConnections, () => app.locals.dbAdapter);
+app.locals.calls = calls;
 
 applyTrustProxy(app);
 
@@ -164,7 +165,9 @@ allowedOriginsSet.add(`http://127.0.0.1:${PORT}`);
 if (config.federation?.publicUrl) {
     try {
         allowedOriginsSet.add(new URL(config.federation.publicUrl).origin);
-    } catch (_) {}
+    } catch (_) {
+        // 不正な publicUrl は許可オリジンに追加しない。
+    }
 }
 
 const wsUpgradeAttempts = new Map();
@@ -235,7 +238,10 @@ async function handleRealtimeUpgrade(request, socket, head) {
         return rejectRealtimeUpgrade(socket, 500, 'Internal Server Error');
     }
     if (!principal) {
-        return rejectRealtimeUpgrade(socket, 401, 'Unauthorized');
+        const guestToken = String(request.headers.cookie || '').split(';').map(part => part.trim()).find(part => part.startsWith('nyaitter_stage_guest='))?.slice('nyaitter_stage_guest='.length);
+        const guest = getGuestCallSession(guestToken);
+        if (!guest) return rejectRealtimeUpgrade(socket, 401, 'Unauthorized');
+        principal = { id: guest.guestId, guestStageId: guest.stageId, guest: true };
     }
     if (principal.accountOperation) {
         return rejectRealtimeUpgrade(socket, 423, 'Account maintenance in progress');
@@ -250,15 +256,75 @@ httpServer.on('upgrade', (request, socket, head) => {
     void handleRealtimeUpgrade(request, socket, head);
 });
 
+// スペースのテキスト購読とボイス通話のシグナリングを WebSocket 上で処理する。
+// メンバー権限は DB から毎回確認する（メモリ上の在室状態だけを信用しない）。
+async function handleRealtimeSpaceMessage(webSocket, userId, message) {
+    if (!message || typeof message.type !== 'string' || !message.type.startsWith('space:')) return;
+    const db = app.locals.dbAdapter;
+    if (!db) return;
+    const spaceId = String(message.spaceId || '').trim();
+    if (!spaceId) return;
+
+    const membership = await db.getSpaceMember(spaceId, userId).catch(() => null);
+    const space = await db.getSpaceById(spaceId).catch(() => null);
+    if (!space) return;
+    if (!membership && Number(space.ownerId ?? space.owner_id) !== Number(userId)) return;
+
+    if (message.type === 'space:subscribe') {
+        realtimeConnections.subscribeToSpace(userId, spaceId);
+        return;
+    }
+
+    if (message.type === 'space:unsubscribe') {
+        realtimeConnections.unsubscribeFromSpace(userId, spaceId);
+        return;
+    }
+
+    if (message.type === 'space:join_voice') {
+        const channelId = String(message.channelId || '').trim();
+        if (!channelId) return;
+        const channel = await db.getSpaceChannel(channelId).catch(() => null);
+        if (!channel || String(channel.spaceId ?? channel.space_id) !== spaceId || (channel.kind || 'text') !== 'voice') return;
+        const roster = realtimeConnections.joinSpaceVoice(userId, spaceId, channelId, webSocket, {
+            muted: Boolean(message.muted),
+            deafened: Boolean(message.deafened),
+        });
+        webSocket.send(JSON.stringify({ type: 'space_voice_roster', space_id: spaceId, channel_id: channelId, roster }));
+        return;
+    }
+
+    if (message.type === 'space:leave_voice') {
+        const channelId = String(message.channelId || '').trim();
+        if (!channelId) return;
+        const roster = realtimeConnections.leaveSpaceVoice(userId, spaceId, channelId);
+        webSocket.send(JSON.stringify({ type: 'space_voice_roster', space_id: spaceId, channel_id: channelId, roster }));
+        return;
+    }
+
+    if (message.type === 'space:voice_state') {
+        const channelId = String(message.channelId || '').trim();
+        if (!channelId) return;
+        realtimeConnections.updateSpaceVoiceState(userId, spaceId, channelId, {
+            muted: message.muted === undefined ? undefined : Boolean(message.muted),
+            deafened: message.deafened === undefined ? undefined : Boolean(message.deafened),
+        });
+        return;
+    }
+
+    if (message.type === 'space:signal') {
+        const channelId = String(message.channelId || '').trim();
+        const toUserId = Number(message.toUserId);
+        if (!channelId || !Number.isInteger(toUserId) || !message.data) return;
+        realtimeConnections.relaySpaceSignal(userId, spaceId, channelId, toUserId, message.data);
+        return;
+    }
+}
+
 realtimeServer.on('connection', (webSocket, _request, principal) => {
     const userId = principal.id;
-    webSocket.isAlive = true;
-    realtimeConnections.register(userId, webSocket, principal.sessionTokenHash);
+    if (!principal.guest) realtimeConnections.register(userId, webSocket, principal.sessionTokenHash);
 
-    webSocket.on('pong', () => {
-        webSocket.isAlive = true;
-    });
-    webSocket.on('message', (rawMessage, isBinary) => {
+    webSocket.on('message', (rawMessage, isBinary) => void (async () => {
         if (isBinary) {
             webSocket.close(1003, 'Binary messages are not supported');
             return;
@@ -267,13 +333,18 @@ realtimeServer.on('connection', (webSocket, _request, principal) => {
             const message = JSON.parse(rawMessage.toString());
             if (message?.type === 'ping') {
                 webSocket.send(JSON.stringify({ type: 'pong' }));
+                return;
             }
-        } catch (_) {}
-    });
-    webSocket.on('close', () => realtimeConnections.unregister(userId, webSocket));
-    webSocket.on('error', () => realtimeConnections.unregister(userId, webSocket));
+            await calls.handle(webSocket, principal.guest ? userId : Number(userId), message, principal.guestStageId || null);
+            if (!principal.guest) await handleRealtimeSpaceMessage(webSocket, userId, message);
+        } catch (_) {
+            // 1通の処理例外で接続を切らず、後続メッセージの処理を続ける。
+        }
+    })());
+    webSocket.on('close', () => { calls.disconnect(webSocket); if (!principal.guest) realtimeConnections.unregister(userId, webSocket); });
+    webSocket.on('error', () => { calls.disconnect(webSocket); if (!principal.guest) realtimeConnections.unregister(userId, webSocket); });
 
-    Promise.all([
+    if (!principal.guest) Promise.all([
         realtimeConnections.publishNotificationUnreadCount(userId, app.locals.dbAdapter),
         realtimeConnections.publishDmUnreadCount(userId, app.locals.dbAdapter),
     ]).catch((error) => {
@@ -281,29 +352,6 @@ realtimeServer.on('connection', (webSocket, _request, principal) => {
     });
 });
 
-const realtimeHeartbeat = setInterval(() => {
-    for (const [userId, sockets] of realtimeConnections.connectionsByUser.entries()) {
-        for (const webSocket of sockets) {
-            if (webSocket.isAlive === false || webSocket.readyState !== 1) {
-                realtimeConnections.unregister(userId, webSocket);
-                try {
-                    webSocket.terminate();
-                } catch (_) {}
-                continue;
-            }
-            webSocket.isAlive = false;
-            try {
-                webSocket.ping();
-            } catch (_) {
-                realtimeConnections.unregister(userId, webSocket);
-                try {
-                    webSocket.terminate();
-                } catch (_) {}
-            }
-        }
-    }
-}, 30000);
-realtimeHeartbeat.unref();
 
 // ── Health & Readiness ─────────────────────────────────────────────────────────
 app.get(apiPath('/health'), (req, res) => {
@@ -353,6 +401,8 @@ const restRoutes = [
     ['users', require('./routes/users')],
     ['imposters', require('./routes/imposters')],
     ['groups', require('./routes/groups')],
+    ['spaces', require('./routes/spaces')],
+    ['calls', require('./routes/calls')],
     ['notifications', require('./routes/notifications')],
     ['reports', require('./routes/reports')],
     ['appeals', require('./routes/appeals')],
@@ -396,12 +446,40 @@ let indexHtmlTemplate = null;
 if (hasStaticPage) {
     try {
         indexHtmlTemplate = fs.readFileSync(indexPath, 'utf8');
-    } catch (_) {}
+    } catch (_) {
+        // index.html を読めない場合はテンプレート無しで起動する。
+    }
 }
 const postPageHtmlTemplate = indexHtmlTemplate?.replace(
     /<head(?:\s[^>]*)?>/i,
     (match) => `${match}<base href="/">`,
 );
+
+// ── NyaitterUI (separate npm package) ──────────────────────────────────────────
+// 本番は nyaitter.js と同様、CDN から読む。開発時は隣接する nyaitter-ui パッケージの
+// dist を配信する (存在しなければ何もしない)。クライアントは /nyaitter-ui/ を先に試す。
+const nyaitterUiDirCandidates = [
+    path.join(__dirname, '../../nyaitter-ui/dist'),
+    path.join(__dirname, '../node_modules/nyaitter-ui/dist'),
+];
+const nyaitterUiDir = nyaitterUiDirCandidates.find((dir) => {
+    try {
+        return fs.existsSync(dir) && fs.statSync(dir).isDirectory();
+    } catch (_) {
+        return false;
+    }
+});
+if (nyaitterUiDir) {
+    app.use(
+        '/nyaitter-ui',
+        express.static(nyaitterUiDir, {
+            etag: true,
+            lastModified: true,
+            setHeaders: (res) => res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate'),
+        }),
+    );
+    console.info('[server] nyaitter-ui served from', nyaitterUiDir);
+}
 
 if (hasStaticPage) {
     const indexRedirects = new Set(['/index', '/index.html', '/page/index', '/page/index.html', '/page', '/page/']);
@@ -527,14 +605,6 @@ let postShareServer = null;
 // ── Error & 404 Handlers ───────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
     console.error('[server] Unhandled error:', err);
-    ErrorManager.recordExternalError(err, {
-        method: req.method,
-        url: req.originalUrl || req.url,
-        userId: req.user?.id || null,
-        ip: req.headers['cf-connecting-ip'] || req.ip,
-        userAgent: req.headers['user-agent'],
-        requestId: req.id || undefined,
-    });
 
     const status = err.status || 500;
     const isDev = process.env.NODE_ENV === 'development';
@@ -563,6 +633,7 @@ let operatorControl = null;
 let moderationScheduler = null;
 let pollExpirationScheduler = null;
 let scheduledPostPublisher = null;
+let accountRecoveryScheduler = null;
 let postEventOutbox = null;
 
 const pushNotificationService = new PushNotificationService({
@@ -571,32 +642,23 @@ const pushNotificationService = new PushNotificationService({
     realtime: realtimeConnections,
 });
 
-async function publishModerationNotification(userId, notification) {
-    const structured = await serializeNotification(dbAdapter, notification, getPublicUrl());
-    if (!structured) return;
-    try {
-        await realtimeConnections.publishNewNotification(userId, structured, dbAdapter);
-    } catch (error) {
-        console.warn('[moderation] realtime delivery failed:', error.message);
-    }
-    if (pushNotificationService.enabled) {
-        void pushNotificationService
-            .sendNotificationToUser(userId, structured)
-            .catch((error) => {
-                console.warn('[moderation] push delivery failed:', error.message);
-            });
-    }
-}
+const accountRecoveryService = new AccountRecoveryService({
+    db: dbAdapter,
+    config: config.auth,
+});
+
+configureNotificationDelivery({
+    realtime: realtimeConnections,
+    pushService: pushNotificationService,
+});
 
 const moderationReportService = new ModerationReportService({
     dbAdapter,
     storageAdapter,
-    publishNotification: publishModerationNotification,
 });
 const autoModerationService = new AutoModerationService({
     dbAdapter,
     storageAdapter,
-    publishNotification: publishModerationNotification,
     moderationConfig: config.autoMod,
 });
 const postActionQueue = new PostActionQueue();
@@ -633,8 +695,9 @@ const postShareUrl = config.postShareUrl
 const turnstileSiteKey = config.turnstile?.siteKey || '';
 
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
-    pollExpirationScheduler = startPollExpirationScheduler(dbAdapter, realtimeConnections, pushNotificationService);
-    scheduledPostPublisher = startScheduledPostPublisher(dbAdapter, realtimeConnections, pushNotificationService);
+    pollExpirationScheduler = startPollExpirationScheduler(dbAdapter);
+    scheduledPostPublisher = startScheduledPostPublisher(dbAdapter, realtimeConnections);
+    accountRecoveryScheduler = startAccountRecoveryScheduler(dbAdapter, accountRecoveryService);
     operatorControl = await startOperatorControlServer({
         dbAdapter,
         shutdown,
@@ -650,6 +713,7 @@ const turnstileSiteKey = config.turnstile?.siteKey || '';
                 turnstile_site_key: turnstileSiteKey,
                 resource_links: config.client?.resourceLinks || [],
                 widget_links: config.client?.widgetLinks || [],
+                ui: config.client?.ui || {},
             },
         }),
     });
@@ -703,7 +767,9 @@ const turnstileSiteKey = config.turnstile?.siteKey || '';
             const dataDir = path.resolve(__dirname, '../data');
             if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
             fs.writeFileSync(path.join(dataDir, 'server.pid'), String(process.pid), 'utf8');
-        } catch (_) {}
+        } catch (_) {
+            // PID ファイルを書き込めない環境でも起動は継続する。
+        }
     });
 }
 
@@ -728,13 +794,14 @@ async function shutdown(signal) {
     forceExitTimeout.unref();
 
     try {
-        clearInterval(realtimeHeartbeat);
         moderationScheduler?.stop();
         moderationScheduler = null;
         pollExpirationScheduler?.stop();
         pollExpirationScheduler = null;
         scheduledPostPublisher?.stop();
         scheduledPostPublisher = null;
+        accountRecoveryScheduler?.stop();
+        accountRecoveryScheduler = null;
         autoModerationService.stop();
         postKeywordBackfillService.stop();
         postKeywordBackfillQueue.stop();
@@ -745,7 +812,9 @@ async function shutdown(signal) {
         try {
             const pidFile = path.resolve(__dirname, '../data/server.pid');
             if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
-        } catch (_) {}
+        } catch (_) {
+            // PID ファイル削除の失敗は終了処理を妨げない。
+        }
         process.exit(0);
     } catch (err) {
         console.error('[server] Error during shutdown:', err);
@@ -761,12 +830,9 @@ process.on('uncaughtException', (err) => {
         return;
     }
     console.error('[server] Uncaught Exception:', err);
-    ErrorManager.recordExternalError(err, { source: 'uncaughtException' });
     shutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason) => {
     console.error('[server] Unhandled Rejection:', reason);
-    const err = reason instanceof Error ? reason : new Error(String(reason));
-    ErrorManager.recordExternalError(err, { source: 'unhandledRejection' });
 });

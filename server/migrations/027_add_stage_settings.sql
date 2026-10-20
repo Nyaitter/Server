@@ -1,0 +1,1 @@
+ALTER TABLE spaces ADD COLUMN IF NOT EXISTS stage_settings TEXT;

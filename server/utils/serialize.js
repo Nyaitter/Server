@@ -48,15 +48,6 @@ function updateUserBriefCache(user, publicUrl = null) {
 	serializeUserBrief(user, publicUrl, { includeSearchExclusion: true });
 }
 
-function updateImmutablePostCache(postId, patch = {}) {
-	if (postId == null || !patch) return;
-	const id = Number(postId);
-	const cached = immutablePostCache.get(id);
-	if (cached) {
-		immutablePostCache.set(id, { ...cached, ...patch });
-	}
-}
-
 function clearImmutablePostCache() {
 	immutablePostCache.clear();
 }
@@ -240,7 +231,9 @@ async function serializeUser(db, user, viewerId = null, publicUrl = null) {
 			const badgeMap = await db.getUsersGroupBadgesBatch([id]);
 			const fetched = (badgeMap.get(Number(id)) || []).slice(0, 5);
 			if (fetched.length > 0) groupBadges = fetched;
-		} catch (_) {}
+		} catch (_) {
+			// バッジの一括取得に失敗したら、未取得のまま次段の取得へ進む。
+		}
 	}
 	if (groupBadges === null && typeof db.getUserGroups === 'function') {
 		try {
@@ -364,7 +357,9 @@ async function serializePublicProfile(
 			const badgeMap = await db.getUsersGroupBadgesBatch([user.id]);
 			const fetched = badgeMap.get(Number(user.id)) || [];
 			if (fetched.length > 0) groupBadges = fetched;
-		} catch (_) {}
+		} catch (_) {
+			// バッジの一括取得に失敗したら、未取得のまま次段の取得へ進む。
+		}
 	}
 	if (groupBadges === null && typeof db.getUserGroups === 'function') {
 		try {
@@ -458,7 +453,9 @@ async function attachGroupBadgesToUsers(db, users) {
 		if (typeof db.getUsersGroupBadgesBatch === 'function') {
 			try {
 				fetchedMap = await db.getUsersGroupBadgesBatch(missingIds);
-			} catch (_) {}
+			} catch (_) {
+				// 一括取得に失敗したら空のまま進む。
+			}
 		} else if (typeof db.getUserGroups === 'function') {
 			await Promise.all(missingIds.map(async (uid) => {
 				try {
@@ -472,7 +469,9 @@ async function attachGroupBadgesToUsers(db, users) {
 							icon_data: g.icon_data || g.iconData,
 						}));
 					fetchedMap.set(uid, badges);
-				} catch (_) {}
+				} catch (_) {
+					// 1ユーザー分のバッジ取得失敗は空のまま進む。
+				}
 			}));
 		}
 
@@ -507,7 +506,7 @@ async function fetchNotificationUsersByIds(db, userIds) {
 			const batch = await getAuthors(ids);
 			if (Array.isArray(batch)) users = batch.filter(Boolean);
 		} catch (_) {
-			// 一括取得が利用できない旧アダプターだけ、既存の単件取得へ後退する。
+			// 一括取得に失敗したら、続く単件取得へ後退する。
 		}
 	}
 	if (users.length === 0 && typeof db.getUserById === 'function') {
@@ -527,7 +526,7 @@ async function fetchUsersByIds(db, userIds) {
 			const batch = await db.getUsersByIds(ids);
 			if (Array.isArray(batch)) users = batch.filter(Boolean);
 		} catch (_) {
-			// Fall through to the safe per-user lookup.
+			// 一括取得に失敗したら、続く単件取得へ後退する。
 		}
 	}
 
@@ -576,7 +575,9 @@ async function fetchPostMetricsFromAdapter(db, allPosts, currentUserId, knownVie
 		try {
 			const result = await db.getViewerPostReactions(ids, currentUserId);
 			if (Array.isArray(result)) viewerReactions = new Map(result.map((row) => [Number(row.post_id), row]));
-		} catch (_) {}
+		} catch (_) {
+			// 本人リアクションを取得できなければ、未取得として組み立てを続行する。
+		}
 	}
 
 	if (hasCounters && (
@@ -611,7 +612,7 @@ async function fetchPostMetricsFromAdapter(db, allPosts, currentUserId, knownVie
 		const metrics = await db.getPostMetricsBatch(ids, currentUserId);
 		if (Array.isArray(metrics)) return metrics;
 	} catch (_) {
-		// Keep compatibility with adapters without a batch implementation.
+		// バッチ取得に失敗したら、続く単件取得へ後退する。
 	}
 	return Promise.all(ids.map(async (postId) => ({
 		post_id: postId,
@@ -695,7 +696,7 @@ async function serializePostsBatch(
 				loadedReferences = true;
 			}
 		} catch (error) {
-			// D1 Workerなど段階デプロイ時の未対応実装は、従来の安全な取得へ後退する。
+			// 一括参照取得に失敗したら、続く段階的な取得へ後退する。
 			console.warn('[serialize] batch post reference fallback:', error.message);
 		}
 	}
@@ -803,7 +804,9 @@ async function serializePostsBatch(
 				if (await db.isFollowing(authorId, normalizedViewerId)) {
 					authorsFollowingViewer.add(authorId);
 				}
-			} catch (_) {}
+			} catch (_) {
+				// 個別のフォロー確認失敗は、未フォロー扱いのまま進む。
+			}
 		}));
 	}
 
@@ -858,7 +861,7 @@ async function serializePostsBatch(
 
 	function composeReference(postId, depth) {
 		const referencedPost = postsById.get(Number(postId));
-		// 非公開・ブロック中の投稿は従来どおり参照を返さず、存在を秘匿する。
+		// 非公開・ブロック中の投稿は参照を返さず、存在を秘匿する。
 		// DB上から失われた投稿だけを「不明なポスト」として明示する。
 		return referencedPost
 			? compose(referencedPost, depth + 1)
@@ -1063,7 +1066,6 @@ module.exports = {
 	updateUserBriefCache,
 	clearUserBriefCache,
 	invalidateImmutablePostCache,
-	updateImmutablePostCache,
 	clearImmutablePostCache,
 	serializePublicProfile,
 	serializeNotification,

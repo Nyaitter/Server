@@ -3,7 +3,6 @@ const { requireAuth, optionalAuth } = require('../middleware/auth');
 const { createRateLimiter } = require('../middleware/rateLimit');
 const config = require('../config');
 const { NOTIFICATION_TYPES, normalizeTarget } = require('../utils/notification');
-const { getPublicUrl } = require('../utils/nyaitterAddress');
 const {
 	serializeNotification,
 	serializeNotifications,
@@ -21,7 +20,7 @@ const router = api.createRouter({
 const notificationLimiter = createRateLimiter(config.rateLimit.notification);
 
 // サーバー側イベントで自動生成される通知タイプ。クライアントからは作成できない。
-const SERVER_GENERATED_TYPES = new Set(['post', 'like', 'star', 'follow', 'repost', 'reply', 'login_approval', 'group_invite', 'group_join_request', 'group_announcement']);
+const SERVER_GENERATED_TYPES = new Set(['post', 'like', 'star', 'follow', 'repost', 'reply', 'login_approval', 'group_invite', 'group_join_request', 'group_announcement', 'dm_call', 'group_call']);
 
 async function validateClientNotification(db, senderId, recipientId, type, target) {
 	if (SERVER_GENERATED_TYPES.has(type)) {
@@ -102,26 +101,6 @@ async function publishNotificationUnreadCount(req, userId) {
 	}
 }
 
-async function publishNewNotification(req, userId, notification) {
-	const realtime = req.app.locals.realtime;
-	if (realtime) {
-		try {
-			await realtime.publishNewNotification(userId, notification, getDbAdapter(req));
-		} catch (error) {
-			console.warn('[notifications] new-notification realtime delivery failed:', error.message);
-		}
-	}
-
-	const pushService = req.app.locals.pushNotificationService;
-	if (pushService?.enabled) {
-		void pushService.sendNotificationToUser(userId, notification, {
-			publicUrl: getPublicUrl(req),
-		}).catch((error) => {
-			console.warn('[notifications] new-notification push delivery failed:', error.message);
-		});
-	}
-}
-
 router.post({
 	path: '/',
 	summary: '通知の新規作成・送信',
@@ -158,9 +137,7 @@ router.post({
 		if (!notification) {
 			return res.json({ success: true, notification: null });
 		}
-		const serializedNotification = await serializeNotification(db, notification);
-		await publishNewNotification(req, recipientId, serializedNotification);
-		res.json({ success: true, notification: serializedNotification });
+		res.json({ success: true, notification: await serializeNotification(db, notification) });
 	} catch (err) {
 		console.error('[notifications] create error:', err);
 		res.status(500).json({ error: '通知の作成に失敗しました' });
@@ -303,7 +280,7 @@ router.delete({
 		if (!notification) {
 			return res.status(404).json({ error: 'Notification not found' });
 		}
-		if (Number(notification.userId) !== Number(userId)) {
+		if (Number(notification.userId ?? notification.user_id) !== Number(userId)) {
 			return res.status(403).json({ error: 'Forbidden' });
 		}
 		await db.deleteNotification(notificationId);

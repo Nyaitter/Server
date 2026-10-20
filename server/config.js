@@ -212,7 +212,7 @@ function corsAllowedOriginsSetting() {
   if (process.env.NYAITTER_CORS_ALLOWED_ORIGINS !== undefined) {
     return process.env.NYAITTER_CORS_ALLOWED_ORIGINS;
   }
-  // Backward compatibility for deployments that already use this variable.
+  // ALLOWED_ORIGINS でも同じ設定を指定できる。
   if (process.env.ALLOWED_ORIGINS !== undefined) return process.env.ALLOWED_ORIGINS;
   return get('cors.allowedOrigins', defaultCorsAllowedOrigins);
 }
@@ -290,46 +290,8 @@ const config = {
       { name: 'ドキュメント', url: '#docs' },
       { name: 'GitHub', url: 'https://github.com/Nyaitter' },
     ]),
-  },
-
-  nmt: {
-    enabled: envBoolean('NMT_ENABLED', envBoolean('NYAITTER_MANAGEMENT_TOOL_ENABLED', get('nmt.enabled', false))),
-    port: envNonNegativeInteger('NMT_PORT', envNonNegativeInteger('NYAITTER_MANAGEMENT_TOOL_PORT', get('nmt.port', 4040))),
-    host: process.env.NMT_HOST || process.env.NYAITTER_MANAGEMENT_TOOL_HOST || get('nmt.host', '0.0.0.0'),
-    publicUrl: readSetting(
-      ['NMT_PUBLIC_URL', 'NYAITTER_MANAGEMENT_TOOL_PUBLIC_URL'],
-      ['nmt.publicUrl'],
-      '',
-    ),
-    mode: (() => {
-      const explicit = process.env.NMT_MODE || get('nmt.mode', '');
-      if (['record_only', 'analysis_only', 'auto'].includes(explicit)) return explicit;
-      if (envBoolean('NMT_AUTO_FIX', get('nmt.autoFix', false))) return 'auto';
-      if (envBoolean('NMT_AUTO_ANALYSIS', get('nmt.autoAnalysis', false))) return 'analysis_only';
-      return 'record_only';
-    })(),
-    guidelines: process.env.NMT_GUIDELINES || process.env.NMT_AUTO_GUIDELINES || get('nmt.guidelines', ''),
-    autoAnalysis: envBoolean('NMT_AUTO_ANALYSIS', get('nmt.autoAnalysis', false)),
-    autoFix: envBoolean('NMT_AUTO_FIX', get('nmt.autoFix', false)),
-    autoIssue: envBoolean('NMT_AUTO_ISSUE', get('nmt.autoIssue', false)),
-    autoPr: envBoolean('NMT_AUTO_PR', get('nmt.autoPr', false)),
-    allowBash: envBoolean('NMT_ALLOW_BASH', get('nmt.allowBash', false)),
-    requireApprovalForEdit: envBoolean('NMT_REQUIRE_APPROVAL_EDIT', get('nmt.requireApprovalForEdit', false)),
-    requireApprovalForBash: envBoolean('NMT_REQUIRE_APPROVAL_BASH', get('nmt.requireApprovalForBash', true)),
-    guardrails: {
-      restrictToGitTracked: envBoolean('NMT_GUARD_GIT_TRACKED', get('nmt.guardrails.restrictToGitTracked', true)),
-      syntaxValidation: envBoolean('NMT_GUARD_SYNTAX', get('nmt.guardrails.syntaxValidation', true)),
-      blockEnvModification: envBoolean('NMT_GUARD_BLOCK_ENV', get('nmt.guardrails.blockEnvModification', true)),
-      blockSuspiciousCommands: envBoolean('NMT_GUARD_BLOCK_COMMANDS', get('nmt.guardrails.blockSuspiciousCommands', true)),
-    },
-    githubToken: process.env.NMT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || get('nmt.githubToken', ''),
-    githubRepo: process.env.NMT_GITHUB_REPO || get('nmt.githubRepo', 'Nyaitter/Server'),
-    gitAuthorName: process.env.NMT_GIT_AUTHOR_NAME || process.env.GIT_AUTHOR_NAME || get('nmt.gitAuthorName', 'nyantorusabu'),
-    gitAuthorEmail: process.env.NMT_GIT_AUTHOR_EMAIL || process.env.GIT_AUTHOR_EMAIL || get('nmt.gitAuthorEmail', 'nyantorusabu@outlook.jp'),
-    geminiApiKey: process.env.NMT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || get('nmt.geminiApiKey', ''),
-    openaiApiKey: process.env.NMT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || get('nmt.openaiApiKey', ''),
-    aiModel: process.env.NMT_AI_MODEL || get('nmt.aiModel', 'auto'),
-    aiProvider: process.env.NMT_AI_PROVIDER || get('nmt.aiProvider', 'auto'),
+    // 公開UI設定。未設定でも空オブジェクトでクライアントは既定表示のまま動く。
+    ui: get('client.ui', {}),
   },
 
   cors: {
@@ -419,6 +381,13 @@ const config = {
       ['NYAITTER_GROUP_MAX_CREATED_PER_USER'],
       ['limits.groupMaxCreatedPerUser'],
       0,
+      0,
+    ),
+    spaceMaxCreatedPerUser: exactIntegerSetting(
+      'spaces created per user',
+      ['NYAITTER_SPACE_MAX_CREATED_PER_USER'],
+      ['limits.spaceMaxCreatedPerUser'],
+      20,
       0,
     ),
     groupMaxMembershipsPerUser: exactIntegerSetting(
@@ -585,6 +554,11 @@ const config = {
 	          || process.env.SCRATCH_VERIFICATION_PROJECT_ID
 	          || get('auth.methods.scratch.verificationProjectId', '1239738451'),
 	        ).trim(),
+	        verificationProjectOwner: String(
+	          process.env.AUTH_SCRATCH_VERIFICATION_PROJECT_OWNER
+	          || process.env.SCRATCH_VERIFICATION_PROJECT_OWNER
+	          || get('auth.methods.scratch.verificationProjectOwner', 'NyaitterTeam'),
+	        ).trim(),
 	        ipRestrictionEnabled: envBoolean(
 	          'SCRATCH_IP_RESTRICTION_ENABLED',
 	          get('auth.methods.scratch.ipRestrictionEnabled', get('auth.scratchVerification.ipRestrictionEnabled', true)),
@@ -684,6 +658,47 @@ const config = {
 	          envBoolean('AUTH_NYAITTER_ALLOW_SIGNUP', get('auth.methods.nyaitter.allowSignup', get('auth.nyaitterAuth.allowSignup', true))),
 	        ),
 	      },
+	      google: {
+	        enabled: envBoolean(
+	          'AUTH_METHOD_GOOGLE_ENABLED',
+	          envBoolean('AUTH_GOOGLE_ENABLED', get('auth.methods.google.enabled', false)),
+	        ),
+	        allowSignup: envBoolean(
+	          'AUTH_METHOD_GOOGLE_ALLOW_SIGNUP',
+	          envBoolean('AUTH_GOOGLE_ALLOW_SIGNUP', get('auth.methods.google.allowSignup', true)),
+	        ),
+	        clientId: String(
+	          process.env.GOOGLE_CLIENT_ID || get('auth.methods.google.clientId', ''),
+	        ).trim(),
+	        clientSecret: String(
+	          process.env.GOOGLE_CLIENT_SECRET || get('auth.methods.google.clientSecret', ''),
+	        ).trim(),
+	        redirectUri: String(
+	          process.env.GOOGLE_REDIRECT_URI || get('auth.methods.google.redirectUri', ''),
+	        ).trim(),
+	      },
+	      microsoft: {
+	        enabled: envBoolean(
+	          'AUTH_METHOD_MICROSOFT_ENABLED',
+	          envBoolean('AUTH_MICROSOFT_ENABLED', get('auth.methods.microsoft.enabled', false)),
+	        ),
+	        allowSignup: envBoolean(
+	          'AUTH_METHOD_MICROSOFT_ALLOW_SIGNUP',
+	          envBoolean('AUTH_MICROSOFT_ALLOW_SIGNUP', get('auth.methods.microsoft.allowSignup', true)),
+	        ),
+	        clientId: String(
+	          process.env.MICROSOFT_CLIENT_ID || get('auth.methods.microsoft.clientId', ''),
+	        ).trim(),
+	        clientSecret: String(
+	          process.env.MICROSOFT_CLIENT_SECRET || get('auth.methods.microsoft.clientSecret', ''),
+	        ).trim(),
+	        redirectUri: String(
+	          process.env.MICROSOFT_REDIRECT_URI || get('auth.methods.microsoft.redirectUri', ''),
+	        ).trim(),
+	        tenant: String(
+	          process.env.MICROSOFT_TENANT || get('auth.methods.microsoft.tenant', 'common'),
+	        ).trim() || 'common',
+	      },
 	      oauth: {
 	        enabled: envBoolean(
 	          'AUTH_METHOD_OAUTH_ENABLED',
@@ -722,6 +737,26 @@ const config = {
 	      minQualifiedFollowers: envNonNegativeInteger(
 	        'SCRATCH_MIN_QUALIFIED_FOLLOWERS',
 	        get('auth.methods.scratch.minQualifiedFollowers', get('auth.scratchVerification.minQualifiedFollowers', 25)),
+	      ),
+	    },
+	    // 不明な場所からのログインで締め出された利用者が、待機期間を経てアクセスを復旧する機能。
+	    // 信頼度が高いほど待機期間を短くし、期間中はブロックの機会を毎日通知する。
+	    accountRecovery: {
+	      enabled: envBoolean(
+	        'AUTH_ACCOUNT_RECOVERY_ENABLED',
+	        get('auth.accountRecovery.enabled', true),
+	      ),
+	      minWaitHours: envNonNegativeInteger(
+	        'AUTH_ACCOUNT_RECOVERY_MIN_WAIT_HOURS',
+	        get('auth.accountRecovery.minWaitHours', 24),
+	      ),
+	      maxWaitHours: envNonNegativeInteger(
+	        'AUTH_ACCOUNT_RECOVERY_MAX_WAIT_HOURS',
+	        get('auth.accountRecovery.maxWaitHours', 168),
+	      ),
+	      notificationIntervalHours: envNonNegativeInteger(
+	        'AUTH_ACCOUNT_RECOVERY_NOTIFICATION_INTERVAL_HOURS',
+	        get('auth.accountRecovery.notificationIntervalHours', 24),
 	      ),
 	    },
 	  },
@@ -964,7 +999,45 @@ const config = {
   },
 
   postSharePort: envNonNegativeInteger('POST_SHARE_PORT', get('postSharePort', get('posts.sharePort', 0))) || null,
-  postShareUrl: process.env.POST_SHARE_URL || get('postShareUrl', get('posts.shareUrl', '')) || null,
+
+  // スペースの音声通話（WebRTC）。
+  // ICE サーバーは TURN 認証情報付きのものを推奨。未指定の場合は公開 STUN のみを使う。
+  spaces: {
+    iceServers: (() => {
+      // SPACES_ICE_SERVERS に JSON を渡すと config.json より優先される（TURN 追加用）。
+      let raw = get('spaces.iceServers', [
+        { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+      ]);
+      if (process.env.SPACES_ICE_SERVERS) {
+        try { raw = JSON.parse(process.env.SPACES_ICE_SERVERS); }
+        catch (error) { console.warn('[config] SPACES_ICE_SERVERS must be valid JSON; using configured default.'); }
+      }
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .map((entry) => {
+          if (typeof entry === 'string') return { urls: entry };
+          if (!entry || !entry.urls) return null;
+          return {
+            urls: entry.urls,
+            username: entry.username || undefined,
+            credential: entry.credential || undefined,
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 8);
+    })(),
+    iceTransportPolicy: process.env.SPACES_ICE_TRANSPORT_POLICY || get('spaces.iceTransportPolicy', 'all'),
+    // 通話の RTP を単一トランスポートへ集約し、ICE candidate 数・SDP サイズを削減する。
+    bundlePolicy: (() => {
+      const value = process.env.SPACES_BUNDLE_POLICY || get('spaces.bundlePolicy', 'max-bundle');
+      return ['balanced', 'max-compat', 'max-bundle'].includes(value) ? value : 'max-bundle';
+    })(),
+    rtcpMuxPolicy: (() => {
+      const value = process.env.SPACES_RTCP_MUX_POLICY || get('spaces.rtcpMuxPolicy', 'require');
+      return ['negotiate', 'require'].includes(value) ? value : 'require';
+    })(),
+  },
+
   frontendUrl: process.env.FRONTEND_URL || get('frontendUrl', get('client.url', '')),
 
   raw: rawConfig,

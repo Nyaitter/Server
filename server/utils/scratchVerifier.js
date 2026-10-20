@@ -1,8 +1,9 @@
 const crypto = require('crypto');
 const config = require('../config');
 
-const TARGET_PROJECT_ID = process.env.SCRATCH_PROJECT_ID || '1239738451';
-const PROJECT_OWNER_USERNAME = process.env.SCRATCH_PROJECT_OWNER || 'NyaitterTeam';
+const scratchConfig = config.auth?.methods?.scratch || {};
+const TARGET_PROJECT_ID = process.env.SCRATCH_PROJECT_ID || scratchConfig.verificationProjectId || '';
+const PROJECT_OWNER_USERNAME = process.env.SCRATCH_PROJECT_OWNER || scratchConfig.verificationProjectOwner || '';
 
 // メモリ上に保存する一時的なコード
 // (username -> { code, expiresAt, issuedIpHash })

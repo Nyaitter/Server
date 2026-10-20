@@ -82,7 +82,9 @@ router.post({
 					post_id: poll.post_id,
 					poll,
 				});
-			} catch (_) {}
+			} catch (_) {
+				// リアルタイム通知に失敗しても投票結果は返す。
+			}
 		}
 
 		return res.json({ poll });

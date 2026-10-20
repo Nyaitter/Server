@@ -8,6 +8,11 @@ const {
 
 const TABLE_COLUMNS = Object.freeze({
   users: ['id', 'scid', 'name', 'handle', 'nyaitter_address', 'auth_provider', 'provider_domain', 'external_id', 'external_profile', 'uuid', 'settings', 'bio', 'header_image', 'icon_data', 'verify', 'freeze', 'admin', 'shadow', 'block', 'account_operation', 'created_at'],
+  user_auth_providers: ['id', 'user_id', 'provider', 'provider_user_id', 'provider_profile', 'created_at'],
+  spaces: ['stage_settings', 'id', 'owner_id', 'name', 'description', 'icon_data', 'header_image', 'visibility', 'created_at', 'updated_at'],
+  space_channels: ['id', 'space_id', 'name', 'kind', 'sort_order', 'created_at'],
+  space_members: ['space_id', 'user_id', 'role', 'joined_at'],
+  space_messages: ['id', 'space_id', 'channel_id', 'user_id', 'content', 'created_at'],
   sessions: ['session_id', 'token', 'user_id', 'ip_hash', 'ip_masked', 'user_agent', 'expires_at', 'created_at'],
   trusted_login_ips: ['user_id', 'ip_hash', 'ip_masked', 'created_at', 'last_used_at'],
   login_approvals: ['id', 'user_id', 'ip_hash', 'ip_masked', 'user_agent', 'poll_token_hash', 'status', 'created_at', 'expires_at', 'decided_at', 'consumed_at'],
@@ -24,7 +29,7 @@ const TABLE_COLUMNS = Object.freeze({
   dm_e2e_keys: ['user_id', 'public_key', 'created_at', 'updated_at'],
   notifications: ['id', 'user_id', 'type', 'from_user_id', 'post_id', 'target', 'message', 'read', 'clicked', 'created_at'],
   push_subscriptions: ['user_id', 'endpoint', 'expiration_time', 'p256dh', 'auth', 'session_token', 'created_at', 'updated_at'],
-  moderation_reports: ['id', 'reporter_user_id', 'target_kind', 'target_id', 'description', 'target_snapshot', 'assignment_type', 'status', 'assigned_admin_id', 'assigned_at', 'excluded_admin_ids', 'resolution', 'created_at', 'resolved_at'],
+  moderation_reports: ['id', 'reporter_user_id', 'target_kind', 'target_id', 'description', 'target_snapshot', 'assignment_type', 'status', 'assigned_admin_id', 'assigned_at', 'excluded_admin_ids', 'resolution', 'created_at', 'resolved_at', 'claimed_at'],
   logs: ['id', 'scratch_id', 'nyaitter_id', 'masked_ip_uuid', 'log_time'],
   groups: ['id', 'owner_id', 'name', 'description', 'icon_data', 'header_image', 'visibility', 'deleted_at', 'created_at', 'updated_at'],
   group_roles: ['id', 'group_id', 'name', 'permissions', 'is_system', 'sort_order', 'created_at', 'updated_at'],
@@ -36,16 +41,21 @@ const TABLE_COLUMNS = Object.freeze({
 
 const JSON_COLUMNS = new Set([
   'external_profile', 'settings', 'block', 'attachments', 'tags', 'post', 'unread', 'target',
-  'target_snapshot', 'excluded_admin_ids', 'resolution', 'permissions',
+  'target_snapshot', 'excluded_admin_ids', 'resolution', 'permissions', 'provider_profile',
 ]);
 const ARRAY_COLUMNS = new Set(['participants', 'member']);
 const DATE_COLUMNS = new Set([
   'created_at', 'updated_at', 'tags_generated_at', 'expires_at', 'last_used_at', 'decided_at', 'consumed_at',
-  'sent_at', 'read_at', 'time', 'assigned_at', 'resolved_at', 'log_time', 'deleted_at', 'joined_at', 'responded_at', 'reviewed_at',
+  'sent_at', 'read_at', 'time', 'assigned_at', 'resolved_at', 'claimed_at', 'log_time', 'deleted_at', 'joined_at', 'responded_at', 'reviewed_at',
 ]);
 
 const INSERT_ORDER = Object.freeze([
   'users',
+  'user_auth_providers',
+  'spaces',
+  'space_channels',
+  'space_members',
+  'space_messages',
   'groups',
   'group_roles',
   'group_memberships',
@@ -74,6 +84,8 @@ const INSERT_ORDER = Object.freeze([
 
 const RESET_ORDER = Object.freeze([...INSERT_ORDER].reverse());
 const ID_SEQUENCES = Object.freeze({
+  user_auth_providers: 'user_auth_providers_id_seq',
+  space_messages: 'space_messages_id_seq',
   posts: 'nyaitter_posts_id_seq',
   dm_messages: 'nyaitter_dm_messages_id_seq',
   notifications: 'nyaitter_notifications_id_seq',

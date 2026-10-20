@@ -8,10 +8,9 @@ class PostService {
   }
 
   /**
-   * 新規投稿を作成
-   * attachments can be:
+   * attachments は次の2形式を受け付ける。
    * - raw files: { buffer, fileName, contentType }
-   * - or pre-uploaded: { id, url, type, name }
+   * - アップロード済み: { id, url, type, name }
    */
   async createPost({ userId, content, viewContent = null, tags = [], tagsGeneratedAt = null, attachments = [], mask = false, lock = false, announcement = false, groupId = null, groupAnnouncement = false, replyControl = 'everyone', reply_control = 'everyone', replyTo = null, repostTo = null, scheduledAt = null }) {
     const attachmentData = [];

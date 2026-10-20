@@ -110,6 +110,12 @@
 					"enabled": false
 				}
 			},
+			"accountRecovery": {
+				"enabled": true,
+				"minWaitHours": 24,
+				"maxWaitHours": 168,
+				"notificationIntervalHours": 24
+			},
 			"scratchVerification": {
 				"ipRestrictionEnabled": true,
 				"rejectNewScratcher": true,

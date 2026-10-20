@@ -9,6 +9,8 @@ const TAG_LABELS = {
   auth: '認証・セッション',
   dm: 'ダイレクトメッセージ',
   groups: 'グループ',
+  spaces: 'スペース',
+  calls: 'ステージ・通話',
   uploads: 'ファイルアップロード',
   notifications: '通知',
   ranking: 'ランキング',

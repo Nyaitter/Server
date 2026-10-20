@@ -19,9 +19,15 @@ function getDbAdapter(req) {
 
 function getClientApiEndpoint(req) {
 	const endpoint = config.server.apiEndpoint || '/';
-	const publicUrl = getApiPublicUrl(req).replace(/\/+$/, '');
-	if (endpoint === '/') return publicUrl || '/';
-	return `${publicUrl}/${endpoint.replace(/^\/+/, '')}`;
+	const base = getApiPublicUrl(req);
+	try {
+		// 配信ベース（サブパス接頭辞）を含む絶対 URL として相対解決する。
+		const baseUrl = new URL(base.endsWith('/') ? base : `${base}/`);
+		const target = endpoint === '/' ? new URL('.', baseUrl) : new URL(endpoint.replace(/^\/+/, ''), baseUrl);
+		return target.href.replace(/\/+$/, '') || baseUrl.origin;
+	} catch (_) {
+		return base;
+	}
 }
 
 function serializeIntegerRange(range) {
@@ -113,6 +119,7 @@ router.get({
 			},
 			resource_links: config.client?.resourceLinks || [],
 			widget_links: config.client?.widgetLinks || [],
+			ui: config.client?.ui || {},
 		},
 		auth_methods: authProviderRegistry.listEnabledProviderNames(config, req),
 		turnstile: {

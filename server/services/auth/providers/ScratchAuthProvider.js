@@ -41,7 +41,7 @@ class ScratchAuthProvider extends BaseAuthProvider {
       displayName: this.displayName,
       enabled: this.isEnabled(config, req),
       allowSignup: this.isSignupAllowed(config, req),
-      verificationProjectId: scratchConfig.verificationProjectId || config?.scratch?.verificationProjectId || '1239738451',
+      verificationProjectId: scratchConfig.verificationProjectId || config?.scratch?.verificationProjectId || '',
       turnstileRequired: Boolean(config?.turnstile?.enabled),
       rejectNewScratcher: Boolean(scratchConfig.rejectNewScratcher),
       rejectStudentAccounts: Boolean(scratchConfig.rejectStudentAccounts),

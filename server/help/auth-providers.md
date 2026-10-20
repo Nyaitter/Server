@@ -1,74 +1,56 @@
-# 認証プロバイダー 設定ガイド
+# 認証プロバイダー設定ガイド
 
-NyaitterServer では、複数のログイン方法を用途や好みに合わせて自由に有効化・設定できます。
+Nyaitter は複数のログイン方法に対応しています。使いたい方法だけを有効にしてください。
 
----
-
-## 利用可能な認証方法一覧
-
-| 認証プロバイダー | 説明 | 主な用途 |
+| 方法 | ログインのしかた | 向いている人 |
 |---|---|---|
-| **1. Scratch認証** | Scratchのコメント欄を使った確実な本人確認 | Scratcher向けコミュニティ |
-| **2. メールアドレス認証** | 6桁の認証コードによる安全なログイン | 一般ユーザー・Scratch未利用者向け |
-| **3. パスキー認証** | 指紋・顔認証・セキュリティキーによる高速ログイン | パスワード不要の生体認証 |
+| Scratch | Scratch のコメント欄で本人確認 | Scratcher のコミュニティ |
+| メールアドレス | 届いた 6 桁コードを入力 | Scratch を使わない人 |
+| パスキー | 指紋・顔認証・セキュリティキー | パスワードなしで使いたい人 |
+| Google | Google アカウント | Google アカウントを持つ人 |
+| Microsoft | Microsoft アカウント | Microsoft アカウントを持つ人 |
 
----
+## Scratch
 
-## 1. Scratch 認証 (`scratch`)
+Scratch の認証用プロジェクトにワンタイムコードをコメントしてログインします。
 
-Scratchの認証用プロジェクトにワンタイムコードをコメントすることでログインします。
-
-### 設定方法
-デフォルトで有効になっているため、特別な設定を行わなくてもそのまま利用できます。
+最初から有効で、通常は設定不要です。
 
 ```dotenv
-# server/.env
 AUTH_METHOD_SCRATCH_ENABLED=true
 ```
 
-### オプション設定
-- **認証用プロジェクトIDの変更**
-  ```dotenv
-  SCRATCH_VERIFICATION_PROJECT_ID=1239738451
-  ```
-- **ボット対策 (Cloudflare Turnstile)**
-  ```dotenv
-  TURNSTILE_SECRET_KEY=0x4AAAAAA...
-  ```
-
----
-
-## 2. メールアドレス認証 (`email`)
-
-入力したメールアドレス宛に届く **6桁の認証コード** を入力してログインします。  
-以下の **3つの方法** から、環境に合ったものを1つ選んで設定してください。
+認証用プロジェクトを変える場合だけ、ID を指定します。
 
 ```dotenv
-# server/.env (共通: 有効化)
+SCRATCH_VERIFICATION_PROJECT_ID=<プロジェクトID>
+```
+
+## メールアドレス
+
+入力したメールアドレスに届く 6 桁のコードでログインします。
+
+```dotenv
 AUTH_METHOD_EMAIL_ENABLED=true
 ```
 
-### パターンA: 組み込みメールサーバー (おすすめ / 外部サービス不要)
-NyaitterServer自身が自動でメールを直接送信します。外部のメール配信サービス契約は不要です。
+メールの送信方法を 3 つから選びます。
+
+### 組み込みメールサーバー（おすすめ）
+
+外部サービスなしで、サーバー自身がメールを送ります。
 
 ```dotenv
-# 組み込みメールサーバーを有効化
 AUTH_EMAIL_EMBEDDED_SERVER_ENABLED=true
-
-# 宛先メールサーバーへ直接送信 (MX直接配信)
 EMBEDDED_MAIL_DIRECT_DELIVERY_ENABLED=true
-
-# お使いのサーバーのメール用ドメイン名 (例: mail.example.com または example.com)
 EMBEDDED_MAIL_HOSTNAME=mail.example.com
 ```
 
----
+### 外部 SMTP サーバー
 
-### パターンB: 外部SMTPサーバー (Gmail / SendGrid / Resend等)
-すでにお持ちのメール配信サービスやGmailなどを利用して送信します。
+Gmail、SendGrid、Resend などを使います。
 
 ```dotenv
-# SMTPサーバーの接続情報
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USER=user@example.com
@@ -76,74 +58,98 @@ SMTP_PASS=your-password
 SMTP_FROM=noreply@example.com
 ```
 
----
+### 設定しない（開発・テスト用）
 
-### パターンC: ローカル開発 / テスト環境
-メール送信設定を行わない場合、認証コードは **サーバーのコンソール** に自動で表示されます。テストや開発で手軽にログインを試したいときに便利です。
+認証コードがサーバーのコンソールに表示されます。そのまま入力してログインできます。
 
-```text
-================================================================
-[auth:email] 認証メール送信 (ローカル/開発モード)
-To: user@example.com
-Subject: 【Nyaitter】ログイン認証コード
-Verification Code: 123456
-================================================================
-```
+新規登録時は、メールアドレスがそのまま公開ユーザー名にならないよう、希望のユーザー名を入力します。
 
----
+## パスキー
 
-## 3. パスキー認証 (`passkey`)
-
-スマートフォンやPCの **Touch ID / Face ID / Windows Hello / セキュリティキー** を使ってログインします。
-
-### 設定方法
+スマートフォンや PC の Touch ID / Face ID / Windows Hello / セキュリティキーでログインします。
 
 ```dotenv
-# server/.env
 AUTH_METHOD_PASSKEY_ENABLED=true
-
-# サイトのドメイン名 (ポート番号を含まない)
 AUTH_PASSKEY_RP_ID=nyaitter.example.com
-
-# サイトの公開URL (https://から始まるURL)
 AUTH_PASSKEY_ORIGIN=https://nyaitter.example.com
 ```
 
-> **注意**: パスキー認証はブラウザのセキュリティ仕様上、**HTTPS環境**でのみ動作します。
+`AUTH_PASSKEY_RP_ID` と `AUTH_PASSKEY_ORIGIN` にポート番号は含めません。ブラウザの仕様により、HTTPS でのみ動作します。
 
----
+## Google
 
-## アカウントへの複数認証の紐付け・解除
-
-ユーザーはログイン後、設定画面の **「プライバシーとセキュリティ」** タブから以下を行えます:
-
-1. **未連携の認証方法を追加連携**:
-   - 例: Scratchアカウントでログイン後、メールアドレスやパスキーを追加登録。
-   - 次回からどちらの方法でも同じアカウントにログイン可能になります。
-2. **不要になった認証方法の連携解除**:
-   - 不要な連携をいつでも解除できます。
-   - ※ アカウントに最低1つの認証方法が残るよう、自動で保護されます。
-
-## 認証方法ごとの新規登録の制御 (ALLOW_SIGNUP)
-
-各認証方法ごとに、**新規アカウントの作成を許可するか** を個別に設定できます。
-`false` に設定した場合、その方法での新規登録は拒否され、既にアカウントをお持ちの既存ユーザーのログインのみが許可されます。
+Google アカウントでログインします。
 
 ```dotenv
-# server/.env
-AUTH_METHOD_SCRATCH_ALLOW_SIGNUP=true      # Scratchでの新規登録
-AUTH_METHOD_EMAIL_ALLOW_SIGNUP=true        # メールでの新規登録
-AUTH_METHOD_PASSKEY_ALLOW_SIGNUP=true      # パスキーでの新規登録
-AUTH_METHOD_NYAITTER_AUTH_ALLOW_SIGNUP=true # 他サーバー連携での新規登録
+AUTH_METHOD_GOOGLE_ENABLED=true
+GOOGLE_CLIENT_ID=<クライアントID>
+GOOGLE_CLIENT_SECRET=<クライアントシークレット>
 ```
 
-> **プライバシー保護**: メールアドレス認証などで新規アカウントを作成する際は、メールアドレスの一部が公開ユーザー名になってしまうのを防ぐため、登録画面で希望のユーザー名を入力します。
+[Google Cloud Console](https://console.cloud.google.com/apis/credentials) で OAuth クライアント ID（ウェブアプリケーション）を作り、承認済みのリダイレクト URI にコールバック URL を登録します。
 
----
+既定のコールバック URL は `https://あなたのドメイン/?oauth=google` です。別の URL を使う場合は、完全一致する URL を設定します。
 
-## 設定の動作確認
+```dotenv
+GOOGLE_REDIRECT_URI=https://nyaitter.example.com/?oauth=google
+```
 
-設定を変更したら、以下のコマンドで設定に不備がないかチェックできます。
+`email_verified=false` のアカウントはログインできません。初回登録時は公開ユーザー名の入力を求められます。
+
+## Microsoft
+
+Microsoft アカウント（個人・組織）でログインします。
+
+```dotenv
+AUTH_METHOD_MICROSOFT_ENABLED=true
+MICROSOFT_CLIENT_ID=<アプリケーションID>
+MICROSOFT_CLIENT_SECRET=<クライアントシークレット>
+```
+
+[Microsoft Entra 管理センター](https://entra.microsoft.com/) でアプリを登録し、リダイレクト URI（ウェブ）を追加します。
+
+既定のコールバック URL は `https://あなたのドメイン/?oauth=microsoft` です。
+
+```dotenv
+MICROSOFT_REDIRECT_URI=https://nyaitter.example.com/?oauth=microsoft
+MICROSOFT_TENANT=common
+```
+
+`MICROSOFT_TENANT` は特定のテナントに限定する場合だけ変更します。既定は `common` です。
+
+メールアドレスを取得できないアカウント、または `email_verified=false` のアカウントはログインできません。初回登録時は公開ユーザー名の入力を求められます。
+
+## Cloudflare Turnstile（任意）
+
+ログイン画面にボット対策を追加します。
+
+```dotenv
+TURNSTILE_SECRET_KEY=<シークレットキー>
+```
+
+Cloudflare で Turnstile を設定し、シークレットキーを取得してください。使わなくても各ログイン方法は動作します。Scratch 認証と組み合わせると効果的です。
+
+## 複数のログイン方法を 1 つのアカウントにまとめる
+
+ログイン後、設定画面の「プライバシーとセキュリティ」から次の操作ができます。
+
+- 未連携の方法を追加する。次回からどちらでも同じアカウントにログインできます。
+- 不要な連携を解除する。認証方法が 1 つ以上残るように自動で守られます。
+
+## 新規登録を許可する
+
+ログイン方法ごとに、新しいアカウントの作成を許可するか選べます。`false` にすると、その方法では新規登録できず、既存ユーザーのログインだけが許可されます。
+
+```dotenv
+AUTH_METHOD_SCRATCH_ALLOW_SIGNUP=true
+AUTH_METHOD_EMAIL_ALLOW_SIGNUP=true
+AUTH_METHOD_PASSKEY_ALLOW_SIGNUP=true
+AUTH_METHOD_NYAITTER_AUTH_ALLOW_SIGNUP=true
+AUTH_METHOD_GOOGLE_ALLOW_SIGNUP=true
+AUTH_METHOD_MICROSOFT_ALLOW_SIGNUP=true
+```
+
+## 設定を確認する
 
 ```bash
 npm run check:config

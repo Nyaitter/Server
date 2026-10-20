@@ -4,7 +4,6 @@ const PostService = require('./PostService');
 const { extractPostKeywords } = require('./PostKeywordService');
 const { extractViewContent } = require('../utils/viewContent');
 const {
-  serializeNotification,
   invalidateImmutablePostCache,
 } = require('../utils/serialize');
 const timelineCacheManager = require('../utils/TimelineCacheManager');
@@ -126,44 +125,14 @@ async function deleteStoredAttachments(storage, attachments, context) {
   }
 }
 
-async function publishNewNotification(context, userId, notification) {
-  const structuredNotification = await serializeNotification(
-    context.db,
-    notification,
-    context.publicUrl,
-  );
-  if (!structuredNotification) return;
-
-  if (context.realtime) {
-    try {
-      await context.realtime.publishNewNotification(
-        userId,
-        structuredNotification,
-        context.db,
-      );
-    } catch (error) {
-      console.warn('[post-actions] notification realtime delivery failed:', error.message);
-    }
-  }
-
-  if (context.pushService?.enabled) {
-    void context.pushService.sendNotificationToUser(userId, structuredNotification, {
-      publicUrl: context.publicUrl,
-    }).catch((error) => {
-      console.warn('[post-actions] notification push delivery failed:', error.message);
-    });
-  }
-}
-
 async function notifyPostAction(context, { userId, type, fromUserId, postId }) {
   if (Number(userId) === Number(fromUserId)) return;
-  const notification = await createNotificationIfAllowed(context.db, {
+  await createNotificationIfAllowed(context.db, {
     userId: Number(userId),
     type,
     fromUserId: Number(fromUserId),
     target: { kind: 'post', id: Number(postId) },
   });
-  if (notification) await publishNewNotification(context, Number(userId), notification);
 }
 
 async function publishNewTimelinePost(context, post) {
@@ -196,14 +165,13 @@ async function notifyGroupAnnouncement(context, group, post) {
   await Promise.all(memberIds
     .filter((memberId) => Number(memberId) !== Number(post.userId))
     .map(async (memberId) => {
-      const notification = await createNotificationIfAllowed(context.db, {
+      await createNotificationIfAllowed(context.db, {
         userId: memberId,
         type: 'group_announcement',
         fromUserId: post.userId,
         target: { kind: 'post', id: Number(post.id) },
         message: `「${group.name}」のグループアナウンスが投稿されました。`,
       });
-      if (notification) await publishNewNotification(context, memberId, notification);
     }));
 }
 
@@ -276,7 +244,9 @@ async function processCreatePostAction(context, payload) {
   if (typeof context.db.getPostsByIds === 'function') {
     try {
       targetPosts = await context.db.getPostsByIds(targetIds);
-    } catch (_) {}
+    } catch (_) {
+      // 一括取得に失敗したら、続く単件取得へ後退する。
+    }
   }
   if (targetPosts.length === 0 && targetIds.length > 0 && typeof context.db.getPostById === 'function') {
     targetPosts = await Promise.all(targetIds.map((targetId) => context.db.getPostById(targetId)));
@@ -319,7 +289,7 @@ async function processCreatePostAction(context, payload) {
           rootPost = ancestor; // 最後が最も深い祖先
         }
       } else {
-        // フォールバック: 旧来の直列走査
+        // getPostAncestors 非対応時は、返信先を1つずつ辿って祖先を求める。
         let currentAncestor = replyTarget;
         const visited = new Set([Number(replyTarget.id)]);
         while (currentAncestor && (currentAncestor.replyTo || currentAncestor.reply_to)) {
@@ -360,7 +330,9 @@ async function processCreatePostAction(context, payload) {
                 const snapshot = await context.db.getFollowRelationshipSnapshot(userId, relationshipUserIds);
                 followedBy = new Set((snapshot?.followerIds || []).map(Number));
                 relationshipSnapshotLoaded = true;
-              } catch (_) {}
+              } catch (_) {
+                // スナップショット取得に失敗したら、続く個別確認へ後退する。
+              }
             }
             const isFollowedByRoot = followedBy.has(Number(rootPost.userId))
               || (!relationshipSnapshotLoaded && typeof context.db.isFollowing === 'function'

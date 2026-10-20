@@ -3,6 +3,7 @@ const DatabaseAdapter = require('../DatabaseAdapter');
 const { normalizeBlockList } = require('../../../utils/blockList');
 const { extractViewContent } = require('../../../utils/viewContent');
 const { encodePostCursor, decodePostCursor } = require('../../../utils/postCursor');
+const { scoreRecommendedPosts, buildAffinityProfile } = require('../../../utils/recommendation');
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -42,12 +43,35 @@ function mapLoginApproval(approval) {
 		ipHash: approval.ipHash ?? approval.ip_hash,
 		ipMasked: approval.ipMasked ?? approval.ip_masked,
 		userAgent: approval.userAgent ?? approval.user_agent,
+		authProvider: approval.authProvider ?? approval.auth_provider ?? null,
 		pollTokenHash: approval.pollTokenHash ?? approval.poll_token_hash,
 		status: approval.status,
 		createdAt: approval.createdAt ?? approval.created_at,
 		expiresAt: approval.expiresAt ?? approval.expires_at,
 		decidedAt: approval.decidedAt ?? approval.decided_at,
 		consumedAt: approval.consumedAt ?? approval.consumed_at,
+	};
+}
+
+function mapAccountRecovery(request) {
+	if (!request) return null;
+	return {
+		id: request.id,
+		userId: request.userId ?? request.user_id,
+		ipHash: request.ipHash ?? request.ip_hash,
+		ipMasked: request.ipMasked ?? request.ip_masked ?? '不明なIPアドレス',
+		userAgent: request.userAgent ?? request.user_agent ?? '不明な端末',
+		authProvider: request.authProvider ?? request.auth_provider ?? null,
+		requestTokenHash: request.requestTokenHash ?? request.request_token_hash,
+		status: request.status,
+		trustScore: Number(request.trustScore ?? request.trust_score ?? 0),
+		waitUntil: request.waitUntil ?? request.wait_until,
+		startedAt: request.startedAt ?? request.started_at,
+		lastNotifiedAt: request.lastNotifiedAt ?? request.last_notified_at,
+		notifiedCount: Number(request.notifiedCount ?? request.notified_count ?? 0),
+		decidedAt: request.decidedAt ?? request.decided_at,
+		decidedBy: request.decidedBy ?? request.decided_by ?? null,
+		consumedAt: request.consumedAt ?? request.consumed_at,
 	};
 }
 
@@ -82,13 +106,17 @@ function normalizePost(post) {
 	if (post.tags && typeof post.tags === 'string') {
 		try {
 			post.tags = JSON.parse(post.tags);
-		} catch (_) {}
+		} catch (_) {
+			// 壊れた JSON は続く配列正規化で空として扱う。
+		}
 	}
 	if (!Array.isArray(post.tags)) post.tags = [];
 	if (post.attachments && typeof post.attachments === 'string') {
 		try {
 			post.attachments = JSON.parse(post.attachments);
-		} catch (_) {}
+		} catch (_) {
+			// 壊れた JSON は続く配列正規化で空として扱う。
+		}
 	}
 	if (!Array.isArray(post.attachments)) {
 		post.attachments = post.attachments ? [post.attachments] : [];
@@ -123,6 +151,50 @@ function normalizeGroupRole(role) {
 		isSystem: Boolean(role.isSystem ?? role.is_system), is_system: Boolean(role.isSystem ?? role.is_system),
 		sortOrder: Number(role.sortOrder ?? role.sort_order) || 0, sort_order: Number(role.sortOrder ?? role.sort_order) || 0,
 		createdAt, created_at: createdAt, updatedAt, updated_at: updatedAt };
+}
+
+function normalizeSpace(space) {
+	if (!space) return null;
+	const ownerId = Number(space.ownerId ?? space.owner_id);
+	const iconData = space.iconData ?? space.icon_data ?? null;
+	const headerImage = space.headerImage ?? space.header_image ?? null;
+	const createdAt = space.createdAt ?? space.created_at ?? null;
+	const updatedAt = space.updatedAt ?? space.updated_at ?? null;
+	const memberCount = Number(space.memberCount ?? space.member_count) || 0;
+	const groupId = space.groupId ?? space.group_id ?? null;
+	return {
+		...space, id: String(space.id), ownerId, owner_id: ownerId, iconData, icon_data: iconData,
+		headerImage, header_image: headerImage, groupId, group_id: groupId, memberCount, member_count: memberCount,
+		createdAt, created_at: createdAt, updatedAt, updated_at: updatedAt,
+	};
+}
+
+function normalizeSpaceChannel(channel) {
+	if (!channel) return null;
+	const spaceId = String(channel.spaceId ?? channel.space_id);
+	const sortOrder = Number(channel.sortOrder ?? channel.sort_order) || 0;
+	const createdAt = channel.createdAt ?? channel.created_at ?? null;
+	return { ...channel, id: String(channel.id), spaceId, space_id: spaceId, kind: channel.kind || 'text',
+		sortOrder, sort_order: sortOrder, createdAt, created_at: createdAt };
+}
+
+function normalizeSpaceMember(member) {
+	if (!member) return null;
+	const spaceId = String(member.spaceId ?? member.space_id);
+	const userId = Number(member.userId ?? member.user_id);
+	const joinedAt = member.joinedAt ?? member.joined_at ?? null;
+	return { ...member, spaceId, space_id: spaceId, userId, user_id: userId,
+		role: member.role || 'member', joinedAt, joined_at: joinedAt };
+}
+
+function normalizeSpaceMessage(message) {
+	if (!message) return null;
+	const spaceId = String(message.spaceId ?? message.space_id);
+	const channelId = String(message.channelId ?? message.channel_id);
+	const userId = Number(message.userId ?? message.user_id);
+	const createdAt = message.createdAt ?? message.created_at ?? null;
+	return { ...message, id: Number(message.id), spaceId, space_id: spaceId, channelId, channel_id: channelId,
+		userId, user_id: userId, content: message.content || '', createdAt, created_at: createdAt };
 }
 
 function normalizeGroupMembership(membership) {
@@ -205,6 +277,7 @@ function mapModerationReport(row) {
 		resolution: parseObject(row.resolution, null),
 		createdAt: row.createdAt ?? row.created_at ?? null,
 		resolvedAt: row.resolvedAt ?? row.resolved_at ?? null,
+		claimedAt: row.claimedAt ?? row.claimed_at ?? null,
 	};
 }
 
@@ -487,8 +560,10 @@ class D1Adapter extends DatabaseAdapter {
 
 	async getLoginApprovalByPollToken(id, pollTokenHash) {
 		if (!id || !pollTokenHash) return null;
-		const approval = await this._write(`/login-approvals/${encodeURIComponent(String(id))}/poll`, {
-			pollTokenHash: String(pollTokenHash),
+		// 承認画面が約2秒ごとポーリングするため、`_write`（全 read キャッシュを消す）は使わない。
+		const approval = await this._read(`/login-approvals/${encodeURIComponent(String(id))}/poll`, {
+			body: { pollTokenHash: String(pollTokenHash) },
+			cacheSeconds: 0,
 		});
 		return mapLoginApproval(approval);
 	}
@@ -506,6 +581,158 @@ class D1Adapter extends DatabaseAdapter {
 			pollTokenHash: String(pollTokenHash),
 		});
 		return mapLoginApproval(approval);
+	}
+
+	// ==================== Account Recovery ====================
+
+	async createAccountRecoveryRequest(data) {
+		return mapAccountRecovery(await this._write('/account-recovery', {
+			id: data.id || null,
+			userId: requireId(data.userId, 'userId'),
+			ipHash: String(data.ipHash),
+			ipMasked: data.ipMasked || '不明なIPアドレス',
+			userAgent: data.userAgent || '不明な端末',
+			authProvider: String(data.authProvider || '').toLowerCase(),
+			requestTokenHash: String(data.requestTokenHash),
+			trustScore: Number(data.trustScore || 0),
+			waitUntil: data.waitUntil,
+		}));
+	}
+
+	async getAccountRecoveryRequest(id) {
+		if (!id) return null;
+		return mapAccountRecovery(await this._read(`/account-recovery/${encodeURIComponent(String(id))}`, { cacheSeconds: 0 }));
+	}
+
+	async getAccountRecoveryRequestByToken(id, tokenHash) {
+		if (!id || !tokenHash) return null;
+		// 復旧画面が長時間ポーリングするため、`_write`（全 read キャッシュを消す）は使わない。
+		return mapAccountRecovery(await this._read(`/account-recovery/${encodeURIComponent(String(id))}/token-check`, {
+			body: { requestTokenHash: String(tokenHash) },
+			cacheSeconds: 0,
+		}));
+	}
+
+	async getActiveAccountRecoveryRequest(userId, ipHash) {
+		if (!ipHash) return null;
+		return mapAccountRecovery(await this._read('/account-recovery/active', {
+			body: {
+				userId: requireId(userId, 'userId'),
+				ipHash: String(ipHash),
+			},
+			cacheSeconds: 0,
+		}));
+	}
+
+	async rotateAccountRecoveryToken(id, tokenHash) {
+		return mapAccountRecovery(await this._write(`/account-recovery/${encodeURIComponent(String(id))}/token`, {
+			requestTokenHash: String(tokenHash),
+		}));
+	}
+
+	async listAccountRecoveryRequestsToNotify(cutoff) {
+		const requests = await this._read(this._query('/account-recovery/waiting', {
+			mode: 'notify',
+			cutoff: new Date(cutoff).toISOString(),
+		}), { cacheSeconds: 0 });
+		return (Array.isArray(requests) ? requests : []).map(mapAccountRecovery);
+	}
+
+	async markAccountRecoveryNotified(id, notifiedAt) {
+		await this._write(`/account-recovery/${encodeURIComponent(String(id))}/notified`, {
+			notifiedAt: new Date(notifiedAt || Date.now()).toISOString(),
+		});
+	}
+
+	async listDueAccountRecoveryRequests(now) {
+		const requests = await this._read(this._query('/account-recovery/waiting', {
+			mode: 'due',
+			cutoff: new Date(now).toISOString(),
+		}), { cacheSeconds: 0 });
+		return (Array.isArray(requests) ? requests : []).map(mapAccountRecovery);
+	}
+
+	async decideAccountRecoveryRequest(userId, id, decision) {
+		return mapAccountRecovery(await this._write(`/account-recovery/${encodeURIComponent(String(id))}/decision`, {
+			userId: requireId(userId, 'userId'),
+			decision: String(decision),
+		}));
+	}
+
+	async approveDueAccountRecoveryRequest(id, decidedBy = 'timeout') {
+		return mapAccountRecovery(await this._write(`/account-recovery/${encodeURIComponent(String(id))}/approve-due`, {
+			decidedBy: String(decidedBy),
+		}));
+	}
+
+	async consumeAccountRecoveryRequest(id, tokenHash) {
+		return mapAccountRecovery(await this._write(`/account-recovery/${encodeURIComponent(String(id))}/consume`, {
+			requestTokenHash: String(tokenHash),
+		}));
+	}
+
+	async blockLoginIp(userId, { ipHash, ipMasked, reason = null, sourceRecoveryId = null } = {}) {
+		return this._write('/blocked-login-ips', {
+			userId: requireId(userId, 'userId'),
+			ipHash: String(ipHash),
+			ipMasked: ipMasked || '不明なIPアドレス',
+			reason,
+			sourceRecoveryId,
+		});
+	}
+
+	async getBlockedLoginIp(userId, ipHash) {
+		if (!ipHash) return null;
+		// ログイン試行ごとに呼ばれる。POST `_write` にすると `_clearReadCache()` で
+		// 全読み取りキャッシュを捨て続けるので、必ず読み取り専用の GET にする。
+		return this._read(`/users/${requireId(userId, 'userId')}/blocked-login-ips/${encodeURIComponent(String(ipHash))}`, { cacheSeconds: 0 });
+	}
+
+	async listBlockedLoginIps(userId) {
+		const records = await this._read(`/users/${requireId(userId, 'userId')}/blocked-login-ips`, { cacheSeconds: 0 });
+		return Array.isArray(records) ? records : [];
+	}
+
+	async unblockLoginIp(userId, ipHash) {
+		if (!ipHash) return false;
+		const result = await this._write(`/users/${requireId(userId, 'userId')}/blocked-login-ips/${encodeURIComponent(String(ipHash))}/unblock`);
+		return typeof result === 'boolean' ? result : !!result?.success;
+	}
+
+	// D1 は複数の連携プロバイダーを保持しないため、プロバイダーの無効化は行わない。
+	async revokeAuthProvider(userId, provider) {
+		const targetId = requireId(userId, 'userId');
+		const normProvider = String(provider || '').toLowerCase();
+		if (!normProvider) return { revoked: false, reason: 'invalid_provider' };
+
+		const linkedProviders = await this.getUserAuthProviders(targetId);
+		const remaining = linkedProviders.filter((p) => String(p.provider).toLowerCase() !== normProvider);
+		if (linkedProviders.length <= 1 || remaining.length < 1) {
+			return { revoked: false, reason: 'last_provider' };
+		}
+
+		await this._write(this._query(`/users/${targetId}/auth-providers`, { provider: normProvider }), null, 'DELETE');
+
+		const user = await this.getUserById(targetId);
+		const fallback = remaining[0];
+		const updates = {};
+		if (normProvider === 'scratch' && user?.scid) updates.scid = null;
+		// primaryの外部IDが残ると、連携解除後も同じプロバイダーで再ログインできてしまうため無効化する。
+		if (user && String(user.auth_provider || '').toLowerCase() === normProvider) {
+			updates.auth_provider = String(fallback.provider).toLowerCase();
+			updates.external_id = null;
+			updates.provider_domain = null;
+			updates.external_profile = fallback.providerProfile || {};
+		}
+		if (Object.keys(updates).length > 0) {
+			await this._write(`/users/${targetId}/auth-identity`, updates);
+		}
+
+		return {
+			revoked: true,
+			provider: normProvider,
+			remainingProviders: remaining.map((p) => p.provider),
+		};
 	}
 
 	async createBotToken(userId, tokenId, tokenHash, name) {
@@ -599,6 +826,127 @@ class D1Adapter extends DatabaseAdapter {
 
 	async getUserByExternalId(authProvider, externalId) {
 		return normalizeUser(await this._read(`/users/external/${encodeURIComponent(String(authProvider))}/${encodeURIComponent(String(externalId))}`));
+	}
+
+	// user_auth_providers を正とし、users 行にしか無い scid/primary 相当も
+	// 紐づけ情報として合成して返す。
+	async getUserAuthProviders(userId) {
+		const targetId = requireId(userId, 'userId');
+		const user = await this.getUserById(targetId);
+		if (!user) return [];
+
+		const raw = await this._read(`/users/${targetId}/auth-providers`, { cacheSeconds: 0 });
+		const records = (Array.isArray(raw) ? raw : []).map((r) => ({
+			id: r.id,
+			userId: Number(r.userId ?? r.user_id ?? targetId),
+			provider: r.provider,
+			providerUserId: r.providerUserId ?? r.provider_user_id,
+			providerProfile: typeof r.providerProfile === 'string'
+				? JSON.parse(r.providerProfile)
+				: (r.providerProfile || {}),
+			createdAt: r.createdAt || r.created_at || null,
+		}));
+
+		const hasScratch = records.some((r) => String(r.provider).toLowerCase() === 'scratch');
+		if (!hasScratch && user.scid) {
+			records.unshift({
+				id: 0,
+				userId: targetId,
+				provider: 'scratch',
+				providerUserId: user.scid,
+				providerProfile: { username: user.scid },
+				isPrimary: records.length === 0,
+				createdAt: user.created_at || user.createdAt || new Date(),
+			});
+		}
+		// users の auth_provider/external_id も、紐づけ行が無い場合の有効なログイン方法として一覧に含める。
+		// 一覧から消すと、解除ガードや設定画面の表示が実態とズレる。
+		const hasExternal = records.some((r) => String(r.provider).toLowerCase() === String(user.auth_provider || '').toLowerCase()
+			&& String(r.providerUserId) === String(user.external_id));
+		if (!hasExternal && user.auth_provider && user.external_id) {
+			records.push({
+				id: 0,
+				userId: targetId,
+				provider: user.auth_provider,
+				providerUserId: user.external_id,
+				providerProfile: user.external_profile || {},
+				isPrimary: records.length === 0,
+				createdAt: user.created_at || user.createdAt || new Date(),
+			});
+		}
+
+		return records;
+	}
+
+	async findUserByAuthProvider(provider, providerUserId) {
+		if (!provider || providerUserId == null) return null;
+		const normProvider = String(provider).toLowerCase();
+		const normUserId = String(providerUserId).trim();
+		if (!normProvider || !normUserId) return null;
+		return normalizeUser(await this._read(
+			`/users/auth-provider/${encodeURIComponent(normProvider)}/${encodeURIComponent(normUserId)}`,
+			{ cacheSeconds: 0 },
+		));
+	}
+
+	async linkAuthProvider(userId, provider, providerUserId, providerProfile = {}) {
+		const targetId = requireId(userId, 'userId');
+		const user = await this.getUserById(targetId);
+		if (!user) throw new Error('ユーザーが見つかりません。');
+
+		const normProvider = String(provider).toLowerCase();
+		const normUserId = String(providerUserId).trim();
+		const alreadyLinked = () => {
+			const error = new Error('この認証情報は既に他のアカウントに紐付けられています。');
+			error.status = 409;
+			error.code = 'auth_provider_already_linked';
+			return error;
+		};
+		if (!normProvider || !normUserId) throw alreadyLinked();
+
+		const existingUser = await this.findUserByAuthProvider(normProvider, normUserId);
+		if (existingUser && Number(existingUser.id) !== targetId) throw alreadyLinked();
+
+		const record = await this._write(`/users/${targetId}/auth-providers`, {
+			provider: normProvider,
+			providerUserId: normUserId,
+			providerProfile: providerProfile || {},
+		});
+		return {
+			id: record?.id ?? 0,
+			userId: Number(record?.userId ?? record?.user_id ?? targetId),
+			provider: record?.provider || normProvider,
+			providerUserId: record?.providerUserId ?? record?.provider_user_id ?? normUserId,
+			providerProfile: record?.providerProfile || record?.provider_profile || providerProfile || {},
+			createdAt: record?.createdAt || record?.created_at || user.created_at || user.createdAt || new Date(),
+		};
+	}
+
+	async unlinkAuthProvider(userId, provider, providerUserId = null) {
+		const targetId = requireId(userId, 'userId');
+		const user = await this.getUserById(targetId);
+		if (!user) throw new Error('ユーザーが見つかりません。');
+
+		const normProvider = String(provider).toLowerCase();
+		const linkedProviders = await this.getUserAuthProviders(targetId);
+		if (linkedProviders.length <= 1) {
+			const err = new Error('最後のログイン方法を解除することはできません。アカウントには最低1つのログイン方法が必要です。');
+			err.status = 400;
+			err.code = 'cannot_unlink_last_provider';
+			throw err;
+		}
+
+		const wantedId = providerUserId == null ? null : String(providerUserId).toLowerCase();
+		const match = linkedProviders.find((record) => String(record.provider).toLowerCase() === normProvider
+			&& (wantedId == null || String(record.providerUserId).toLowerCase() === wantedId));
+		if (!match) return { success: true, deleted: false };
+
+		await this._write(
+			this._query(`/users/${targetId}/auth-providers`, { provider: normProvider, providerUserId }),
+			null,
+			'DELETE',
+		);
+		return { success: true, deleted: true };
 	}
 
 	async createUser(userData) {
@@ -918,7 +1266,9 @@ class D1Adapter extends DatabaseAdapter {
 					notificationPosts: Array.isArray(data.notificationPosts) ? data.notificationPosts.map(normalizePost).filter(Boolean) : [],
 				};
 			}
-		} catch (_) {}
+		} catch (_) {
+			// bootstrap 取得に失敗したら、以下の個別取得へ後退する。
+		}
 
 		const [follow, like, star, pin, notifs, unreadCount, groupBadgesMap] = await Promise.all([
 			this.getFollowIds(targetId),
@@ -945,7 +1295,7 @@ class D1Adapter extends DatabaseAdapter {
 		ids.forEach((id) => result.set(id, []));
 
 		try {
-			const res = await this._write('/groups/user-badges-batch', { user_ids: ids });
+			const res = await this._read('/groups/user-badges-batch', { body: { user_ids: ids }, cacheSeconds: 0 });
 			if (res && res.badges) {
 				for (const [uid, badges] of Object.entries(res.badges)) {
 					result.set(Number(uid), Array.isArray(badges) ? badges.slice(0, 5) : []);
@@ -968,7 +1318,9 @@ class D1Adapter extends DatabaseAdapter {
 						icon_data: g.icon_data || g.iconData,
 					}));
 				result.set(userId, badges);
-			} catch (_) {}
+			} catch (_) {
+				// 1ユーザー分の取得失敗はバッジ無しとして扱う。
+			}
 		}));
 
 		return result;
@@ -1078,18 +1430,130 @@ class D1Adapter extends DatabaseAdapter {
 		}), { cacheSeconds: 0 });
 	}
 
-	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null, searchFilters = null } = {}) {
 		const decodedCursor = cursorCreatedAt && cursorId
 			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
 			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query('/group-posts/search', {
 			userId: requireId(userId, 'userId'),
 			query: String(query || ''),
+			searchFilters: searchFilters ? JSON.stringify(searchFilters) : null,
 			limit: this._limit(limit, 30, 100),
 			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : Math.max(0, Number(offset) || 0),
 			beforeId: beforeId ?? undefined,
 			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || undefined),
 		}), { cacheSeconds: 0 });
+	}
+
+	// ==================== Spaces ====================
+	async createSpace(spaceData) {
+		return normalizeSpace(await this._write('/spaces', spaceData));
+	}
+
+	async getSpaceById(spaceId) {
+		return normalizeSpace(await this._read(`/spaces/${encodeURIComponent(String(spaceId))}`, { cacheSeconds: 0 }));
+	}
+
+	async updateSpace(spaceId, fields) {
+		return normalizeSpace(await this._write(`/spaces/${encodeURIComponent(String(spaceId))}`, fields, 'PATCH'));
+	}
+
+	async deleteSpace(spaceId) {
+		const result = await this._write(`/spaces/${encodeURIComponent(String(spaceId))}`, undefined, 'DELETE');
+		return typeof result === 'boolean' ? result : !!result?.deleted;
+	}
+
+	async listSpaces({ query = '', includePrivate = false, groupIds = null, limit = 20, offset = 0 } = {}) {
+		const groups = Array.isArray(groupIds) ? groupIds.map(String).filter(Boolean) : [];
+		const spaces = await this._read(this._query('/spaces', {
+			query,
+			include_private: includePrivate ? 'true' : undefined,
+			group_ids: groups.length ? groups.join(',') : undefined,
+			limit: this._limit(limit, 20, 100),
+			offset: Math.max(0, Number(offset) || 0),
+		}), { cacheSeconds: 0 });
+		return Array.isArray(spaces) ? spaces.map(normalizeSpace) : [];
+	}
+
+	async listUserSpaces(userId, { limit = 50, offset = 0 } = {}) {
+		const spaces = await this._read(this._query(`/users/${requireId(userId, 'userId')}/spaces`, {
+			limit: this._limit(limit, 50, 100), offset: Math.max(0, Number(offset) || 0),
+		}), { cacheSeconds: 0 });
+		return Array.isArray(spaces)
+			? spaces.map((space) => ({ ...normalizeSpace(space), membership: normalizeSpaceMember(space.membership) }))
+			: [];
+	}
+
+	async countSpacesByOwner(ownerId) {
+		const result = await this._read(this._query('/spaces/count', { ownerId: requireId(ownerId, 'ownerId') }), { cacheSeconds: 0 });
+		return Number(result?.count) || 0;
+	}
+
+	async createSpaceChannel(channelData) {
+		return normalizeSpaceChannel(await this._write('/spaces/channels', channelData));
+	}
+
+	async getSpaceChannel(channelId) {
+		return normalizeSpaceChannel(await this._read(`/spaces/channels/${encodeURIComponent(String(channelId))}`, { cacheSeconds: 0 }));
+	}
+
+	async listSpaceChannels(spaceId) {
+		const channels = await this._read(`/spaces/${encodeURIComponent(String(spaceId))}/channels`, { cacheSeconds: 0 });
+		return Array.isArray(channels) ? channels.map(normalizeSpaceChannel) : [];
+	}
+
+	async updateSpaceChannel(channelId, fields) {
+		return normalizeSpaceChannel(await this._write(`/spaces/channels/${encodeURIComponent(String(channelId))}`, fields, 'PATCH'));
+	}
+
+	async deleteSpaceChannel(channelId) {
+		const result = await this._write(`/spaces/channels/${encodeURIComponent(String(channelId))}`, undefined, 'DELETE');
+		return typeof result === 'boolean' ? result : !!result?.deleted;
+	}
+
+	async createSpaceMember(memberData) {
+		return normalizeSpaceMember(await this._write(`/spaces/${encodeURIComponent(String(memberData.spaceId ?? memberData.space_id))}/members`, memberData));
+	}
+
+	async getSpaceMember(spaceId, userId) {
+		return normalizeSpaceMember(await this._read(`/spaces/${encodeURIComponent(String(spaceId))}/members/${requireId(userId, 'userId')}`, { cacheSeconds: 0 }));
+	}
+
+	async listSpaceMembers(spaceId, { limit = 100, offset = 0 } = {}) {
+		const members = await this._read(this._query(`/spaces/${encodeURIComponent(String(spaceId))}/members`, {
+			limit: this._limit(limit, 100, 200), offset: Math.max(0, Number(offset) || 0),
+		}), { cacheSeconds: 0 });
+		return Array.isArray(members) ? members.map(normalizeSpaceMember) : [];
+	}
+
+	async deleteSpaceMember(spaceId, userId) {
+		const result = await this._write(`/spaces/${encodeURIComponent(String(spaceId))}/members/${requireId(userId, 'userId')}`, undefined, 'DELETE');
+		return typeof result === 'boolean' ? result : !!result?.removed;
+	}
+
+	async updateSpaceMemberCount(spaceId) {
+		const result = await this._write(`/spaces/${encodeURIComponent(String(spaceId))}/member-count`, {});
+		return Number(result?.memberCount ?? result?.member_count) || 0;
+	}
+
+	async createSpaceMessage(messageData) {
+		return normalizeSpaceMessage(await this._write(`/spaces/channels/${encodeURIComponent(String(messageData.channelId ?? messageData.channel_id))}/messages`, messageData));
+	}
+
+	async listSpaceMessages(channelId, { limit = 50, beforeId = null } = {}) {
+		const messages = await this._read(this._query(`/spaces/channels/${encodeURIComponent(String(channelId))}/messages`, {
+			limit: this._limit(limit, 50, 100), before_id: beforeId != null ? Number(beforeId) : undefined,
+		}), { cacheSeconds: 0 });
+		return Array.isArray(messages) ? messages.map(normalizeSpaceMessage) : [];
+	}
+
+	async getSpaceMessageById(messageId) {
+		return normalizeSpaceMessage(await this._read(`/spaces/messages/${requireId(messageId, 'messageId', 1)}`, { cacheSeconds: 0 }));
+	}
+
+	async deleteSpaceMessage(messageId) {
+		const result = await this._write(`/spaces/messages/${encodeURIComponent(String(messageId))}`, undefined, 'DELETE');
+		return typeof result === 'boolean' ? result : !!result?.deleted;
 	}
 
 	async createPost(postData) {
@@ -1171,17 +1635,36 @@ class D1Adapter extends DatabaseAdapter {
 
 	async getDueScheduledPosts(now = new Date().toISOString(), limit = 100) {
 		const posts = await this._read(this._query('/posts/scheduled/due', { now, limit }), { cacheSeconds: 0 });
-		return (posts || []).map(normalizePostRow);
+		return (posts || []).map(normalizePost);
 	}
 
 	async publishScheduledPost(postId, now = new Date().toISOString()) {
-		return normalizePostRow(await this._write(`/posts/${requireId(postId, 'postId')}/publish-scheduled`, { now }));
+		return normalizePost(await this._write(`/posts/${requireId(postId, 'postId')}/publish-scheduled`, { now }));
 	}
 
 	async updatePost(postId, fields) {
 
 		const post = await this._write(`/posts/${requireId(postId, 'postId', 1)}`, fields);
 		return normalizePost(post);
+	}
+
+	async auditAndHealPostCounters(postId) {
+		const id = Number(postId);
+		if (!Number.isSafeInteger(id) || id <= 0) return null;
+		const post = await this._write(`/posts/${id}/audit-counters`, {});
+		return normalizePost(post);
+	}
+
+	async auditAndHealUserCounters(userId) {
+		const id = Number(userId);
+		if (!Number.isSafeInteger(id) || id <= 0) return null;
+		const counts = await this._read(`/users/${id}/audit-counters`, { cacheSeconds: 0 });
+		return {
+			userId: id,
+			followerCount: Number(counts?.followerCount || 0),
+			followingCount: Number(counts?.followingCount || 0),
+			postCount: Number(counts?.postCount || 0),
+		};
 	}
 
 	async deletePost(postId, userId) {
@@ -1206,6 +1689,15 @@ class D1Adapter extends DatabaseAdapter {
 			limit: this._limit(limit, 50),
 			currentUserId: currentUserId == null ? null : requireId(currentUserId, 'currentUserId'),
 		}));
+		return Array.isArray(posts) ? posts.map(normalizePost) : [];
+	}
+
+	async getScheduledPostsByUser(userId, now = new Date().toISOString(), { limit = 50, offset = 0 } = {}) {
+		const posts = await this._read(this._query(`/users/${requireId(userId, 'userId')}/scheduled`, {
+			now,
+			limit: this._limit(limit, 50),
+			offset: this._offset(offset),
+		}), { cacheSeconds: 0 });
 		return Array.isArray(posts) ? posts.map(normalizePost) : [];
 	}
 
@@ -1234,17 +1726,90 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	async getRecommendedPostIds({ viewerId = null, limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+		const normalizedLimit = this._limit(limit, 30);
 		const decodedCursor = cursorCreatedAt && cursorId
 			? { createdAt: cursorCreatedAt, id: Number(cursorId) }
 			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
-		return this._read(this._query('/posts/recommended/ids', {
+		// 直近窓を広めに取得し、採点は Node.js 側の共通ユーティリティへ一本化する。
+		const windowSize = Math.min(800, Math.max(240, normalizedLimit * 8));
+		const candidatePage = await this._read(this._query('/posts/recommended/candidates', {
 			viewerId: viewerId == null ? null : requireId(viewerId, 'viewerId'),
-			limit: this._limit(limit, 30),
+			limit: windowSize,
 			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : this._offset(offset),
 			beforeId: beforeId == null ? null : requireId(beforeId, 'beforeId', 1),
 			cursor: decodedCursor ? encodePostCursor(decodedCursor) : (cursor || null),
-			includePosts: 'true',
 		}), { cacheSeconds: 0 });
+
+		const candidates = Array.isArray(candidatePage?.posts) ? candidatePage.posts : [];
+		let keywordProfile = new Map();
+		let directFollows = new Set();
+		let extendedFollows = new Set();
+		let reactedPostIds = new Set();
+		let dislikedPostIds = new Set();
+		let dislikedAuthors = new Set();
+		let blockedAuthors = new Set();
+
+		if (viewerId != null) {
+			const profile = await this._read(
+				`/users/${requireId(viewerId, 'viewerId')}/recommendation-profile`,
+				{ cacheSeconds: 30 },
+			).catch(() => null);
+			if (profile) {
+				keywordProfile = buildAffinityProfile(profile.affinities, { limit: 25 });
+				directFollows = new Set((profile.follows || []).map(Number).filter(Number.isSafeInteger));
+				extendedFollows = new Set((profile.extendedFollows || []).map(Number).filter(Number.isSafeInteger));
+				reactedPostIds = new Set((profile.reacted || []).map(Number).filter(Number.isSafeInteger));
+				dislikedPostIds = new Set((profile.dislikedPostIds || []).map(Number).filter(Number.isSafeInteger));
+				dislikedAuthors = new Set((profile.dislikedAuthors || []).map(Number).filter(Number.isSafeInteger));
+				blockedAuthors = new Set((profile.blockedAuthors || []).map(Number).filter(Number.isSafeInteger));
+			}
+		}
+
+		const scored = scoreRecommendedPosts(candidates, {
+			viewerId: viewerId == null ? null : Number(viewerId),
+			keywordProfile,
+			directFollows,
+			extendedFollows,
+			reactedPostIds,
+			dislikedPostIds,
+			dislikedAuthors,
+			blockedAuthors,
+			limit: normalizedLimit,
+		});
+
+		return {
+			ids: scored.map((item) => item.id),
+			has_more: candidatePage?.has_more === true,
+			next_cursor: candidatePage?.next_cursor || null,
+			next_offset: candidatePage?.next_offset,
+			use_offset_pagination: candidatePage?.use_offset_pagination === true,
+		};
+	}
+
+	async recordPostFeedback(userId, postId, kind = 'not_interested') {
+		const uId = Number(userId);
+		const pId = Number(postId);
+		if (!Number.isInteger(uId) || !Number.isInteger(pId)) return false;
+		await this._write(`/users/${uId}/post-feedback`, {
+			postId: pId,
+			kind: String(kind || 'not_interested'),
+		});
+		return true;
+	}
+
+	async getPostFeedbackForUser(userId) {
+		const profile = await this._read(
+			`/users/${requireId(userId, 'userId')}/recommendation-profile`,
+			{ cacheSeconds: 30 },
+		).catch(() => null);
+		return {
+			postIds: Array.isArray(profile?.dislikedPostIds)
+				? profile.dislikedPostIds.map(Number).filter(Number.isInteger)
+				: [],
+			authorIds: Array.isArray(profile?.dislikedAuthors)
+				? profile.dislikedAuthors.map(Number).filter(Number.isInteger)
+				: [],
+		};
 	}
 
 	async getProfilePostIds({ userId, subType = 'all', order = 'latest', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
@@ -1272,6 +1837,7 @@ class D1Adapter extends DatabaseAdapter {
 			: (typeof cursor === 'string' && cursor.trim() ? decodePostCursor(cursor.trim()) : null);
 		return this._read(this._query('/posts/search/ids', {
 			q: String(query || ''),
+			searchFilters: options.searchFilters ? JSON.stringify(options.searchFilters) : null,
 			viewerId: viewerId == null ? null : requireId(viewerId, 'viewerId'),
 			limit: this._limit(limit, 30),
 			offset: (decodedCursor || (beforeId != null && Number(beforeId) > 0)) ? 0 : this._offset(offset),
@@ -1365,7 +1931,8 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	async toggleLike(userId, postId) {
-		return this._write(`/posts/${requireId(postId, 'postId', 1)}/like`, { userId: requireId(userId, 'userId') });
+		const result = await this._write(`/posts/${requireId(postId, 'postId', 1)}/like`, { userId: requireId(userId, 'userId') });
+		return result;
 	}
 
 	async getLikeCount(postId) {
@@ -1386,7 +1953,8 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	async toggleStar(userId, postId) {
-		return this._write(`/posts/${requireId(postId, 'postId', 1)}/star`, { userId: requireId(userId, 'userId') });
+		const result = await this._write(`/posts/${requireId(postId, 'postId', 1)}/star`, { userId: requireId(userId, 'userId') });
+		return result;
 	}
 
 	async getStarCount(postId) {
@@ -1430,13 +1998,6 @@ class D1Adapter extends DatabaseAdapter {
 	async getReposts(userId) {
 		const posts = await this._read(`/users/${requireId(userId, 'userId')}/reposts`, { cacheSeconds: 0 });
 		return Array.isArray(posts) ? posts.map(normalizePost) : [];
-	}
-
-	async getRepostsOfPost(postId, limit = 50) {
-		const list = await this._read(this._query(`/posts/${requireId(postId, 'postId', 1)}/reposts`, {
-			limit: this._limit(limit, 50),
-		}), { cacheSeconds: 0 });
-		return Array.isArray(list) ? list : [];
 	}
 
 	async getRepostCount(postId) {
@@ -1552,7 +2113,7 @@ class D1Adapter extends DatabaseAdapter {
 	async findGroupDmByMembers(memberIds) {
 		const ids = this._normalizeIds(memberIds);
 		if (ids.length === 0) return null;
-		const dm = await this._write('/group-dms/find-by-members', { memberIds: ids });
+		const dm = await this._read('/group-dms/find-by-members', { body: { memberIds: ids }, cacheSeconds: 0 });
 		return serializeGroupDm(dm);
 	}
 
@@ -1650,7 +2211,10 @@ class D1Adapter extends DatabaseAdapter {
 
 	async getModerationAdminWorkloads(excludedAdminIds = []) {
 		const excluded = this._normalizeIds(excludedAdminIds, { fieldName: 'excludedAdminId' });
-		const result = await this._write('/moderation-reports/admin-workloads', { excludedAdminIds: excluded });
+		const result = await this._read('/moderation-reports/admin-workloads', {
+			body: { excludedAdminIds: excluded },
+			cacheSeconds: 0,
+		});
 		return Array.isArray(result)
 			? result.map((row) => ({
 				adminId: Number(row.adminId ?? row.admin_id),
@@ -1666,16 +2230,30 @@ class D1Adapter extends DatabaseAdapter {
 		));
 	}
 
-	async getOverdueModerationReports(cutoff) {
-		const reports = await this._write('/moderation-reports/overdue', { cutoff });
+	async getOverdueModerationReports(cutoff, claimStaleBeforeIso = null) {
+		const reports = await this._read('/moderation-reports/overdue', {
+			body: {
+				cutoff,
+				...(claimStaleBeforeIso == null || claimStaleBeforeIso === '' ? {} : { claimStaleBefore: claimStaleBeforeIso }),
+			},
+			cacheSeconds: 0,
+		});
 		return Array.isArray(reports) ? reports.map(mapModerationReport).filter(Boolean) : [];
 	}
 
 	async getUnassignedModerationReports(limit = 100) {
-		const reports = await this._write('/moderation-reports/unassigned', {
-			limit: this._limit(limit, 100, 100),
+		const reports = await this._read('/moderation-reports/unassigned', {
+			body: { limit: this._limit(limit, 100, 100) },
+			cacheSeconds: 0,
 		});
 		return Array.isArray(reports) ? reports.map(mapModerationReport).filter(Boolean) : [];
+	}
+
+	async claimModerationReport(reportId, adminId, claimedAtIso) {
+		return mapModerationReport(await this._write(
+			`/moderation-reports/${requireId(reportId, 'reportId', 1)}/claim`,
+			{ adminId: requireId(adminId, 'adminId'), claimedAt: claimedAtIso },
+		));
 	}
 
 	async resolveModerationReport(reportId, adminId, resolution) {
@@ -1728,6 +2306,19 @@ class D1Adapter extends DatabaseAdapter {
 			limit: this._limit(limit, 20, 100), offset: this._offset(offset),
 		}), { cacheSeconds: 0 });
 		return Array.isArray(list) ? list : [];
+	}
+
+	async getUserPostSubscribers(authorUserId) {
+		const id = Number(authorUserId);
+		if (!Number.isSafeInteger(id) || id <= 0) return [];
+		const subscribers = await this._read(`/users/${id}/post-subscribers`, { cacheSeconds: 0 });
+		if (!Array.isArray(subscribers)) return [];
+		return subscribers
+			.map((sub) => ({
+				userId: Number(sub?.userId ?? sub?.user_id ?? sub?.id),
+				mode: sub?.mode,
+			}))
+			.filter((sub) => Number.isInteger(sub.userId) && sub.userId > 0 && typeof sub.mode === 'string');
 	}
 
 	// ==================== Polls ====================
@@ -1825,6 +2416,16 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	// ==================== Post Events (Outbox) ====================
+
+	async processPostCreatedEvent(event) {
+		const postId = Number(event?.post_id ?? event?.payload?.postId);
+		if (!Number.isSafeInteger(postId) || postId <= 0) return;
+		const post = await this.getPostById(postId);
+		if (!post) return;
+		const tags = Array.isArray(post.tags) ? post.tags : [];
+		if (tags.length === 0) return;
+		await this._write(`/users/${Number(post.userId)}/keyword-affinity`, { tags, delta: 1 });
+	}
 
 	async enqueuePostEvent(eventType, payload, { postId = null, availableAt = null } = {}) {
 		const body = {

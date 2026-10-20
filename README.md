@@ -1,42 +1,45 @@
 # Nyaitter
 
-Nyaitter は、Scratcher 向けのオープンソース SNS です。Webブラウザから使える画面と、アカウント管理やデータ配信を行うサーバーで構成されています。
+Scratcher 向けのオープンソース SNS です。ブラウザで使う画面と、アカウント・投稿・通知を管理するサーバーで構成されています。
 
-| 区分 | 配置 | 内容 |
-|---|---|---|
-| NyaitterClient | `page/` | Web画面 |
-| NyaitterServer | `server/` | サーバー本体 |
-| D1 Proxy Worker | `workers/d1-proxy/` | Cloudflare D1を使う場合の接続用プログラム |
+| 配置 | 内容 |
+|---|---|
+| `page/` | Web 画面 |
+| `server/` | サーバー本体 |
+| `workers/d1-proxy/` | Cloudflare D1 を使う場合の接続プログラム |
 
-## 主な機能
+## できること
 
-投稿、返信、引用、リポスト、いいね、スター、検索、フォロー、通知、グループ機能、グループDM、プッシュ通知、各種ログインが使えます。
+投稿、返信、引用、リポスト、いいね、スター、検索、フォロー、通知、グループ、グループ DM、プッシュ通知、各種ログインが使えます。
 
-> ブロック関係にある利用者同士では、お互いの投稿・通知・DMメッセージが表示されず、DMへの追加も防ぎます。
+ブロック中の相手とは、投稿・通知・DM が表示されません。DM への追加もできません。
 
-## クイックスタート
+## 使い始める
 
-Node.jsをインストールし、次のコマンドを実行します。
+Node.js を用意し、次を実行します。
 
 ```bash
 npm install
 npm start
 ```
 
-ブラウザで <http://localhost:3000/> を開くと利用できます。
+ブラウザで <http://localhost:3000/> を開くと使えます。
 
-サーバーの状態確認や起動・停止は、プロジェクト外からも次のCLIで実行できます。
+初期状態ではデータが一時保存のため、サーバーを再起動すると消えます。データを残す方法は [`server/README.md`](./server/README.md) を確認してください。
+
+## サーバーを操作する
+
+プロジェクトの外からも CLI で起動状態を確認できます。
 
 ```bash
 /path/to/Server/nscli server status
-/path/to/Server/nscli nmt status
 ```
 
-PowerShellでは`./nscli.ps1`を使います。PATHから呼び出す場合は、このリポジトリで`npm link`を実行してください。
+PowerShell では `./nscli.ps1` を使います。`npm link` を実行すると `nscli` を直接呼べます。
 
-Nditorなどの連携キーは`nscli extension-key create`で発行できます。[拡張APIキーの設定](server/help/extension-keys.md)を確認してください。
+### メンテナンス
 
-緊急メンテナンス中は、サーバーの起動を拒否できます。拒否中もエラー終了せず、警告だけを表示します。
+緊急時はサーバーの起動を拒否できます。拒否中もエラー終了せず、警告だけを表示します。
 
 ```bash
 /path/to/Server/nscli maintenance enable
@@ -44,24 +47,23 @@ Nditorなどの連携キーは`nscli extension-key create`で発行できます�
 /path/to/Server/nscli maintenance disable
 ```
 
-解除後にサーバーを起動する場合は、`server start`またはPM2の再起動を実行してください。
+解除後は `server start` または PM2 の再起動を行います。
 
-初期状態ではデータが一時保存のため、サーバーを再起動するとデータが消えます。データを保存して本格的に運用する手順は `server/README.md` を確認してください。
+### 連携キー
 
-## クライアント情報と接続先
+Nditor などの連携キーは `nscli extension-key create` で発行できます。詳しくは [拡張 API キー](server/help/extension-keys.md) を確認してください。
 
-Web画面の名前、製作者、リポジトリ、APIの接続先などは `page/manifest.json` で確認できます。接続先を変更する場合は、`api_url` を設定してください。
+## 画面の設定
 
-同じ項目を複数の場所で設定した場合は、サーバーが返す ServerStatus、`page/manifest.json`、`page/config.js` の順で優先されます。通常は `manifest.json` を変更し、`config.js` は予備の設定として使用します。
+Web 画面の名前、製作者、API の接続先は `page/manifest.json` で変更できます。接続先は `api_url` に設定します。
+
+同じ項目が複数ある場合は、ServerStatus、`page/manifest.json`、`page/config.js` の順で使われます。通常は `manifest.json` を変更してください。
 
 ## ライセンス
 
-MIT ライセンスです。著作権表示を残すことで、誰でも自由に利用・改変・再配布できます。詳細は `LICENSE` を確認してください。
+MIT ライセンスです。著作権表示を残せば、自由に利用・改変・再配布できます。詳しくは `LICENSE` を確認してください。
 
 ## ドキュメント
 
-- サーバーの起動・設定・運用: [`server/README.md`](./server/README.md)
-- ログイン方法の設定: [`server/help/auth-providers.md`](./server/help/auth-providers.md)
-- データの保存先の選び方: [`server/adapters/README.md`](./server/adapters/README.md)
-- 各種セットアップガイド: [`server/help/README.md`](./server/help/README.md)
-- 外部アプリ連携機能: [`server/help/nyaitter-auth.md`](./server/help/nyaitter-auth.md)
+- [サーバーの起動・設定・運用](./server/README.md)
+- [セットアップガイド一覧](./server/help/README.md)

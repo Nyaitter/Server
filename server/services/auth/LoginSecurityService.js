@@ -31,7 +31,14 @@ function getOrPersistHmacSecret() {
     fs.writeFileSync(secretPath, generated, { encoding: 'utf8', mode: 0o600 });
     return generated;
   } catch (_) {
-    // ファイルシステムへの書き込みが制限されている場合のフォールバック
+    // ファイルシステムへの書き込みが制限されている場合のフォールバック。
+    // この値はリポジトリに見えるので、使っていること自体を運用者に必ず知らせる
+    // （LOGIN_SECURITY_HMAC_SECRET を設定するか、DATA_DIR を書き込み可能にする）。
+    console.error(
+      '[login-security] LOGIN_SECURITY_HMAC_SECRET 未設定かつ DATA_DIR にシークレットを保存できません。'
+      + 'IP ハッシュは既知の固定値で計算されます（信頼IP・ブロックIPの相関が外部から計算可能）。'
+      + '必ず環境変数でシークレットを設定してください。',
+    );
     return 'nyaitter-auth-default-secure-hmac-secret-salt';
   }
 }
@@ -127,7 +134,7 @@ function hashApprovalPollToken(token) {
 }
 
 function isUnknownLoginProtectionEnabled(user) {
-  return user?.settings?.reject_unknown_login !== false;
+  return user?.settings?.reject_unknown_login === true;
 }
 
 module.exports = {

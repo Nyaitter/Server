@@ -1,3 +1,4 @@
+const { matchesPostSearch } = require('../../utils/postSearchQuery');
 const DatabaseAdapter = require('./DatabaseAdapter');
 const config = require('../../config');
 const crypto = require('crypto');
@@ -10,7 +11,7 @@ const {
 	createAttachmentReplacementMap,
 	rewriteAttachmentReferences,
 } = require('../../utils/attachmentKeys');
-const { scoreRecommendedPosts } = require('../../utils/recommendation');
+const { scoreRecommendedPosts, buildAffinityProfile } = require('../../utils/recommendation');
 const { extractViewContent } = require('../../utils/viewContent');
 const { isFuzzyMatch, calculateStringSimilarity } = require('../../utils/fuzzySearch');
 const { encodePostCursor, decodePostCursor } = require('../../utils/postCursor');
@@ -23,6 +24,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 					this.sessions = new Map(); // token -> { userId, expiresAt, ... }
 			this.trustedLoginIps = new Map(); // `${userId}:${ipHash}` -> trust record
 			this.loginApprovals = new Map(); // approvalId -> pending login approval
+			this.accountRecoveryRequests = new Map(); // recoveryId -> account recovery request
+			this.blockedLoginIps = new Map(); // `${userId}:${ipHash}` -> permanent IP block
 			this.botTokens = new Map(); // tokenId -> { userId, tokenHash, name, ... }
 		this.posts = new Map();
 		this.postEvents = new Map();
@@ -52,7 +55,8 @@ class InMemoryAdapter extends DatabaseAdapter {
 		this.stars = new Map();
 		this.likedPostIdsByUser = new Map(); // userId -> Set(postId)
 		this.starredPostIdsByUser = new Map(); // userId -> Set(postId)
-		this.userKeywordAffinityByUser = new Map(); // userId -> Map(keyword -> score)
+		this.userKeywordAffinityByUser = new Map(); // userId -> Map(keyword -> { score, updatedAt })
+		this.postFeedbackByUser = new Map(); // userId -> Map(postId -> kind)
 
 
 
@@ -93,15 +97,28 @@ class InMemoryAdapter extends DatabaseAdapter {
 		this.authorizedAppLookup = new Map(); // `${userId}:${appId}:${appTokenHash}` -> id
 		this.authorizedAppByAccessTokenId = new Map(); // accessTokenId -> id
 		this.nextAuthorizedAppId = 1;
+
+		this.spaces = new Map(); // spaceId -> space
+		this.spaceChannels = new Map(); // channelId -> channel
+		this.spaceMembers = new Map(); // `${spaceId}:${userId}` -> member
+		this.spaceMessages = new Map(); // messageId -> message
+		this.nextSpaceMessageId = 1;
 	}
 
 	async exportDataSnapshot() {
 		const { createSnapshot } = require('../../services/DataMigrationService');
 		const rows = {
 			users: [...this.users.values()],
+			user_auth_providers: [...this.userAuthProviders.values()],
+			spaces: [...this.spaces.values()],
+			space_channels: [...this.spaceChannels.values()],
+			space_members: [...this.spaceMembers.values()],
+			space_messages: [...this.spaceMessages.values()],
 			sessions: [...this.sessions.values()],
 			trusted_login_ips: [...this.trustedLoginIps.values()],
 			login_approvals: [...this.loginApprovals.values()],
+			account_recovery_requests: [...this.accountRecoveryRequests.values()],
+			blocked_login_ips: [...this.blockedLoginIps.values()],
 			bot_tokens: [...this.botTokens.values()],
 							posts: [...this.posts.values()],
 				groups: [...this.groups.values()],
@@ -158,11 +175,19 @@ class InMemoryAdapter extends DatabaseAdapter {
 				moderation_reports: [...this.moderationReports.values()],
 				logs: this.logs,
 				user_keyword_affinities: [...this.userKeywordAffinityByUser.entries()].flatMap(([user_id, affinities]) => (
-					[...affinities.entries()].map(([keyword, score]) => ({
+					[...affinities.entries()].map(([keyword, entry]) => ({
 						user_id,
 						keyword,
-						score,
-						updated_at: new Date().toISOString(),
+						score: entry?.score ?? 0,
+						updated_at: new Date(entry?.updatedAt ?? Date.now()).toISOString(),
+					}))
+				)),
+				post_feedback: [...this.postFeedbackByUser.entries()].flatMap(([user_id, feedbacks]) => (
+					[...feedbacks.entries()].map(([post_id, kind]) => ({
+						user_id,
+						post_id: Number(post_id),
+						kind,
+						created_at: new Date().toISOString(),
 					}))
 				)),
 		};
@@ -188,6 +213,59 @@ class InMemoryAdapter extends DatabaseAdapter {
 				this.externalAuthToId.set(`${String(user.auth_provider).toLowerCase()}:${String(user.external_id)}`, user.id);
 			}
 		}
+		for (const row of data.tables.user_auth_providers) {
+			if (!row.user_id || !row.provider || row.provider_user_id == null) continue;
+			const recordId = Number.isSafeInteger(row.id) && row.id > 0 ? row.id : this.nextAuthProviderId++;
+			const record = {
+				id: recordId,
+				userId: row.user_id,
+				provider: String(row.provider).toLowerCase(),
+				providerUserId: String(row.provider_user_id),
+				providerProfile: row.provider_profile || {},
+				createdAt: row.created_at ? new Date(row.created_at) : new Date(),
+			};
+			this.userAuthProviders.set(recordId, record);
+			this.authProviderLookup.set(`${record.provider}:${record.providerUserId.toLowerCase()}`, recordId);
+			this.externalAuthToId.set(`${record.provider}:${record.providerUserId}`, record.userId);
+			if (recordId >= this.nextAuthProviderId) this.nextAuthProviderId = recordId + 1;
+		}
+		for (const row of data.tables.spaces) {
+			if (!row.id || !row.owner_id) continue;
+			this.spaces.set(String(row.id), {
+				id: String(row.id), ownerId: row.owner_id, name: String(row.name || ''),
+				description: String(row.description || ''),
+				iconData: row.icon_data ?? null, headerImage: row.header_image ?? null,
+				visibility: row.visibility || 'public',
+				stage_settings: row.stage_settings || null,
+				createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+				updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : new Date().toISOString(),
+			});
+		}
+		for (const row of data.tables.space_channels) {
+			if (!row.id || !row.space_id) continue;
+			this.spaceChannels.set(String(row.id), {
+				id: String(row.id), spaceId: String(row.space_id), name: String(row.name || ''),
+				kind: row.kind || 'text', sortOrder: Number(row.sort_order) || 0,
+				createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+			});
+		}
+		for (const row of data.tables.space_members) {
+			if (!row.space_id || row.user_id == null) continue;
+			this.spaceMembers.set(this._spaceMemberKey(String(row.space_id), Number(row.user_id)), {
+				spaceId: String(row.space_id), userId: Number(row.user_id), role: row.role || 'member',
+				joinedAt: row.joined_at ? new Date(row.joined_at).toISOString() : new Date().toISOString(),
+			});
+		}
+		for (const row of data.tables.space_messages) {
+			if (!row.id || !row.channel_id) continue;
+			const id = Number(row.id);
+			this.spaceMessages.set(id, {
+				id, spaceId: String(row.space_id || ''), channelId: String(row.channel_id),
+				userId: Number(row.user_id), content: String(row.content || ''),
+				createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+			});
+			if (id >= this.nextSpaceMessageId) this.nextSpaceMessageId = id + 1;
+		}
 		for (const row of data.tables.sessions) {
 			if (!row.token) continue;
 			this.sessions.set(row.token, {
@@ -212,8 +290,25 @@ class InMemoryAdapter extends DatabaseAdapter {
 		for (const row of data.tables.login_approvals) {
 			this.loginApprovals.set(row.id, {
 				id: row.id, userId: row.user_id, ipHash: row.ip_hash, ipMasked: row.ip_masked,
-				userAgent: row.user_agent, pollTokenHash: row.poll_token_hash, status: row.status,
+				userAgent: row.user_agent, authProvider: row.auth_provider ?? row.authProvider ?? null,
+				pollTokenHash: row.poll_token_hash, status: row.status,
 				createdAt: row.created_at, expiresAt: row.expires_at, decidedAt: row.decided_at, consumedAt: row.consumed_at,
+			});
+		}
+		for (const row of data.tables.account_recovery_requests || []) {
+			this.accountRecoveryRequests.set(row.id, {
+				id: row.id, userId: row.user_id, ipHash: row.ip_hash, ipMasked: row.ip_masked,
+				userAgent: row.user_agent, authProvider: row.auth_provider, requestTokenHash: row.request_token_hash,
+				status: row.status, trustScore: Number(row.trust_score || 0), waitUntil: row.wait_until,
+				startedAt: row.started_at, lastNotifiedAt: row.last_notified_at,
+				notifiedCount: Number(row.notified_count || 0), decidedAt: row.decided_at,
+				decidedBy: row.decided_by ?? null, consumedAt: row.consumed_at,
+			});
+		}
+		for (const row of data.tables.blocked_login_ips || []) {
+			this.blockedLoginIps.set(`${row.user_id}:${row.ip_hash}`, {
+				userId: Number(row.user_id), ipHash: row.ip_hash, ipMasked: row.ip_masked,
+				reason: row.reason ?? null, sourceRecoveryId: row.source_recovery_id ?? null, createdAt: row.created_at,
 			});
 		}
 		for (const row of data.tables.bot_tokens) {
@@ -308,7 +403,18 @@ class InMemoryAdapter extends DatabaseAdapter {
 				const score = Math.max(0, Number(row.score) || 0);
 				if (!keyword || score <= 0) continue;
 				if (!this.userKeywordAffinityByUser.has(userId)) this.userKeywordAffinityByUser.set(userId, new Map());
-				this.userKeywordAffinityByUser.get(userId).set(keyword, score);
+				const updatedAt = new Date(row.updated_at ?? Date.now()).getTime();
+				this.userKeywordAffinityByUser.get(userId).set(keyword, {
+					score,
+					updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+				});
+			}
+			for (const row of data.tables.post_feedback || []) {
+				const userId = Number(row.user_id);
+				const postId = Number(row.post_id);
+				if (!Number.isInteger(userId) || !Number.isInteger(postId)) continue;
+				if (!this.postFeedbackByUser.has(userId)) this.postFeedbackByUser.set(userId, new Map());
+				this.postFeedbackByUser.get(userId).set(postId, String(row.kind || 'not_interested'));
 			}
 			for (const [table, target, countMap] of [
 				['reposts', this.reposts, this.repostCountByPost],
@@ -372,6 +478,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				description: row.description, targetSnapshot: row.target_snapshot, assignmentType: row.assignment_type,
 				status: row.status, assignedAdminId: row.assigned_admin_id, assignedAt: row.assigned_at,
 				excludedAdminIds: row.excluded_admin_ids, resolution: row.resolution, createdAt: row.created_at, resolvedAt: row.resolved_at,
+				claimedAt: row.claimed_at ?? row.claimedAt ?? null,
 			};
 			this.moderationReports.set(report.id, report);
 			this.nextModerationReportId = Math.max(this.nextModerationReportId, Number(report.id) + 1);
@@ -558,9 +665,11 @@ class InMemoryAdapter extends DatabaseAdapter {
 				for (const keyword of keywords) {
 					const normalizedKeyword = String(keyword || '').trim().toLowerCase();
 					if (!normalizedKeyword) continue;
-					const nextScore = Math.max(0, (affinities.get(normalizedKeyword) || 0) + Number(delta));
+					const current = affinities.get(normalizedKeyword);
+					const nextScore = Math.max(0, (current?.score || 0) + Number(delta));
 					if (nextScore === 0) affinities.delete(normalizedKeyword);
-					else affinities.set(normalizedKeyword, nextScore);
+					// 更新時刻を保つことで Postgres/D1 と同じ興味の時間減衰を効かせる。
+					else affinities.set(normalizedKeyword, { score: nextScore, updatedAt: Date.now() });
 				}
 				if (affinities.size === 0) this.userKeywordAffinityByUser.delete(normalizedUserId);
 			}
@@ -574,7 +683,48 @@ class InMemoryAdapter extends DatabaseAdapter {
 				const post = this.posts.get(Number(postId));
 				if (!post) return false;
 				this._adjustUserKeywordAffinities(Number(userId), Number(postId), -15);
+				await this.recordPostFeedback(userId, postId, 'not_interested');
 				return true;
+			}
+
+			async recordPostFeedback(userId, postId, kind = 'not_interested') {
+				const uId = Number(userId);
+				const pId = Number(postId);
+				if (!Number.isInteger(uId) || !Number.isInteger(pId)) return false;
+				if (!this.postFeedbackByUser.has(uId)) this.postFeedbackByUser.set(uId, new Map());
+				this.postFeedbackByUser.get(uId).set(pId, String(kind || 'not_interested'));
+				return true;
+			}
+
+			async getPostFeedbackForUser(userId) {
+				const uId = Number(userId);
+				if (!Number.isInteger(uId)) return { postIds: [], authorIds: [] };
+				const feedbacks = this.postFeedbackByUser.get(uId);
+				if (!feedbacks || feedbacks.size === 0) return { postIds: [], authorIds: [] };
+				// Postgres/D1 と揃え、新しい「興味なし」500件だけを使う（Map は古い順なので末尾を取る）。
+				// kind で絞ってから切る。先に切ると他の kind が混在したとき件数がずれる。
+				const recentFeedback = [...feedbacks.entries()]
+					.filter(([, kind]) => kind === 'not_interested')
+					.slice(-500)
+					.reverse();
+				const postIds = [];
+				const authorIds = new Set();
+				for (const [postId] of recentFeedback) {
+					postIds.push(Number(postId));
+					const post = this.posts.get(Number(postId));
+					const authorId = Number(post?.userId ?? post?.user_id);
+					if (Number.isInteger(authorId)) authorIds.add(authorId);
+				}
+				return { postIds, authorIds: [...authorIds] };
+			}
+
+			// Postgres/D1 は post_feedback が投稿削除で CASCADE 消える。インメモリでも同じ挙動に
+			// しないと、消えた投稿への「表示しない」評価が永久に残り続ける。
+			_removePostFeedbackForPost(postId) {
+				const target = Number(postId);
+				for (const [feedbackUserId, feedbacks] of this.postFeedbackByUser.entries()) {
+					if (feedbacks.delete(target) && feedbacks.size === 0) this.postFeedbackByUser.delete(feedbackUserId);
+				}
 			}
 
 			_updateFollowIndexes(followerId, followingId, following) {
@@ -655,14 +805,19 @@ class InMemoryAdapter extends DatabaseAdapter {
 				isPrimary: records.length === 0,
 				createdAt: user.createdAt || new Date(),
 			});
-		} else if (records.length === 0 && user.auth_provider && user.external_id) {
+		}
+		// users の auth_provider/external_id も、紐づけ行が無い場合の有効なログイン方法として一覧に含める。
+		// 一覧から消すと、解除ガードや設定画面の表示が実態とズレる。
+		const hasExternal = records.some((r) => String(r.provider).toLowerCase() === String(user.auth_provider || '').toLowerCase()
+			&& String(r.providerUserId) === String(user.external_id));
+		if (!hasExternal && user.auth_provider && user.external_id) {
 			records.push({
 				id: 0,
 				userId: targetId,
 				provider: user.auth_provider,
 				providerUserId: user.external_id,
 				providerProfile: user.external_profile || {},
-				isPrimary: true,
+				isPrimary: records.length === 0,
 				createdAt: user.createdAt || new Date(),
 			});
 		}
@@ -776,6 +931,50 @@ class InMemoryAdapter extends DatabaseAdapter {
 		}
 
 		return { success: true, deleted };
+	}
+
+	async revokeAuthProvider(userId, provider) {
+		const targetId = Number(userId);
+		const normProvider = String(provider || '').toLowerCase();
+		if (!normProvider) return { revoked: false, reason: 'invalid_provider' };
+		const user = this.users.get(targetId);
+		if (!user) return { revoked: false, reason: 'user_not_found' };
+
+		const linkedProviders = await this.getUserAuthProviders(targetId);
+		const remaining = linkedProviders.filter((p) => String(p.provider).toLowerCase() !== normProvider);
+		if (linkedProviders.length <= 1 || remaining.length < 1) {
+			return { revoked: false, reason: 'last_provider' };
+		}
+
+		for (const [id, record] of [...this.userAuthProviders.entries()]) {
+			if (record.userId === targetId && record.provider === normProvider) {
+				const key = `${record.provider}:${String(record.providerUserId).toLowerCase()}`;
+				this.userAuthProviders.delete(id);
+				this.authProviderLookup.delete(key);
+				this.externalAuthToId.delete(key);
+			}
+		}
+
+		const fallback = remaining[0];
+		if (normProvider === 'scratch' && user.scid) {
+			this.scidToId.delete(user.scid);
+			user.scid = null;
+		}
+		if (String(user.auth_provider || '').toLowerCase() === normProvider) {
+			if (user.external_id != null) {
+				this.externalAuthToId.delete(`${normProvider}:${String(user.external_id).toLowerCase()}`);
+			}
+			user.auth_provider = String(fallback.provider).toLowerCase();
+			user.external_id = null;
+			user.provider_domain = null;
+			user.external_profile = fallback.providerProfile || {};
+		}
+
+		return {
+			revoked: true,
+			provider: normProvider,
+			remainingProviders: remaining.map((p) => p.provider),
+		};
 	}
 
 	_withUserDefaults(user) {
@@ -1078,6 +1277,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			ipHash: String(approvalData.ipHash),
 			ipMasked: approvalData.ipMasked || '不明なIPアドレス',
 			userAgent: approvalData.userAgent || '不明な端末',
+			authProvider: approvalData.authProvider ? String(approvalData.authProvider).toLowerCase() : null,
 			pollTokenHash: String(approvalData.pollTokenHash),
 			status: 'pending',
 			createdAt: new Date(),
@@ -1115,10 +1315,163 @@ class InMemoryAdapter extends DatabaseAdapter {
 	async consumeLoginApproval(id, pollTokenHash) {
 		const approval = await this.getLoginApprovalByPollToken(id, pollTokenHash);
 		if (!approval || approval.status !== 'approved') return null;
+		// Postgres/D1 は expires_at > now も条件に含む。承認後に期限が切れた行は
+		// インメモリだけ消費できてしまうと、開発環境のみ二重発行を隠す。
+		if (approval.expiresAt && new Date(approval.expiresAt) <= new Date()) return null;
 		const stored = this.loginApprovals.get(approval.id);
 		stored.status = 'consumed';
 		stored.consumedAt = new Date();
 		return { ...stored };
+	}
+
+	_blockedLoginIpKey(userId, ipHash) {
+		return `${Number(userId)}:${String(ipHash)}`;
+	}
+
+	async createAccountRecoveryRequest(data) {
+		const id = data.id || crypto.randomBytes(18).toString('base64url');
+		const now = new Date().toISOString();
+		const request = {
+			id,
+			userId: Number(data.userId),
+			ipHash: String(data.ipHash),
+			ipMasked: data.ipMasked || '不明なIPアドレス',
+			userAgent: data.userAgent || '不明な端末',
+			authProvider: String(data.authProvider || '').toLowerCase(),
+			requestTokenHash: String(data.requestTokenHash),
+			status: 'waiting',
+			trustScore: Number(data.trustScore || 0),
+			waitUntil: new Date(data.waitUntil).toISOString(),
+			startedAt: now,
+			lastNotifiedAt: now,
+			notifiedCount: 1,
+			decidedAt: null,
+			decidedBy: null,
+			consumedAt: null,
+		};
+		this.accountRecoveryRequests.set(id, request);
+		return { ...request };
+	}
+
+	async getAccountRecoveryRequest(id) {
+		const request = this.accountRecoveryRequests.get(String(id));
+		return request ? { ...request } : null;
+	}
+
+	async getAccountRecoveryRequestByToken(id, tokenHash) {
+		const request = await this.getAccountRecoveryRequest(id);
+		if (!request || request.requestTokenHash !== String(tokenHash)) return null;
+		return request;
+	}
+
+	async getActiveAccountRecoveryRequest(userId, ipHash) {
+		if (!ipHash) return null;
+		let latest = null;
+		for (const request of this.accountRecoveryRequests.values()) {
+			if (Number(request.userId) === Number(userId) && request.ipHash === String(ipHash) && request.status === 'waiting') {
+				if (!latest || String(request.startedAt) > String(latest.startedAt)) latest = request;
+			}
+		}
+		return latest ? { ...latest } : null;
+	}
+
+	async rotateAccountRecoveryToken(id, tokenHash) {
+		const stored = this.accountRecoveryRequests.get(String(id));
+		if (!stored || stored.status !== 'waiting') return null;
+		stored.requestTokenHash = String(tokenHash);
+		return { ...stored };
+	}
+
+	async listAccountRecoveryRequestsToNotify(cutoff) {
+		const cutoffTime = new Date(cutoff).getTime();
+		const result = [];
+		for (const request of this.accountRecoveryRequests.values()) {
+			if (request.status !== 'waiting') continue;
+			if (!request.lastNotifiedAt || new Date(request.lastNotifiedAt).getTime() <= cutoffTime) result.push({ ...request });
+		}
+		return result;
+	}
+
+	async markAccountRecoveryNotified(id, notifiedAt) {
+		const stored = this.accountRecoveryRequests.get(String(id));
+		if (!stored) return;
+		stored.lastNotifiedAt = new Date(notifiedAt || new Date()).toISOString();
+		stored.notifiedCount = Number(stored.notifiedCount || 0) + 1;
+	}
+
+	async listDueAccountRecoveryRequests(now) {
+		const nowTime = new Date(now).getTime();
+		const result = [];
+		for (const request of this.accountRecoveryRequests.values()) {
+			if (request.status === 'waiting' && new Date(request.waitUntil).getTime() <= nowTime) result.push({ ...request });
+		}
+		return result;
+	}
+
+	async decideAccountRecoveryRequest(userId, id, decision) {
+		const stored = this.accountRecoveryRequests.get(String(id));
+		if (!stored || Number(stored.userId) !== Number(userId)) return null;
+		const wantsBlock = !(decision === 'approve' || decision === 'approved');
+		// 侵害者は待機時間を経過させて自動承認を進められる。所有者のブロックは
+		// 「承認済み（未消費）」の状態からも実行できなければ防御にならない。
+		if (stored.status !== 'waiting' && !(wantsBlock && stored.status === 'approved')) return { ...stored };
+		stored.status = wantsBlock ? 'blocked' : 'approved';
+		stored.decidedAt = new Date().toISOString();
+		stored.decidedBy = 'user';
+		return { ...stored };
+	}
+
+	async approveDueAccountRecoveryRequest(id, decidedBy = 'timeout') {
+		const stored = this.accountRecoveryRequests.get(String(id));
+		if (!stored || stored.status !== 'waiting') return null;
+		if (new Date(stored.waitUntil).getTime() > Date.now()) return null;
+		stored.status = 'approved';
+		stored.decidedAt = new Date().toISOString();
+		stored.decidedBy = String(decidedBy);
+		return { ...stored };
+	}
+
+	async consumeAccountRecoveryRequest(id, tokenHash) {
+		const stored = this.accountRecoveryRequests.get(String(id));
+		if (!stored || stored.requestTokenHash !== String(tokenHash) || stored.status !== 'approved') return null;
+		stored.status = 'consumed';
+		stored.consumedAt = new Date().toISOString();
+		return { ...stored };
+	}
+
+	async blockLoginIp(userId, { ipHash, ipMasked, reason = null, sourceRecoveryId = null } = {}) {
+		if (!ipHash) throw new Error('ipHash is required');
+		const record = {
+			userId: Number(userId),
+			ipHash: String(ipHash),
+			ipMasked: ipMasked || '不明なIPアドレス',
+			reason,
+			sourceRecoveryId,
+			createdAt: new Date().toISOString(),
+		};
+		this.blockedLoginIps.set(this._blockedLoginIpKey(userId, ipHash), record);
+		return { ...record };
+	}
+
+	async getBlockedLoginIp(userId, ipHash) {
+		if (!ipHash) return null;
+		const record = this.blockedLoginIps.get(this._blockedLoginIpKey(userId, ipHash));
+		return record ? { ...record } : null;
+	}
+
+	async listBlockedLoginIps(userId) {
+		const normalizedUserId = Number(userId);
+		const records = [];
+		for (const record of this.blockedLoginIps.values()) {
+			if (Number(record.userId) === normalizedUserId) records.push({ ...record });
+		}
+		records.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+		return records;
+	}
+
+	async unblockLoginIp(userId, ipHash) {
+		if (!ipHash) return false;
+		return this.blockedLoginIps.delete(this._blockedLoginIpKey(userId, ipHash));
 	}
 
 	async createBotToken(userId, tokenId, tokenHash, name) {
@@ -1668,14 +2021,275 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return this._groupPostResult(sourceIds, limit, offset, beforeId, (post) => Boolean(post.groupAnnouncement || post.group_announcement), { cursor, cursorCreatedAt, cursorId });
 	}
 
-	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
+	async searchGroupPostIds(userId, query, { limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null, searchFilters = null } = {}) {
 		const q = String(query || '').trim().toLowerCase();
-		if (!q) return { ids: [], has_more: false, next_cursor: null };
+		if (!q && !searchFilters) return { ids: [], has_more: false, next_cursor: null };
 		const activeGroupIds = new Set((this.groupIdsByUser.get(Number(userId)) || new Set()).values());
 		const posts = [...this.posts.values()].filter((post) => post.groupId && activeGroupIds.has(post.groupId) &&
 			this.groupMemberships.get(this._groupMemberKey(post.groupId, userId))?.status === 'active' &&
-			(String(post.viewContent || post.view_content || extractViewContent(post.content || '')).toLowerCase().includes(q) || String(post.content || '').toLowerCase().includes(q)));
+			(searchFilters ? matchesPostSearch(post, searchFilters) : (String(post.viewContent || post.view_content || extractViewContent(post.content || '')).toLowerCase().includes(q) || String(post.content || '').toLowerCase().includes(q))));
 		return this._groupPostResult(posts, limit, offset, beforeId, null, { cursor, cursorCreatedAt, cursorId });
+	}
+
+	// ==================== Spaces ====================
+	_spaceMemberKey(spaceId, userId) {
+		return `${spaceId}:${userId}`;
+	}
+
+	_cloneSpace(space) {
+		if (!space) return null;
+		const memberCount = this._spaceMemberCount(space.id);
+		return {
+			id: space.id, ownerId: space.ownerId, owner_id: space.ownerId,
+			name: space.name, description: space.description,
+			iconData: space.iconData, icon_data: space.iconData,
+			headerImage: space.headerImage, header_image: space.headerImage,
+			visibility: space.visibility,
+			groupId: space.groupId ?? null, group_id: space.groupId ?? null,
+			stage_settings: space.stage_settings || null,
+			memberCount, member_count: memberCount,
+			createdAt: space.createdAt, created_at: space.createdAt,
+			updatedAt: space.updatedAt, updated_at: space.updatedAt,
+		};
+	}
+
+	_cloneSpaceChannel(channel) {
+		if (!channel) return null;
+		return {
+			id: channel.id, spaceId: channel.spaceId, space_id: channel.spaceId,
+			name: channel.name, kind: channel.kind, sortOrder: channel.sortOrder, sort_order: channel.sortOrder,
+			createdAt: channel.createdAt, created_at: channel.createdAt,
+		};
+	}
+
+	_cloneSpaceMember(member) {
+		if (!member) return null;
+		return {
+			spaceId: member.spaceId, space_id: member.spaceId, userId: member.userId, user_id: member.userId,
+			role: member.role, joinedAt: member.joinedAt, joined_at: member.joinedAt,
+		};
+	}
+
+	_cloneSpaceMessage(message) {
+		if (!message) return null;
+		return {
+			id: message.id, spaceId: message.spaceId, space_id: message.spaceId,
+			channelId: message.channelId, channel_id: message.channelId,
+			userId: message.userId, user_id: message.userId,
+			content: message.content,
+			createdAt: message.createdAt, created_at: message.createdAt,
+		};
+	}
+
+	_spaceMemberCount(spaceId) {
+		let count = 0;
+		for (const key of this.spaceMembers.keys()) {
+			if (key.startsWith(`${spaceId}:`)) count += 1;
+		}
+		return count;
+	}
+
+	async createSpace(spaceData) {
+		const id = String(spaceData.id || crypto.randomUUID());
+		const now = spaceData.createdAt ? new Date(spaceData.createdAt).toISOString() : new Date().toISOString();
+		const space = {
+			id,
+			ownerId: Number(spaceData.ownerId ?? spaceData.owner_id),
+			name: String(spaceData.name || '').trim(),
+			description: String(spaceData.description || ''),
+			iconData: spaceData.iconData ?? spaceData.icon_data ?? null,
+			headerImage: spaceData.headerImage ?? spaceData.header_image ?? null,
+			visibility: String(spaceData.visibility || 'public'),
+			groupId: spaceData.groupId ?? spaceData.group_id ?? null,
+			stage_settings: spaceData.stage_settings || null,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.spaces.set(id, space);
+		return this._cloneSpace(space);
+	}
+
+	async getSpaceById(spaceId) {
+		return this._cloneSpace(this.spaces.get(String(spaceId)) || null);
+	}
+
+	async updateSpace(spaceId, fields) {
+		const space = this.spaces.get(String(spaceId));
+		if (!space) return null;
+		if (fields.name !== undefined) space.name = String(fields.name).trim();
+		if (fields.description !== undefined) space.description = String(fields.description || '');
+		if (fields.iconData !== undefined || fields.icon_data !== undefined) space.iconData = fields.iconData ?? fields.icon_data ?? null;
+		if (fields.headerImage !== undefined || fields.header_image !== undefined) space.headerImage = fields.headerImage ?? fields.header_image ?? null;
+		if (fields.visibility !== undefined) space.visibility = String(fields.visibility);
+		if (fields.groupId !== undefined || fields.group_id !== undefined) space.groupId = fields.groupId ?? fields.group_id ?? null;
+		if (fields.stage_settings !== undefined) space.stage_settings = fields.stage_settings;
+		space.updatedAt = new Date().toISOString();
+		return this._cloneSpace(space);
+	}
+
+	async deleteSpace(spaceId) {
+		const id = String(spaceId);
+		if (!this.spaces.has(id)) return false;
+		this.spaces.delete(id);
+		for (const [channelId, channel] of [...this.spaceChannels.entries()]) {
+			if (channel.spaceId === id) this.spaceChannels.delete(channelId);
+		}
+		for (const key of [...this.spaceMembers.keys()]) {
+			if (key.startsWith(`${id}:`)) this.spaceMembers.delete(key);
+		}
+		for (const [messageId, message] of [...this.spaceMessages.entries()]) {
+			if (message.spaceId === id) this.spaceMessages.delete(messageId);
+		}
+		return true;
+	}
+
+	async listSpaces({ query = '', includePrivate = false, groupIds = null, limit = 20, offset = 0 } = {}) {
+		const q = String(query || '').trim().toLowerCase();
+		const groups = Array.isArray(groupIds) && groupIds.length ? new Set(groupIds.map(String)) : null;
+		const matched = [...this.spaces.values()]
+			.filter((space) => (groups ? groups.has(String(space.groupId)) : includePrivate ? true : space.visibility === 'public'))
+			.filter((space) => !q || space.name.toLowerCase().includes(q) || String(space.description || '').toLowerCase().includes(q))
+			.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+		const window = matched.slice(Math.max(0, Number(offset) || 0), Math.max(0, Number(offset) || 0) + Math.max(1, Math.min(Number(limit) || 20, 100)));
+		return window.map((space) => this._cloneSpace(space));
+	}
+
+	async listUserSpaces(userId, { limit = 50, offset = 0 } = {}) {
+		const targetId = Number(userId);
+		const matched = [...this.spaceMembers.values()]
+			.filter((member) => member.userId === targetId)
+			.map((member) => this.spaces.get(member.spaceId))
+			.filter(Boolean)
+			.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+		const window = matched.slice(Math.max(0, Number(offset) || 0), Math.max(0, Number(offset) || 0) + Math.max(1, Math.min(Number(limit) || 50, 100)));
+		return window.map((space) => ({ ...this._cloneSpace(space),
+			membership: this._cloneSpaceMember(this.spaceMembers.get(this._spaceMemberKey(space.id, targetId))), }));
+	}
+
+	async countSpacesByOwner(ownerId) {
+		const targetId = Number(ownerId);
+		return [...this.spaces.values()].filter((space) => space.ownerId === targetId).length;
+	}
+
+	async createSpaceChannel(channelData) {
+		const id = String(channelData.id || crypto.randomUUID());
+		const channel = {
+			id,
+			spaceId: String(channelData.spaceId ?? channelData.space_id),
+			name: String(channelData.name || '').trim(),
+			kind: String(channelData.kind || 'text'),
+			sortOrder: Number(channelData.sortOrder ?? channelData.sort_order) || 0,
+			createdAt: channelData.createdAt ? new Date(channelData.createdAt).toISOString() : new Date().toISOString(),
+		};
+		this.spaceChannels.set(id, channel);
+		return this._cloneSpaceChannel(channel);
+	}
+
+	async getSpaceChannel(channelId) {
+		return this._cloneSpaceChannel(this.spaceChannels.get(String(channelId)) || null);
+	}
+
+	async listSpaceChannels(spaceId) {
+		const targetSpaceId = String(spaceId);
+		return [...this.spaceChannels.values()]
+			.filter((channel) => channel.spaceId === targetSpaceId)
+			.sort((a, b) => a.sortOrder - b.sortOrder)
+			.map((channel) => this._cloneSpaceChannel(channel));
+	}
+
+	async updateSpaceChannel(channelId, fields) {
+		const channel = this.spaceChannels.get(String(channelId));
+		if (!channel) return null;
+		if (fields.name !== undefined) channel.name = String(fields.name).trim();
+		if (fields.kind !== undefined) channel.kind = String(fields.kind);
+		if (fields.sortOrder !== undefined || fields.sort_order !== undefined) channel.sortOrder = Number(fields.sortOrder ?? fields.sort_order) || 0;
+		return this._cloneSpaceChannel(channel);
+	}
+
+	async deleteSpaceChannel(channelId) {
+		const id = String(channelId);
+		const channel = this.spaceChannels.get(id);
+		if (!channel) return false;
+		this.spaceChannels.delete(id);
+		for (const [messageId, message] of [...this.spaceMessages.entries()]) {
+			if (message.channelId === id) this.spaceMessages.delete(messageId);
+		}
+		return true;
+	}
+
+	async createSpaceMember(memberData) {
+		const key = this._spaceMemberKey(String(memberData.spaceId ?? memberData.space_id), Number(memberData.userId ?? memberData.user_id));
+		const member = {
+			spaceId: String(memberData.spaceId ?? memberData.space_id),
+			userId: Number(memberData.userId ?? memberData.user_id),
+			role: String(memberData.role || 'member'),
+			joinedAt: memberData.joinedAt ? new Date(memberData.joinedAt).toISOString() : new Date().toISOString(),
+		};
+		this.spaceMembers.set(key, member);
+		return this._cloneSpaceMember(member);
+	}
+
+	async getSpaceMember(spaceId, userId) {
+		return this._cloneSpaceMember(this.spaceMembers.get(this._spaceMemberKey(String(spaceId), Number(userId))) || null);
+	}
+
+	async listSpaceMembers(spaceId, { limit = 100, offset = 0 } = {}) {
+		const targetSpaceId = String(spaceId);
+		const matched = [...this.spaceMembers.values()]
+			.filter((member) => member.spaceId === targetSpaceId)
+			.sort((a, b) => new Date(a.joinedAt) - new Date(b.joinedAt));
+		const window = matched.slice(Math.max(0, Number(offset) || 0), Math.max(0, Number(offset) || 0) + Math.max(1, Math.min(Number(limit) || 100, 200)));
+		return window.map((member) => this._cloneSpaceMember(member));
+	}
+
+	async deleteSpaceMember(spaceId, userId) {
+		const key = this._spaceMemberKey(String(spaceId), Number(userId));
+		if (!this.spaceMembers.has(key)) return false;
+		this.spaceMembers.delete(key);
+		return true;
+	}
+
+	async updateSpaceMemberCount(spaceId) {
+		const space = this.spaces.get(String(spaceId));
+		if (!space) return null;
+		space.updatedAt = new Date().toISOString();
+		return this._spaceMemberCount(String(spaceId));
+	}
+
+	async createSpaceMessage(messageData) {
+		const id = messageData.id != null && Number(messageData.id) > 0 ? Number(messageData.id) : this.nextSpaceMessageId++;
+		const message = {
+			id,
+			spaceId: String(messageData.spaceId ?? messageData.space_id),
+			channelId: String(messageData.channelId ?? messageData.channel_id),
+			userId: Number(messageData.userId ?? messageData.user_id),
+			content: String(messageData.content || ''),
+			createdAt: messageData.createdAt ? new Date(messageData.createdAt).toISOString() : new Date().toISOString(),
+		};
+		this.spaceMessages.set(id, message);
+		if (id >= this.nextSpaceMessageId) this.nextSpaceMessageId = id + 1;
+		return this._cloneSpaceMessage(message);
+	}
+
+	async listSpaceMessages(channelId, { limit = 50, beforeId = null } = {}) {
+		const targetChannelId = String(channelId);
+		const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+		const matched = [...this.spaceMessages.values()]
+			.filter((message) => message.channelId === targetChannelId)
+			.filter((message) => beforeId == null || message.id < Number(beforeId))
+			.sort((a, b) => b.id - a.id);
+		return matched.slice(0, safeLimit).map((message) => this._cloneSpaceMessage(message));
+	}
+
+	async getSpaceMessageById(messageId) {
+		return this._cloneSpaceMessage(this.spaceMessages.get(Number(messageId)) || null);
+	}
+
+	async deleteSpaceMessage(messageId) {
+		const id = Number(messageId);
+		if (!this.spaceMessages.has(id)) return false;
+		this.spaceMessages.delete(id);
+		return true;
 	}
 
 	async createPost(postData) {
@@ -1989,6 +2603,9 @@ class InMemoryAdapter extends DatabaseAdapter {
 						scid: author.scid,
 						handle: author.handle,
 						icon_data: author.icon_data,
+						me: author.me || author.bio || '',
+						bio: author.bio || author.me || '',
+						header_image: author.header_image || null,
 						verify: Boolean(author.verify),
 						admin: Boolean(author.admin),
 						group_badges: Array.isArray(author.group_badges) ? author.group_badges : [],
@@ -2025,6 +2642,22 @@ class InMemoryAdapter extends DatabaseAdapter {
 				.map((id) => this.posts.get(id))
 				.filter((post) => post && !post.groupId && !post.group_id)
 				.slice(0, Math.max(0, Number(limit) || 0));
+		}
+
+		async getScheduledPostsByUser(userId, now = new Date().toISOString(), { limit = 50, offset = 0 } = {}) {
+			const nowIso = String(now);
+			const normalizedLimit = Math.max(0, Number(limit) || 0);
+			const normalizedOffset = Math.max(0, Number(offset) || 0);
+			const matches = [];
+			for (const id of (this.postIdsByUser.get(Number(userId)) || [])) {
+				const post = this.posts.get(id);
+				if (!post || post.groupId || post.group_id) continue;
+				const scheduledAt = post.scheduledAt ?? post.scheduled_at ?? null;
+				if (!scheduledAt || String(scheduledAt) <= nowIso) continue;
+				matches.push(post);
+			}
+			matches.sort((a, b) => String(a.scheduledAt ?? a.scheduled_at).localeCompare(String(b.scheduledAt ?? b.scheduled_at)));
+			return matches.slice(normalizedOffset, normalizedOffset + normalizedLimit);
 		}
 
 	async toggleLike(userId, postId) {
@@ -2632,6 +3265,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				this.pinnedPosts.delete(key);
 			}
 		}
+		this._removePostFeedbackForPost(postId);
 
 		return true;
 	}
@@ -2675,6 +3309,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		for (const key of Array.from(this.pinnedPosts.keys())) {
 			if (key.endsWith(`:${postId}`)) this.pinnedPosts.delete(key);
 		}
+		this._removePostFeedbackForPost(postId);
 
 		// Note: Attachment cleanup should be handled at route level with storageAdapter
 
@@ -2988,6 +3623,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				resolution: null,
 				createdAt: now,
 				resolvedAt: null,
+				claimedAt: null,
 			};
 			this.moderationReports.set(report.id, report);
 			return this._copyModerationReport(report);
@@ -3044,6 +3680,10 @@ class InMemoryAdapter extends DatabaseAdapter {
 				assignment.expectedAdminId !== undefined &&
 				Number(report.assignedAdminId) !== Number(assignment.expectedAdminId)
 			) return null;
+			// スイープの SELECT 後に旧担当者が再claimしている事があるので、assign 自身も lease の生死を再確認して二重対応を防ぐ。
+			if (assignment.claimStaleBefore &&
+				report.claimedAt &&
+				new Date(report.claimedAt) > new Date(assignment.claimStaleBefore)) return null;
 			report.status = 'assigned';
 			report.assignedAdminId = Number(assignment.adminId);
 			report.assignedAt = assignment.assignedAt
@@ -3052,13 +3692,17 @@ class InMemoryAdapter extends DatabaseAdapter {
 			report.excludedAdminIds = [...new Set((assignment.excludedAdminIds || report.excludedAdminIds || [])
 				.map(Number)
 				.filter(Number.isInteger))];
+			// 再割り当て直前は旧担当者の lease が残っていると新担当者が詰まるので必ず消す。
+			report.claimedAt = null;
 			return this._copyModerationReport(report);
 		}
 
-		async getOverdueModerationReports(cutoff) {
+		async getOverdueModerationReports(cutoff, claimStaleBeforeIso = null) {
 			const deadline = new Date(cutoff);
+			const claimDeadline = claimStaleBeforeIso == null || claimStaleBeforeIso === '' ? null : new Date(claimStaleBeforeIso);
 			return [...this.moderationReports.values()]
 				.filter((report) => report.status === 'assigned' && report.assignedAt && new Date(report.assignedAt) <= deadline)
+				.filter((report) => !claimDeadline || !report.claimedAt || new Date(report.claimedAt) <= claimDeadline)
 				.map((report) => this._copyModerationReport(report));
 		}
 
@@ -3070,6 +3714,20 @@ class InMemoryAdapter extends DatabaseAdapter {
 				.map((report) => this._copyModerationReport(report));
 		}
 
+		async claimModerationReport(reportId, adminId, claimedAtIso) {
+			// 同期的なガードだけで直列化する（クリティカルセクションで await を挟まないことが原子的性の担保）。
+			// lease の更新なので freshness 条件は置かず、現担当者なら常に成功させる。
+			const report = this.moderationReports.get(Number(reportId));
+			if (
+				!report || report.status !== 'assigned' ||
+				Number(report.assignedAdminId) !== Number(adminId)
+			) return null;
+			// 不正な timestamp だと Invalid Date は期限切れと判定されず、该行はスイープから永久に外れる。
+			// Postgres 側の toIsoString フォールバックと同じ振る舞いに揃える。
+			report.claimedAt = new Date(claimedAtIso || Date.now());
+			return this._copyModerationReport(report);
+		}
+
 		async resolveModerationReport(reportId, adminId, resolution) {
 			const report = this.moderationReports.get(Number(reportId));
 			if (
@@ -3079,6 +3737,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			report.status = 'resolved';
 			report.resolution = JSON.parse(JSON.stringify(resolution || {}));
 			report.resolvedAt = new Date();
+			report.claimedAt = null;
 			return this._copyModerationReport(report);
 		}
 
@@ -3611,9 +4270,20 @@ class InMemoryAdapter extends DatabaseAdapter {
 				normalizedOffset + scoringBlockSize + 1,
 			);
 			const candidates = blockWithSentinel.slice(0, scoringBlockSize);
-			const keywordAffinities = normalizedViewerId == null
+			const rawAffinities = normalizedViewerId == null
+				? null
+				: this.userKeywordAffinityByUser.get(normalizedViewerId);
+			// Postgres/D1 と同样に、時間を減衰させた上位25件だけを興味プロファイルに使う。
+			const keywordAffinities = !rawAffinities || rawAffinities.size === 0
 				? new Map()
-				: (this.userKeywordAffinityByUser.get(normalizedViewerId) || new Map());
+				: buildAffinityProfile(
+					[...rawAffinities.entries()].map(([keyword, entry]) => ({
+						keyword,
+						score: entry.score,
+						updated_at: new Date(entry.updatedAt).toISOString(),
+					})),
+					{ limit: 25 },
+				);
 
 			const reactedPostIds = normalizedViewerId == null
 				? new Set()
@@ -3623,11 +4293,50 @@ class InMemoryAdapter extends DatabaseAdapter {
 					...(this.repostsByUser.get(normalizedViewerId) || []),
 				]);
 
+			const extendedFollowIds = new Set();
+			const dislikedPostIds = new Set();
+			const dislikedAuthors = new Set();
+			const blockedAuthors = new Set();
+			if (normalizedViewerId != null) {
+				for (const followedId of directFollowIds) {
+					const secondHop = this.followingIdsByUser.get(Number(followedId));
+					if (!secondHop) continue;
+					for (const secondId of secondHop) {
+						const normalizedSecond = Number(secondId);
+						if (!Number.isInteger(normalizedSecond) || normalizedSecond === normalizedViewerId) continue;
+						if (directFollowIds.has(normalizedSecond)) continue;
+						extendedFollowIds.add(normalizedSecond);
+					}
+				}
+				const feedback = this.postFeedbackByUser.get(normalizedViewerId);
+				if (feedback) {
+					// getPostFeedbackForUser と同じ有界読み（新着500件）。
+					for (const [postId] of [...feedback.entries()].filter(([, kind]) => kind === 'not_interested').slice(-500).reverse()) {
+						const normalizedPostId = Number(postId);
+						dislikedPostIds.add(normalizedPostId);
+						const post = this.posts.get(normalizedPostId);
+						const authorId = Number(post?.userId ?? post?.user_id);
+						if (Number.isInteger(authorId)) dislikedAuthors.add(authorId);
+					}
+				}
+				const viewer = this.users.get(normalizedViewerId);
+				if (Array.isArray(viewer?.block)) {
+					for (const id of viewer.block) {
+						const normalizedId = Number(id);
+						if (Number.isInteger(normalizedId)) blockedAuthors.add(normalizedId);
+					}
+				}
+			}
+
 			const scored = scoreRecommendedPosts(candidates, {
 				viewerId: normalizedViewerId,
 				keywordProfile: keywordAffinities,
 				directFollows: directFollowIds,
+				extendedFollows: extendedFollowIds,
 				reactedPostIds,
+				dislikedPostIds,
+				dislikedAuthors,
+				blockedAuthors,
 				limit: normalizedLimit,
 			});
 
@@ -3644,7 +4353,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		}
 
 		async searchPostIds(query, limit = 30, offset = 0, beforeId = null, _viewerId = null, options = {}) {
-			if (!query || query.trim().length === 0) return { ids: [], has_more: false, next_cursor: null };
+			if (!options.searchFilters && (!query || query.trim().length === 0)) return { ids: [], has_more: false, next_cursor: null };
 			const q = query.toLowerCase().trim();
 			const normalizedLimit = Math.max(1, Number(limit) || 30);
 			const decodedCursor = options?.cursorCreatedAt && options?.cursorId
@@ -3666,7 +4375,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 				const targetText = String(post.viewContent || post.view_content || extractViewContent(post.content || '')).toLowerCase();
 				const contentText = String(post.content || '').toLowerCase();
 				const tags = Array.isArray(post.tags) ? post.tags : [];
-				const isMatched =
+				const isMatched = options.searchFilters ? matchesPostSearch(post, options.searchFilters) :
 					isFuzzyMatch(targetText, q, 0.8) ||
 					isFuzzyMatch(contentText, q, 0.8) ||
 					tags.some((tag) => isFuzzyMatch(String(tag), q, 0.8));
@@ -3920,6 +4629,15 @@ class InMemoryAdapter extends DatabaseAdapter {
 			for (const approval of this.loginApprovals.values()) {
 				if (Number(approval.userId) === previousId) approval.userId = nextId;
 			}
+			for (const request of this.accountRecoveryRequests.values()) {
+				if (Number(request.userId) === previousId) request.userId = nextId;
+			}
+			const updatedBlockedLoginIps = new Map();
+			for (const record of this.blockedLoginIps.values()) {
+				const updated = Number(record.userId) === previousId ? { ...record, userId: nextId } : record;
+				updatedBlockedLoginIps.set(`${updated.userId}:${updated.ipHash}`, updated);
+			}
+			this.blockedLoginIps = updatedBlockedLoginIps;
 			for (const token of this.botTokens.values()) {
 				if (Number(token.userId) === previousId) token.userId = nextId;
 			}
@@ -4097,6 +4815,11 @@ class InMemoryAdapter extends DatabaseAdapter {
 				this.userKeywordAffinityByUser.delete(previousId);
 				this.userKeywordAffinityByUser.set(nextId, affinityMap);
 			}
+			if (this.postFeedbackByUser.has(previousId)) {
+				const feedbackMap = this.postFeedbackByUser.get(previousId);
+				this.postFeedbackByUser.delete(previousId);
+				this.postFeedbackByUser.set(nextId, feedbackMap);
+			}
 
 			// imposter parent_id and members
 			for (const candidate of this.users.values()) {
@@ -4201,11 +4924,15 @@ class InMemoryAdapter extends DatabaseAdapter {
 		this.sessions.forEach((session, token) => { if (Number(session.userId) === normalizedUserId) this.sessions.delete(token); });
 		this.trustedLoginIps.forEach((record, key) => { if (Number(record.userId) === normalizedUserId) this.trustedLoginIps.delete(key); });
 		this.loginApprovals.forEach((approval, id) => { if (Number(approval.userId) === normalizedUserId) this.loginApprovals.delete(id); });
+		this.accountRecoveryRequests.forEach((request, id) => { if (Number(request.userId) === normalizedUserId) this.accountRecoveryRequests.delete(id); });
+		this.blockedLoginIps.forEach((record, key) => { if (Number(record.userId) === normalizedUserId) this.blockedLoginIps.delete(key); });
 		this.botTokens.forEach((token, id) => { if (Number(token.userId) === normalizedUserId) this.botTokens.delete(id); });
 		this.pushSubscriptions.delete(normalizedUserId);
 		this.dmE2EKeys.delete(normalizedUserId);
 		this.likedPostIdsByUser.delete(normalizedUserId);
 		this.starredPostIdsByUser.delete(normalizedUserId);
+		this.postFeedbackByUser.delete(normalizedUserId);
+		this.userKeywordAffinityByUser.delete(normalizedUserId);
 		for (const key of [...this.likes.keys()]) if (key.startsWith(`${normalizedUserId}:`)) this.likes.delete(key);
 		for (const key of [...this.stars.keys()]) if (key.startsWith(`${normalizedUserId}:`)) this.stars.delete(key);
 		for (const key of [...this.reposts.keys()]) if (key.startsWith(`${normalizedUserId}:`)) this.reposts.delete(key);

@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const express = require('express');
 const config = require('../config');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
-const { serializePostsByIds, serializeNotification, invalidateUserBriefCache, clearUserBriefCache } = require('../utils/serialize');
+const { serializePostsByIds, invalidateUserBriefCache, clearUserBriefCache } = require('../utils/serialize');
 const { getPublicUrl } = require('../utils/nyaitterAddress');
 const { createNotificationIfAllowed } = require('../services/NotificationDeliveryService');
 const { resolvePostingUser } = require('../services/auth/PostAsUserService');
@@ -102,22 +102,6 @@ async function getGroupOr404(req, res) {
     return null;
   }
   return group;
-}
-
-async function publishNotification(req, userId, notification) {
-  if (!notification) return;
-  const structured = await serializeNotification(getDb(req), notification, getPublicUrl(req));
-  if (!structured) return;
-  try {
-    await req.app.locals.realtime?.publishNewNotification?.(userId, structured, getDb(req));
-  } catch (error) {
-    console.warn('[groups] realtime notification delivery failed:', error.message);
-  }
-  if (req.app.locals.pushNotificationService?.enabled) {
-    void req.app.locals.pushNotificationService.sendNotificationToUser(userId, structured, {
-      publicUrl: getPublicUrl(req),
-    }).catch((error) => console.warn('[groups] push notification delivery failed:', error.message));
-  }
 }
 
 async function listGroupInvitePermissionUserIds(db, group) {
@@ -283,16 +267,43 @@ router.post({
   summary: 'グループ招待への応答',
   auth: 'required',
 }, requireAuth, async (req, res) => {
+  const decision = String(req.body?.decision || '').toLowerCase();
+  if (!['accept', 'decline'].includes(decision)) {
+    return res.status(400).json({ error: '招待への応答が正しくありません。' });
+  }
   const db = getDb(req);
   const inviteId = String(req.params.inviteId || '').trim();
-  const accept = Boolean(req.body?.accept);
 
   try {
-    const result = await db.respondToGroupInvite(inviteId, req.user.id, accept);
-    res.json({ success: true, result });
+    const invite = await db.getGroupInvite(inviteId);
+    if (!invite || invite.status !== 'pending') {
+      return res.status(404).json({ error: '保留中の招待が見つかりません。' });
+    }
+    if (Number(invite.inviteeId ?? invite.invitee_id) !== Number(req.user.id)) {
+      return res.status(403).json({ error: 'この招待に応答する権限がありません。' });
+    }
+    const groupId = invite.groupId ?? invite.group_id;
+    if (decision === 'accept') {
+      const existing = await db.getGroupMembership(groupId, req.user.id);
+      if (existing?.status === 'banned') {
+        return res.status(403).json({ error: 'このグループへの参加を禁止されています。' });
+      }
+      if (existing?.status !== 'active') {
+        const group = await db.getGroupById(groupId);
+        if (group) await assertMembershipCapacity(req, group, req.user.id);
+        const memberRole = await getDefaultMemberRoleOrThrow(db, groupId);
+        await db.createGroupMembership({ groupId, userId: req.user.id, roleId: memberRole.id, status: 'active', joinedAt: new Date().toISOString() });
+      }
+      invalidateUserBriefCache(req.user.id);
+    }
+    const updated = await db.updateGroupInvite(invite.id, {
+      status: decision === 'accept' ? 'accepted' : 'declined',
+      respondedAt: new Date().toISOString(),
+    });
+    res.json({ success: true, invite: updated });
   } catch (error) {
     console.error('[groups] respond invite error:', error);
-    res.status(500).json({ error: error.message || '招待への応答に失敗しました。' });
+    res.status(500).json({ error: '招待への応答に失敗しました。' });
   }
 });
 
@@ -423,14 +434,13 @@ router.post({
         .filter((userId) => userId !== Number(req.user.id));
       await Promise.all(recipientIds.map(async (userId) => {
         try {
-          const notification = await createNotificationIfAllowed(db, {
+          await createNotificationIfAllowed(db, {
             userId,
             type: 'group_join_request',
             fromUserId: req.user.id,
             target: { kind: 'route', value: `#group/${group.id}/manage` },
             message: `「${group.name}」への参加申請が届いています。`,
           });
-          await publishNotification(req, userId, notification);
         } catch (error) {
           console.warn('[groups] join request notification delivery failed:', error.message);
         }
@@ -488,14 +498,13 @@ router.post({
     if (existing.length > 0) return res.status(409).json({ error: '保留中の招待がすでにあります。' });
     const invite = await db.createGroupInvite({ id: crypto.randomUUID(), groupId: group.id, inviterId: req.user.id, inviteeId, status: 'pending' });
     try {
-      const notification = await createNotificationIfAllowed(db, {
+      await createNotificationIfAllowed(db, {
         userId: inviteeId,
         type: 'group_invite',
         fromUserId: req.user.id,
         target: { kind: 'route', value: '#groups' },
         message: `「${group.name}」へのグループ招待が届いています。`,
       });
-      await publishNotification(req, inviteeId, notification);
     } catch (error) {
       console.warn('[groups] invite notification delivery failed:', error.message);
     }

@@ -1,3 +1,4 @@
+const { resolvePostSearchQuery } = require('../utils/postSearchQuery');
 const express = require('express');
 const PostService = require('../services/PostService');
 const { applyUserReactionsToPayload } = require('../utils/UserReactionCache');
@@ -11,7 +12,6 @@ const {
 	serializeReply,
 	serializePostsBatch,
 	serializePostsByIds,
-	serializeNotification,
 } = require('../utils/serialize');
 const {
 	isOwnedAttachmentKey,
@@ -81,33 +81,6 @@ async function getCachedTrendingHashtags(db, limit, type) {
 
 function getDbAdapter(req) {
 	return req.app.locals.dbAdapter;
-}
-
-async function publishNewNotification(req, userId, notification) {
-	const structuredNotification = await serializeNotification(
-		getDbAdapter(req),
-		notification,
-		getPublicUrl(req),
-	);
-	if (!structuredNotification) return;
-
-	const realtime = req.app.locals.realtime;
-	if (realtime) {
-		try {
-			await realtime.publishNewNotification(userId, structuredNotification, getDbAdapter(req));
-		} catch (error) {
-			console.warn('[posts] notification realtime delivery failed:', error.message);
-		}
-	}
-
-	const pushService = req.app.locals.pushNotificationService;
-	if (pushService?.enabled) {
-		void pushService.sendNotificationToUser(userId, structuredNotification, {
-			publicUrl: getPublicUrl(req),
-		}).catch((error) => {
-			console.warn('[posts] notification push delivery failed:', error.message);
-		});
-	}
 }
 
 function getStorageAdapter(req) {
@@ -198,6 +171,7 @@ async function getDiscoverableModePage(
 		order = 'latest',
 	},
 ) {
+	const searchFilters = mode === 'search' ? await resolvePostSearchQuery(db, query) : null;
 	return getDiscoverablePostPage({
 		db,
 		viewerId,
@@ -235,7 +209,7 @@ async function getDiscoverableModePage(
 				});
 			}
 			if (mode === 'search') {
-				return db.searchPostIds(query, candidateLimit, candidateOffset, candidateBeforeId, viewerId, { cursor: candidateCursor, cursorCreatedAt, cursorId });
+				return db.searchPostIds(query, candidateLimit, candidateOffset, candidateBeforeId, viewerId, { cursor: candidateCursor, cursorCreatedAt, cursorId, searchFilters });
 			}
 			throw new Error(`Unsupported discoverable mode: ${mode}`);
 		},
@@ -247,7 +221,7 @@ async function getThreadReplyPostIds(db, postId, limit, offset) {
 		try {
 			return await db.getThreadReplyPostIds(postId, limit, offset);
 		} catch (error) {
-			// 外部D1 Workerなどが段階的に更新される間は、従来の直下返信取得へ安全に後退する。
+			// ネスト返信の取得に失敗したら、直下返信の取得へ後退する。
 			console.warn('[posts] nested reply query fallback:', error.message);
 		}
 	}
@@ -334,9 +308,7 @@ function createPostActionContext(req) {
 		db: getDbAdapter(req),
 		storage: getStorageAdapter(req),
 		realtime: req.app.locals.realtime,
-		pushService: req.app.locals.pushNotificationService,
 		autoModerationService: req.app.locals.autoModerationService,
-		publicUrl: getPublicUrl(req),
 		authRequest: {
 			user: { ...req.user, visibilityUser: null },
 			headers: { cookie: req.headers.cookie || '' },
@@ -567,7 +539,7 @@ router.get({
 					visibilityContext,
 				),
 				currentUserId != null && typeof db.searchGroupPostIds === 'function'
-					? db.searchGroupPostIds(currentUserId, q, { limit, offset, beforeId })
+					? db.searchGroupPostIds(currentUserId, q, { limit, offset, beforeId, cursor: rawCursor, searchFilters: await resolvePostSearchQuery(db, q) })
 					: Promise.resolve({ ids: [], has_more: false, next_cursor: null }),
 			]);
 			const groupPosts = await serializePostsByIds(
@@ -583,7 +555,7 @@ router.get({
 				res.json({ posts: mergedPosts, has_next: has_more || Boolean(groupPage.has_more), next_cursor: next_cursor || groupPage.next_cursor || null });
 		} catch (err) {
 			console.error('[posts] search error:', err);
-		res.status(500).json({ error: '検索に失敗しました' });
+		res.status(err.statusCode === 400 ? 400 : 500).json({ error: err.statusCode === 400 ? err.message : '検索に失敗しました' });
 	}
 });
 
@@ -663,6 +635,16 @@ router.get({
 	const idsParam = req.query.ids || '';
 	const order = ['latest', 'oldest', 'recommended'].includes(req.query.order) ? req.query.order : 'latest';
 	const cacheKey = `${mode}:${tab}:${order}:${req.query.q || ''}:${userIdParam}:${subTypeParam}:${pinIdParam}:${idsParam}:${currentUserId || 0}:${ngWordsKey}:${limit}:${offset}:${beforeId || 0}:${rawSinceId || 0}:${rawCursor || ''}`;
+	// 無効化の判定材料はキーから復元せず添えて渡す。q にコロンが含まれるとキーのフィールド境界がずれるため。
+	const cacheMeta = {
+		mode,
+		tab,
+		order,
+		query: String(req.query.q || ''),
+		profileUserId: userIdParam,
+		subType: subTypeParam,
+		viewerId: currentUserId,
+	};
 	const cachedPayload = timelineCacheManager.getPayload(cacheKey);
 	if (cachedPayload) {
 		return res.json(await applyUserReactionsToPayload(db,cachedPayload,currentUserId));
@@ -703,7 +685,7 @@ router.get({
 					order,
 				});
 				if (result?.ids) {
-					timelineCacheManager.setIds(cacheKey, result);
+					timelineCacheManager.setIds(cacheKey, result, null, cacheMeta);
 				}
 			} else if (mode === 'profile') {
 				const userId = safeParsePostId(req.query.user_id);
@@ -727,6 +709,19 @@ router.get({
 				}
 				const pinId = safeParsePostId(req.query.pin_id);
 				if (beforeId == null && offset === 0 && pinId && !result.ids.includes(pinId)) result.ids.push(pinId);
+				// 予約中ポストは通常のプロフィール一覧には出さず、専用の「予約済み」タブでのみ表示する。
+				if (Array.isArray(result.ids) && result.ids.length > 0 && typeof db.getPostsByIds === 'function') {
+					const idPosts = await db.getPostsByIds(result.ids);
+					const scheduledIds = new Set((idPosts || [])
+						.filter((post) => post && (post.scheduledAt ?? post.scheduled_at))
+						.map((post) => Number(post.id)));
+					if (scheduledIds.size > 0) {
+						result.ids = result.ids.filter((id) => !scheduledIds.has(Number(id)));
+						if (Array.isArray(result.posts)) {
+							result.posts = result.posts.filter((post) => !scheduledIds.has(Number(post.id)));
+						}
+					}
+				}
 			} else if (mode === 'ids') {
 				const ids = String(req.query.ids || '')
 					.split(',')
@@ -757,7 +752,7 @@ router.get({
 				? new Map(result.posts.filter(Boolean).map((post) => [Number(post.id), post]))
 				: null;
 			// アダプターが候補と同時に返した投稿本体はID順に並べ直す。
-			// pin_id等で本体が不足する場合は、従来どおりID取得へ戻す。
+			// pin_id等で本体が不足する場合は、ID取得へ切り替える。
 			const providedPosts = providedPostMap && Array.isArray(result.ids)
 				&& result.ids.every((id) => providedPostMap.has(Number(id)))
 				? result.ids.map((id) => providedPostMap.get(Number(id)))
@@ -811,7 +806,7 @@ router.get({
 			},
 		};
 
-		timelineCacheManager.setPayload(cacheKey, payload);
+		timelineCacheManager.setPayload(cacheKey, payload, null, cacheMeta);
 
 		const isNdjson = req.headers.accept?.includes('application/x-ndjson') || req.query.stream === '1';
 		if (isNdjson) {
@@ -830,7 +825,7 @@ router.get({
 		res.json(payload);
 	} catch (err) {
 		console.error('[posts] page error:', err);
-		res.status(500).json({ error: '投稿ページの取得に失敗しました' });
+		res.status(err.statusCode === 400 ? 400 : 500).json({ error: err.statusCode === 400 ? err.message : '投稿ページの取得に失敗しました' });
 	}
 });
 
@@ -1198,13 +1193,12 @@ router.post({
 			const actionId = queue.enqueue('like', async () => {
 				const result = await postService.toggleLike(userId, postId);
 				if (result.liked && post.userId !== userId) {
-					const notification = await createNotificationIfAllowed(db, {
+					await createNotificationIfAllowed(db, {
 						userId: post.userId,
 						type: 'like',
 						fromUserId: userId,
 						target: { kind: 'post', id: postId },
 					});
-					if (notification) await publishNewNotification(req, post.userId, notification);
 				}
 			});
 			const count = typeof db.getLikeCount === 'function' ? await db.getLikeCount(postId) : 0;
@@ -1220,13 +1214,12 @@ router.post({
 			if (post.userId !== userId) {
 				void (async () => {
 					try {
-						const notification = await createNotificationIfAllowed(db, {
+						await createNotificationIfAllowed(db, {
 							userId: post.userId,
 							type: 'like',
 							fromUserId: userId,
 							target: { kind: 'post', id: postId },
 						});
-						if (notification) await publishNewNotification(req, post.userId, notification);
 					} catch (notifErr) {
 						console.warn('[posts] like notification background error:', notifErr.message);
 					}
@@ -1344,17 +1337,6 @@ router.delete({
 			context,
 			{ postId, userId, admin: true },
 		));
-
-		try {
-			const LogHubManager = require('../services/managementTool/LogHubManager');
-			LogHubManager.appendExternalLog({
-				type: 'admin',
-				level: 'warn',
-				source: 'admin-action',
-				message: `[Admin] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) がポスト #${postId} を管理者権限で削除`,
-				details: { adminUserId: req.user.id, postId, action: 'admin_delete_post' },
-			});
-		} catch (_) {}
 
 		return res.status(202).json({ success: true, queued: true, action_id: actionId });
 	} catch (error) {

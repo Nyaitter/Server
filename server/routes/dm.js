@@ -40,7 +40,9 @@ async function publishDmMessage(req, userIds, dmId, message, sender = null) {
 				? await db.getUsersByIds(memberIds)
 				: await Promise.all(memberIds.map((id) => db.getUserById(id)));
 			usersById = new Map((users || []).filter(Boolean).map((user) => [Number(user.id), user]));
-		} catch (_) {}
+		} catch (_) {
+			// 会話相手の取得に失敗しても、DM 配信自体は継続する。
+		}
 		blockedUserIds = await getBlockedDmMemberIds(db, senderId, [...recipientIds], usersById);
 	}
 	for (const userId of new Set((userIds || []).map(Number))) {
@@ -294,7 +296,9 @@ async function hasBlockedDmMemberPair(db, memberIds) {
 			? await db.getUsersByIds(uniqueMemberIds)
 			: await Promise.all(uniqueMemberIds.map((id) => db.getUserById(id)));
 		usersById = new Map((users || []).filter(Boolean).map((user) => [Number(user.id), user]));
-	} catch (_) {}
+	} catch (_) {
+		// 会話相手を取得できない場合は、ブロック関係なしとして扱う。
+	}
 	if (usersById) {
 		for (let index = 0; index < uniqueMemberIds.length; index += 1) {
 			const firstId = uniqueMemberIds[index];
@@ -767,6 +771,7 @@ router.put({
 		}
 
 			let updated = await db.updateGroupDm(dmId, updates);
+            await req.app.locals.calls?.refreshDm(dmId);
 			const newlyInvited = (updates.member || []).filter(id => !previousMemberIds.includes(id));
 			if (newlyInvited.length) updated = await appendSystemEvent(req, dmId, userId, invitationEvent(userId, newlyInvited));
 			for (const id of newlyInvited.filter(id => getAcceptedDmMemberIds(updated).includes(id))) {
@@ -806,6 +811,7 @@ router.delete({
 		}
 
 			await db.deleteGroupDm(dmId);
+            await req.app.locals.calls?.refreshDm(dmId);
 			await publishDmUnreadCounts(req, dm.member, dmId);
 			res.json({ success: true });
 	} catch (err) {
@@ -983,6 +989,7 @@ router.post({
 		}
 
 		await db.leaveGroupDm(dmId, userId);
+        await req.app.locals.calls?.refreshDm(dmId);
 		await appendSystemEvent(req, dmId, userId, `@${userId}が退出しました`);
 		await publishDmUnreadCounts(req, [userId], dmId);
 		res.json({ success: true });

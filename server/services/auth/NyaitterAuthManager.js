@@ -60,7 +60,7 @@ const STANDARD_SCOPES = {
   },
 };
 
-// Aliases for compatibility
+// 別名スコープも同一の定義を共有する。
 STANDARD_SCOPES['offline_access'] = { ...STANDARD_SCOPES['continuous_access'], id: 'offline_access' };
 STANDARD_SCOPES['read:profile'] = { ...STANDARD_SCOPES['profile:read'], id: 'read:profile' };
 STANDARD_SCOPES['read:posts'] = { ...STANDARD_SCOPES['posts:read'], id: 'read:posts' };
@@ -96,7 +96,9 @@ class NyaitterAuthManager {
           }
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      // 保存済みストアを読み込めない場合は空の状態で開始する。
+    }
   }
 
   static _savePendingStore() {
@@ -107,7 +109,9 @@ class NyaitterAuthManager {
         codes: Array.from(NyaitterAuthManager.pendingCodes.values()),
       };
       fs.writeFileSync(PENDING_STORE_FILE, JSON.stringify(data, null, 2), 'utf8');
-    } catch (_) {}
+    } catch (_) {
+      // ストアを保存できない環境でもリクエスト処理は継続する。
+    }
   }
 
   static _sweepExpired() {
@@ -396,7 +400,9 @@ class NyaitterAuthManager {
             icon_url: u.icon_url || null,
           };
         }
-      } catch (_) {}
+      } catch (_) {
+        // ユーザー情報を取得できなければスナップショット無しで続行する。
+      }
     }
 
     // Generate temporary one-time authorization code
@@ -518,6 +524,7 @@ class NyaitterAuthManager {
         handle: user.handle || null,
         icon_data: user.icon_data || null,
         me: user.me || null,
+        header_image: user.header_image || null,
         created_at: user.created_at || null,
       },
       granted_scopes: approvedData.grantedScopes,

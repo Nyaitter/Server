@@ -97,7 +97,7 @@ NyaitterAuth は OAuth 2.0 / PKCE (Proof Key for Code Exchange) に準拠した�
 {
   "success": true,
   "request_id": "req_1234567890",
-  "auth_url": "https://nyaitter.net/#nyaitter-auth?request_id=req_1234567890"
+  "auth_url": "https://example.com/#nyaitter-auth?request_id=req_1234567890"
 }
 \`\`\`
 

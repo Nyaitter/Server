@@ -7,6 +7,11 @@ const crypto = require('crypto');
 const SNAPSHOT_VERSION = 1;
 const TABLES = Object.freeze([
   'users',
+  'user_auth_providers',
+  'spaces',
+  'space_channels',
+  'space_members',
+  'space_messages',
   'sessions',
   'trusted_login_ips',
   'login_approvals',
@@ -366,6 +371,64 @@ function normalizeRow(table, input) {
       resolution: parseJson(value.resolution, null),
       created_at: normalizeDate(value.created_at ?? value.createdAt),
       resolved_at: normalizeDate(value.resolved_at ?? value.resolvedAt),
+      claimed_at: normalizeDate(value.claimed_at ?? value.claimedAt),
+    };
+  }
+
+  if (table === 'user_auth_providers') {
+    return {
+      id: normalizeInteger(value.id),
+      user_id: normalizeInteger(value.user_id ?? value.userId),
+      provider: String(value.provider || '').toLowerCase(),
+      provider_user_id: String(value.provider_user_id ?? value.providerUserId ?? ''),
+      provider_profile: parseJson(value.provider_profile ?? value.providerProfile, {}),
+      created_at: normalizeDate(value.created_at ?? value.createdAt),
+    };
+  }
+
+  if (table === 'spaces') {
+    return {
+      stage_settings: value.stage_settings || null,
+      id: String(value.id || ''),
+      owner_id: normalizeInteger(value.owner_id ?? value.ownerId),
+      name: String(value.name || ''),
+      description: String(value.description || ''),
+      icon_data: value.icon_data ?? value.iconData ?? null,
+      header_image: value.header_image ?? value.headerImage ?? null,
+      visibility: value.visibility || 'public',
+      created_at: normalizeDate(value.created_at ?? value.createdAt),
+      updated_at: normalizeDate(value.updated_at ?? value.updatedAt),
+    };
+  }
+
+  if (table === 'space_channels') {
+    return {
+      id: String(value.id || ''),
+      space_id: String(value.space_id ?? value.spaceId ?? ''),
+      name: String(value.name || ''),
+      kind: value.kind || 'text',
+      sort_order: normalizeInteger(value.sort_order ?? value.sortOrder, 0),
+      created_at: normalizeDate(value.created_at ?? value.createdAt),
+    };
+  }
+
+  if (table === 'space_members') {
+    return {
+      space_id: String(value.space_id ?? value.spaceId ?? ''),
+      user_id: normalizeInteger(value.user_id ?? value.userId),
+      role: value.role || 'member',
+      joined_at: normalizeDate(value.joined_at ?? value.joinedAt),
+    };
+  }
+
+  if (table === 'space_messages') {
+    return {
+      id: normalizeInteger(value.id),
+      space_id: String(value.space_id ?? value.spaceId ?? ''),
+      channel_id: String(value.channel_id ?? value.channelId ?? ''),
+      user_id: normalizeInteger(value.user_id ?? value.userId),
+      content: String(value.content || ''),
+      created_at: normalizeDate(value.created_at ?? value.createdAt),
     };
   }
 

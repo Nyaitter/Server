@@ -9,6 +9,8 @@ const NOTIFICATION_TYPES = new Set([
   'dm_invite',
   'dm_removed',
   'dm_host_transfer',
+  'dm_call',
+  'group_call',
   'group_invite',
   'group_join_request',
   'group_announcement',
@@ -16,9 +18,11 @@ const NOTIFICATION_TYPES = new Set([
   'scheduled_post',
   'auto_moderation',
   'login_approval',
+  'account_recovery',
   'moderation_assignment',
   'moderation_action_taken',
   'moderation_no_action',
+  'moderation_action',
   'appeal_approved',
   'appeal_rejected',
   'verification_approved',
@@ -83,6 +87,8 @@ function getNotificationActionText(notification) {
     case 'dm_invite': return `${actor} さんがあなたをDMに招待しました。`;
     case 'dm_removed': return `${actor} さんによってDMから削除されました。`;
     case 'dm_host_transfer': return `${actor} さんからDMの管理者権限を受け取りました。`;
+    case 'dm_call': return `${actor} さんからコールされました。`;
+    case 'group_call': return `${actor} さんがグループコールを開始しました。`;
     case 'group_invite': return `${actor} さんからグループ招待が届いています。`;
     case 'group_join_request': return `${actor} さんからグループへの参加申請が届いています。`;
     case 'group_announcement': return `${actor} さんがグループアナウンスを投稿しました。`;
@@ -90,9 +96,11 @@ function getNotificationActionText(notification) {
     case 'scheduled_post': return '予約投稿を公開しました。';
     case 'auto_moderation': return '自動モデレーションによりポストの公開範囲が変更されました。';
     case 'login_approval': return '不明な場所からのログイン承認が必要です。';
+    case 'account_recovery': return '不明な場所からアカウントアクセスの復旧依頼が届いています。';
     case 'moderation_assignment': return '新しい報告があなたに割り当てられました。';
     case 'moderation_action_taken': return 'あなたが報告したコンテンツは、審査により不適切であると判定されました。';
     case 'moderation_no_action': return 'あなたが報告したコンテンツは、審査により適切だと判定されたため対応されません。';
+    case 'moderation_action': return '運営による審査の結果、あなたのポストの公開範囲が変更されました。';
     case 'appeal_approved': return '異議申し立てが承認され、アカウントの凍結が解除されました。';
     case 'appeal_rejected': return '異議申し立ては審査の結果、承認されませんでした。';
     case 'verification_approved': return '認証申請が承認されました。プロフィールに認証バッジが表示されます。';

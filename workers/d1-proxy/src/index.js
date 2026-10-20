@@ -1,3 +1,6 @@
+import postSearchQuery from '../../../server/utils/postSearchQuery.js';
+const { buildPostSearchSql } = postSearchQuery;
+
 function json(data, status = 200, headers = {}) {
 	return new Response(JSON.stringify(data), {
 		status,
@@ -348,17 +351,19 @@ function formatD1PollRow(poll, voteRows = [], currentUserId = null) {
 }
 
 const MIGRATION_TABLES = [
-	'users', 'sessions', 'trusted_login_ips', 'login_approvals', 'bot_tokens', 'posts',
+	'users', 'user_auth_providers', 'spaces', 'space_channels', 'space_members', 'space_messages', 'sessions', 'trusted_login_ips', 'login_approvals', 'account_recovery_requests', 'blocked_login_ips', 'bot_tokens', 'posts',
 	'likes', 'stars', 'reposts', 'pinned_posts', 'follows', 'dm_channels', 'dm_messages',
 		'group_dms', 'dm_e2e_keys', 'notifications', 'push_subscriptions', 'moderation_reports', 'logs',
 		'groups', 'group_roles', 'group_memberships', 'group_invites', 'group_join_requests',
-	'user_keyword_affinities', 'polls', 'poll_votes', 'authorized_apps',
+	'user_keyword_affinities', 'polls', 'poll_votes', 'authorized_apps', 'post_feedback',
 ];
 const MIGRATION_COLUMNS = {
 	users: ['id', 'scid', 'name', 'handle', 'nyaitter_address', 'auth_provider', 'provider_domain', 'external_id', 'external_profile', 'uuid', 'settings', 'bio', 'header_image', 'icon_data', 'verify', 'freeze', 'admin', 'shadow', 'block', 'account_operation', 'created_at'],
 	sessions: ['session_id', 'token', 'user_id', 'ip_hash', 'ip_masked', 'user_agent', 'expires_at', 'created_at'],
 	trusted_login_ips: ['user_id', 'ip_hash', 'ip_masked', 'created_at', 'last_used_at'],
-	login_approvals: ['id', 'user_id', 'ip_hash', 'ip_masked', 'user_agent', 'poll_token_hash', 'status', 'created_at', 'expires_at', 'decided_at', 'consumed_at'],
+	login_approvals: ['id', 'user_id', 'ip_hash', 'ip_masked', 'user_agent', 'auth_provider', 'poll_token_hash', 'status', 'created_at', 'expires_at', 'decided_at', 'consumed_at'],
+	account_recovery_requests: ['id', 'user_id', 'ip_hash', 'ip_masked', 'user_agent', 'auth_provider', 'request_token_hash', 'status', 'trust_score', 'wait_until', 'started_at', 'last_notified_at', 'notified_count', 'decided_at', 'decided_by', 'consumed_at'],
+	blocked_login_ips: ['user_id', 'ip_hash', 'ip_masked', 'reason', 'source_recovery_id', 'created_at'],
 	bot_tokens: ['token_id', 'token_hash', 'user_id', 'name', 'created_at', 'last_used_at'],
 	posts: ['id', 'user_id', 'content', 'attachments', 'mask', 'lock', 'announcement', 'reply_to', 'repost_to', 'tags', 'tags_generated_at', 'group_id', 'group_announcement', 'created_at'],
 	likes: ['user_id', 'post_id', 'created_at'],
@@ -372,7 +377,7 @@ const MIGRATION_COLUMNS = {
 	dm_e2e_keys: ['user_id', 'public_key', 'created_at', 'updated_at'],
 	notifications: ['id', 'user_id', 'type', 'from_user_id', 'post_id', 'target', 'message', 'read', 'clicked', 'created_at'],
 	push_subscriptions: ['user_id', 'endpoint', 'expiration_time', 'p256dh', 'auth', 'session_token', 'created_at', 'updated_at'],
-	moderation_reports: ['id', 'reporter_user_id', 'target_kind', 'target_id', 'description', 'target_snapshot', 'assignment_type', 'status', 'assigned_admin_id', 'assigned_at', 'excluded_admin_ids', 'resolution', 'created_at', 'resolved_at'],
+	moderation_reports: ['id', 'reporter_user_id', 'target_kind', 'target_id', 'description', 'target_snapshot', 'assignment_type', 'status', 'assigned_admin_id', 'assigned_at', 'excluded_admin_ids', 'resolution', 'created_at', 'resolved_at', 'claimed_at'],
 	logs: ['id', 'scratch_id', 'nyaitter_id', 'masked_ip_uuid', 'log_time'],
 	groups: ['id', 'owner_id', 'name', 'description', 'icon_data', 'header_image', 'visibility', 'deleted_at', 'created_at', 'updated_at'],
 	group_roles: ['id', 'group_id', 'name', 'permissions', 'is_system', 'sort_order', 'created_at', 'updated_at'],
@@ -383,14 +388,21 @@ const MIGRATION_COLUMNS = {
 	polls: ['id', 'post_id', 'user_id', 'title', 'options', 'allow_multiple', 'allow_other', 'show_results_before_voting', 'expires_at', 'closed', 'closed_notified', 'created_at'],
 	poll_votes: ['id', 'poll_id', 'user_id', 'option_id', 'other_text', 'created_at'],
 	authorized_apps: ['id', 'user_id', 'app_id', 'app_token_hash', 'app_name', 'app_icon_url', 'scopes', 'access_token_id', 'access_token_hash', 'created_at', 'updated_at', 'last_used_at'],
+	post_feedback: ['user_id', 'post_id', 'kind', 'created_at'],
+	user_auth_providers: ['id', 'user_id', 'provider', 'provider_user_id', 'provider_profile', 'created_at'],
+	spaces: ['stage_settings', 'id', 'owner_id', 'name', 'description', 'icon_data', 'header_image', 'visibility', 'group_id', 'created_at', 'updated_at'],
+	space_channels: ['id', 'space_id', 'name', 'kind', 'sort_order', 'created_at'],
+	space_members: ['space_id', 'user_id', 'role', 'joined_at'],
+	space_messages: ['id', 'space_id', 'channel_id', 'user_id', 'content', 'created_at'],
 };
-const MIGRATION_JSON_COLUMNS = new Set(['external_profile', 'settings', 'block', 'attachments', 'tags', 'participants', 'member', 'post', 'unread', 'target', 'target_snapshot', 'excluded_admin_ids', 'resolution', 'permissions', 'options', 'scopes']);
+const MIGRATION_JSON_COLUMNS = new Set(['external_profile', 'settings', 'block', 'attachments', 'tags', 'participants', 'member', 'post', 'unread', 'target', 'target_snapshot', 'excluded_admin_ids', 'resolution', 'permissions', 'options', 'scopes', 'provider_profile']);
 const MIGRATION_BOOLEAN_COLUMNS = new Set(['verify', 'admin', 'shadow', 'mask', 'lock', 'announcement', 'group_announcement', 'is_system', 'read', 'clicked']);
-const MIGRATION_INSERT_ORDER = ['users', 'groups', 'group_roles', 'group_memberships', 'group_invites', 'group_join_requests', 'posts', 'dm_channels', 'group_dms', 'dm_e2e_keys', 'sessions', 'trusted_login_ips', 'login_approvals', 'bot_tokens', 'authorized_apps', 'follows', 'likes', 'stars', 'reposts', 'pinned_posts', 'user_keyword_affinities', 'dm_messages', 'notifications', 'push_subscriptions', 'moderation_reports', 'logs'];
+const MIGRATION_INSERT_ORDER = ['users', 'user_auth_providers', 'spaces', 'space_channels', 'space_members', 'space_messages', 'groups', 'group_roles', 'group_memberships', 'group_invites', 'group_join_requests', 'posts', 'dm_channels', 'group_dms', 'dm_e2e_keys', 'sessions', 'trusted_login_ips', 'login_approvals', 'account_recovery_requests', 'blocked_login_ips', 'bot_tokens', 'authorized_apps', 'follows', 'likes', 'stars', 'reposts', 'pinned_posts', 'user_keyword_affinities', 'post_feedback', 'dm_messages', 'notifications', 'push_subscriptions', 'moderation_reports', 'logs'];
 
 function migrationValue(column, value) {
 	if (value == null) return null;
-	if (MIGRATION_JSON_COLUMNS.has(column)) return JSON.stringify(value);
+	// エクスポートはD1の生値をそのまま返すため、JSON列が既に文字列の場合は再エンコードしない。
+	if (MIGRATION_JSON_COLUMNS.has(column)) return typeof value === 'string' ? value : JSON.stringify(value);
 	if (MIGRATION_BOOLEAN_COLUMNS.has(column)) return value ? 1 : 0;
 	return value;
 }
@@ -482,6 +494,18 @@ function normalizeUserRow(row) {
 	};
 }
 
+function normalizeAuthProviderRow(row) {
+	if (!row) return null;
+	return {
+		id: row.id,
+		userId: row.user_id,
+		provider: row.provider,
+		providerUserId: row.provider_user_id,
+		providerProfile: parseJsonSafe(row.provider_profile, {}),
+		createdAt: row.created_at || null,
+	};
+}
+
 function normalizeGroupRow(row) {
 	if (!row) return null;
 	const ownerId = Number(row.owner_id);
@@ -525,6 +549,51 @@ function normalizeGroupJoinRequestRow(row) {
 		createdAt: row.created_at ?? null, created_at: row.created_at ?? null, reviewedAt: row.reviewed_at ?? null, reviewed_at: row.reviewed_at ?? null };
 }
 
+function normalizeSpaceRow(row) {
+	if (!row) return null;
+	return {
+        stage_settings: row.stage_settings || null,
+		id: String(row.id), ownerId: Number(row.owner_id), owner_id: Number(row.owner_id),
+		name: row.name || '', description: row.description || '',
+		iconData: row.icon_data ?? null, icon_data: row.icon_data ?? null,
+		headerImage: row.header_image ?? null, header_image: row.header_image ?? null,
+		visibility: row.visibility || 'public',
+		groupId: row.group_id ?? null, group_id: row.group_id ?? null,
+		memberCount: Number(row.member_count) || 0, member_count: Number(row.member_count) || 0,
+		createdAt: row.created_at ?? null, created_at: row.created_at ?? null,
+		updatedAt: row.updated_at ?? null, updated_at: row.updated_at ?? null,
+	};
+}
+
+function normalizeSpaceChannelRow(row) {
+	if (!row) return null;
+	return {
+		id: String(row.id), spaceId: String(row.space_id), space_id: String(row.space_id),
+		name: row.name || '', kind: row.kind || 'text',
+		sortOrder: Number(row.sort_order) || 0, sort_order: Number(row.sort_order) || 0,
+		createdAt: row.created_at ?? null, created_at: row.created_at ?? null,
+	};
+}
+
+function normalizeSpaceMemberRow(row) {
+	if (!row) return null;
+	return {
+		spaceId: String(row.space_id), space_id: String(row.space_id),
+		userId: Number(row.user_id), user_id: Number(row.user_id),
+		role: row.role || 'member', joinedAt: row.joined_at ?? null, joined_at: row.joined_at ?? null,
+	};
+}
+
+function normalizeSpaceMessageRow(row) {
+	if (!row) return null;
+	return {
+		id: Number(row.id), spaceId: String(row.space_id), space_id: String(row.space_id),
+		channelId: String(row.channel_id), channel_id: String(row.channel_id),
+		userId: Number(row.user_id), user_id: Number(row.user_id),
+		content: row.content || '', createdAt: row.created_at ?? null, created_at: row.created_at ?? null,
+	};
+}
+
 function normalizePostRow(row) {
 	if (!row) return null;
 	return {
@@ -560,6 +629,8 @@ function normalizePostRow(row) {
 				scid: row.author_scid,
 				handle: row.author_handle,
 				icon_data: row.author_icon_data,
+				bio: row.author_bio,
+				header_image: row.author_header_image,
 				verify: row.author_verify,
 				admin: row.author_admin,
 				settings: row.author_settings,
@@ -664,6 +735,7 @@ function normalizeModerationReportRow(row) {
 		resolution: row.resolution ? parseJsonSafe(row.resolution, null) : null,
 		createdAt: row.created_at,
 		resolvedAt: row.resolved_at || null,
+		claimedAt: row.claimed_at || null,
 	};
 }
 
@@ -882,15 +954,16 @@ export default {
 				const ipMasked = body.ipMasked || '不明なIPアドレス';
 				const userAgent = body.userAgent || '不明な端末';
 				const pollTokenHash = String(body.pollTokenHash);
+				const authProvider = body.authProvider ? String(body.authProvider).toLowerCase() : null;
 				const expiresAt = body.expiresAt || new Date(Date.now() + 10 * 60000).toISOString();
 				const createdAt = new Date().toISOString();
 
 				await db.prepare(
-					`INSERT INTO login_approvals (id, user_id, ip_hash, ip_masked, user_agent, poll_token_hash, status, expires_at, created_at)
-					 VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
-				).bind(id, userId, ipHash, ipMasked, userAgent, pollTokenHash, expiresAt, createdAt).run();
+					`INSERT INTO login_approvals (id, user_id, ip_hash, ip_masked, user_agent, auth_provider, poll_token_hash, status, expires_at, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+				).bind(id, userId, ipHash, ipMasked, userAgent, authProvider, pollTokenHash, expiresAt, createdAt).run();
 
-				return json({ id, userId, ipHash, ipMasked, userAgent, pollTokenHash, status: 'pending', expiresAt, createdAt });
+				return json({ id, userId, ipHash, ipMasked, userAgent, authProvider, pollTokenHash, status: 'pending', expiresAt, createdAt });
 			}
 
 			if (method === 'GET' && pathname.match(/^\/login-approvals\/([^/]+)$/)) {
@@ -935,13 +1008,205 @@ export default {
 				const body = await request.json();
 				const now = new Date().toISOString();
 
-				await db.prepare(
+				const res = await db.prepare(
 					`UPDATE login_approvals SET status = 'consumed', consumed_at = ?
 					 WHERE id = ? AND poll_token_hash = ? AND status = 'approved' AND expires_at > ?`
 				).bind(now, id, String(body.pollTokenHash), now).run();
+				// changes=0 は「既に消費済み」「トークン不一致」「承認後に期限切れ」。
+				// 行を返すと同じ poll token で2つ目のセッションが発行される（Postgres は RETURNING で null）。
+				if (res.meta.changes === 0) return json(null);
 
 				const row = await db.prepare('SELECT * FROM login_approvals WHERE id = ?').bind(id).first();
 				return json(row || null);
+			}
+
+			if (method === 'POST' && pathname === '/account-recovery') {
+				const body = await request.json();
+				const id = body.id || crypto.randomUUID();
+				const userId = Number(body.userId);
+				const ipHash = String(body.ipHash);
+				const ipMasked = body.ipMasked || '不明なIPアドレス';
+				const userAgent = body.userAgent || '不明な端末';
+				const authProvider = String(body.authProvider || '').toLowerCase();
+				const requestTokenHash = String(body.requestTokenHash);
+				const trustScore = Number(body.trustScore || 0);
+				const waitUntil = body.waitUntil;
+				const now = new Date().toISOString();
+
+				await db.prepare(
+					`INSERT INTO account_recovery_requests
+					 (id, user_id, ip_hash, ip_masked, user_agent, auth_provider, request_token_hash, status, trust_score, wait_until, started_at, last_notified_at, notified_count)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, 1)`
+				).bind(id, userId, ipHash, ipMasked, userAgent, authProvider, requestTokenHash, trustScore, waitUntil, now, now).run();
+
+				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
+				return json(row || null);
+			}
+
+			if (method === 'GET' && pathname === '/account-recovery/waiting') {
+				// 復旧を完了できる token/ip_hash は一覧の呼び出し側が読まない列なので返さない。
+				// 述語と並び順は PG と同じく SQL 側で選ぶ。絞り込みを外へ出すと、LIMIT で
+				// 切り落とされた行に期限到来の依頼が埋もれて自動承認が進まない。
+				const mode = url.searchParams.get('mode');
+				const cutoffTime = new Date(url.searchParams.get('cutoff') || '').getTime();
+				if (!Number.isFinite(cutoffTime)) return badRequest('Invalid account recovery cutoff');
+
+				let sql = '';
+				if (mode === 'due') {
+					sql = `SELECT id, user_id, status, wait_until, started_at, last_notified_at, notified_count
+						 FROM account_recovery_requests
+						 WHERE status = 'waiting' AND wait_until <= ?
+						 ORDER BY wait_until ASC
+						 LIMIT 50`;
+				} else if (mode === 'notify') {
+					sql = `SELECT id, user_id, status, wait_until, started_at, last_notified_at, notified_count
+						 FROM account_recovery_requests
+						 WHERE status = 'waiting' AND (last_notified_at IS NULL OR last_notified_at <= ?)
+						 ORDER BY started_at ASC
+						 LIMIT 50`;
+				} else {
+					return badRequest('Invalid account recovery mode');
+				}
+
+				const { results } = await db.prepare(sql).bind(new Date(cutoffTime).toISOString()).all();
+				return json(results || []);
+			}
+
+			if (method === 'POST' && pathname === '/account-recovery/active') {
+				const body = await request.json();
+				const userId = Number(body.userId);
+				const ipHash = String(body.ipHash);
+				const row = await db.prepare(
+					"SELECT * FROM account_recovery_requests WHERE user_id = ? AND ip_hash = ? AND status = 'waiting' ORDER BY started_at DESC LIMIT 1"
+				).bind(userId, ipHash).first();
+				return json(row || null);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/token-check$/)) {
+				const id = decodeURIComponent(pathname.split('/')[2]);
+				const body = await request.json();
+				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ? AND request_token_hash = ?').bind(id, String(body.requestTokenHash)).first();
+				return json(row || null);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/token$/)) {
+				const id = decodeURIComponent(pathname.split('/')[2]);
+				const body = await request.json();
+				const res = await db.prepare("UPDATE account_recovery_requests SET request_token_hash = ? WHERE id = ? AND status = 'waiting'").bind(String(body.requestTokenHash), id).run();
+				// Postgres の RETURNING と同じ契約にする。適用できなかった場合は行を返さない。
+				if (res.meta.changes === 0) return json(null);
+				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
+				return json(row || null);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/notified$/)) {
+				const id = decodeURIComponent(pathname.split('/')[2]);
+				const body = await request.json();
+				const notifiedAt = body.notifiedAt || new Date().toISOString();
+				await db.prepare('UPDATE account_recovery_requests SET last_notified_at = ?, notified_count = notified_count + 1 WHERE id = ?').bind(notifiedAt, id).run();
+				return json({ success: true });
+			}
+
+			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/decision$/)) {
+				const id = decodeURIComponent(pathname.split('/')[2]);
+				const body = await request.json();
+				const userId = Number(body.userId);
+				const status = (body.decision === 'approve' || body.decision === 'approved') ? 'approved' : 'blocked';
+				const now = new Date().toISOString();
+				const res = await db.prepare(
+					"UPDATE account_recovery_requests SET status = ?, decided_at = ?, decided_by = 'user' WHERE id = ? AND user_id = ? AND (status = 'waiting' OR (status = 'approved' AND ? = 'blocked'))"
+				).bind(status, now, id, userId, status).run();
+				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
+				if (res.meta.changes > 0) return json(row);
+				return json(row && Number(row.user_id) === userId ? row : null);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/approve-due$/)) {
+				const id = decodeURIComponent(pathname.split('/')[2]);
+				const body = await request.json();
+				const now = new Date().toISOString();
+				const res = await db.prepare(
+					"UPDATE account_recovery_requests SET status = 'approved', decided_at = ?, decided_by = ? WHERE id = ? AND status = 'waiting' AND wait_until <= ?"
+				).bind(now, String(body.decidedBy || 'timeout'), id, now).run();
+				// 待機中/期限未到達の行を「承認済み」として返すと、呼び出し側が誤って承認扱いする。
+				if (res.meta.changes === 0) return json(null);
+				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
+				return json(row || null);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/consume$/)) {
+				const id = decodeURIComponent(pathname.split('/')[2]);
+				const body = await request.json();
+				const now = new Date().toISOString();
+				const res = await db.prepare(
+					"UPDATE account_recovery_requests SET status = 'consumed', consumed_at = ? WHERE id = ? AND request_token_hash = ? AND status = 'approved'"
+				).bind(now, id, String(body.requestTokenHash)).run();
+				// changes=0 は「すでに消費済み」または「トークン不一致」。行を返すと同一トークンで
+				// 並列 poll した側も成功してしまい、単一使用が破れる（Postgres は RETURNING で null）。
+				if (res.meta.changes === 0) return json(null);
+				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
+				return json(row || null);
+			}
+
+			if (method === 'GET' && pathname.match(/^\/account-recovery\/([^/]+)$/)) {
+				const id = decodeURIComponent(pathname.split('/')[2]);
+				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
+				return json(row || null);
+			}
+
+			if (method === 'POST' && pathname === '/blocked-login-ips') {
+				const body = await request.json();
+				const userId = Number(body.userId);
+				const ipHash = String(body.ipHash);
+				const ipMasked = body.ipMasked || '不明なIPアドレス';
+				const reason = body.reason ?? null;
+				const sourceRecoveryId = body.sourceRecoveryId ?? null;
+				const now = new Date().toISOString();
+
+				await db.prepare(
+					`INSERT INTO blocked_login_ips (user_id, ip_hash, ip_masked, reason, source_recovery_id, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(user_id, ip_hash) DO UPDATE SET ip_masked = excluded.ip_masked, reason = excluded.reason, source_recovery_id = excluded.source_recovery_id`
+				).bind(userId, ipHash, ipMasked, reason, sourceRecoveryId, now).run();
+
+				return json({ userId, ipHash, ipMasked, reason, sourceRecoveryId, createdAt: now });
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/blocked-login-ips\/([^/]+)$/)) {
+				const parts = pathname.split('/');
+				const userId = Number(parts[2]);
+				const ipHash = decodeURIComponent(parts[4]);
+				const row = await db.prepare('SELECT * FROM blocked_login_ips WHERE user_id = ? AND ip_hash = ?').bind(userId, ipHash).first();
+				if (!row) return json(null);
+				return json({
+					userId: Number(row.user_id),
+					ipHash: row.ip_hash,
+					ipMasked: row.ip_masked,
+					reason: row.reason,
+					sourceRecoveryId: row.source_recovery_id,
+					createdAt: row.created_at,
+				});
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/blocked-login-ips$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const { results } = await db.prepare('SELECT * FROM blocked_login_ips WHERE user_id = ? ORDER BY created_at DESC').bind(userId).all();
+				return json((results || []).map((row) => ({
+					userId: Number(row.user_id),
+					ipHash: row.ip_hash,
+					ipMasked: row.ip_masked,
+					reason: row.reason,
+					sourceRecoveryId: row.source_recovery_id,
+					createdAt: row.created_at,
+				})));
+			}
+
+			if (method === 'POST' && pathname.match(/^\/users\/(\d+)\/blocked-login-ips\/([^/]+)\/unblock$/)) {
+				const parts = pathname.split('/');
+				const userId = Number(parts[2]);
+				const ipHash = decodeURIComponent(parts[4]);
+				const res = await db.prepare('DELETE FROM blocked_login_ips WHERE user_id = ? AND ip_hash = ?').bind(userId, ipHash).run();
+				return json({ success: res.meta.changes > 0 });
 			}
 
 			if (method === 'POST' && pathname.match(/^\/users\/(\d+)\/bot-tokens$/)) {
@@ -1079,6 +1344,37 @@ export default {
 				return json(normalizeUserRow(row));
 			}
 
+			if (method === 'GET' && pathname.match(/^\/users\/external\/([^/]+)\/([^/]+)$/)) {
+				const authProvider = decodeURIComponent(pathname.split('/')[3]);
+				const externalId = decodeURIComponent(pathname.split('/')[4]);
+				if (!authProvider || !externalId) return json(null);
+				const row = await db.prepare('SELECT * FROM users WHERE LOWER(auth_provider) = LOWER(?) AND external_id = ? LIMIT 1')
+					.bind(authProvider, externalId).first();
+				return json(normalizeUserRow(row));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/auth-provider\/([^/]+)\/([^/]+)$/)) {
+				const provider = decodeURIComponent(pathname.split('/')[3]).toLowerCase();
+				const providerUserId = decodeURIComponent(pathname.split('/')[4]).trim();
+				if (!provider || !providerUserId) return json(null);
+
+				// Postgres実装と同じ優先順: 紐づけテーブル → scid → usersのprimary列。
+				let row = await db.prepare(
+					`SELECT u.* FROM users u
+					 JOIN user_auth_providers p ON p.user_id = u.id
+					 WHERE LOWER(p.provider) = LOWER(?) AND LOWER(p.provider_user_id) = LOWER(?)
+					 LIMIT 1`
+				).bind(provider, providerUserId).first();
+				if (!row && (provider === 'scratch' || provider === 'local')) {
+					row = await db.prepare('SELECT * FROM users WHERE LOWER(scid) = LOWER(?) LIMIT 1').bind(providerUserId).first();
+				}
+				if (!row) {
+					row = await db.prepare('SELECT * FROM users WHERE LOWER(auth_provider) = LOWER(?) AND external_id = ? LIMIT 1')
+						.bind(provider, providerUserId).first();
+				}
+				return json(normalizeUserRow(row));
+			}
+
 			if (method === 'POST' && pathname === '/users/external') {
 				const body = await request.json();
 				const providerDomain = body.providerDomain;
@@ -1101,7 +1397,7 @@ export default {
 								 VALUES (?, ?, ?, ?, ?, 'nyaitter', ?, ?, ?, ?, ?, ?, ?, ?)`
 
 					).bind(
-						id, profile.name || handle, handle, address, providerDomain, externalId,
+						id, profile.scid || null, profile.name || handle, handle, address, providerDomain, externalId,
 						JSON.stringify(profile.external_profile || profile),
 						JSON.stringify(normalizeBlockList(profile.block, id)),
 						profile.bio || profile.me || '', profile.header_image || null,
@@ -1166,26 +1462,28 @@ export default {
 				let query;
 				let bindings;
 				if (decodedCursor) {
-					query = `SELECT id, name, scid, handle, nyaitter_address, auth_provider, provider_domain, external_id, icon_data, created_at
+					query = `SELECT id, name, scid, handle, nyaitter_address, auth_provider, provider_domain, external_id, icon_data, bio, header_image, created_at
 						 FROM users
 						 WHERE id > ? AND (
 						    LOWER(COALESCE(scid, '')) LIKE ?
 						    OR LOWER(COALESCE(name, '')) LIKE ?
 						    OR LOWER(COALESCE(handle, '')) LIKE ?
+						    OR LOWER(COALESCE(bio, '')) LIKE ?
 						    OR CAST(id AS TEXT) LIKE ?
 						 )
 						 ORDER BY id ASC LIMIT ?`;
-					bindings = [decodedCursor.id, queryPattern, queryPattern, queryPattern, digits ? `%${digits}%` : queryPattern, fetchLimit];
+					bindings = [decodedCursor.id, queryPattern, queryPattern, queryPattern, queryPattern, digits ? `%${digits}%` : queryPattern, fetchLimit];
 				} else {
 					const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
-					query = `SELECT id, name, scid, handle, nyaitter_address, auth_provider, provider_domain, external_id, icon_data, created_at
+					query = `SELECT id, name, scid, handle, nyaitter_address, auth_provider, provider_domain, external_id, icon_data, bio, header_image, created_at
 						 FROM users
 						 WHERE LOWER(COALESCE(scid, '')) LIKE ?
 						    OR LOWER(COALESCE(name, '')) LIKE ?
 						    OR LOWER(COALESCE(handle, '')) LIKE ?
+						    OR LOWER(COALESCE(bio, '')) LIKE ?
 						    OR CAST(id AS TEXT) LIKE ?
 						 ORDER BY id ASC LIMIT ? OFFSET ?`;
-					bindings = [queryPattern, queryPattern, queryPattern, digits ? `%${digits}%` : queryPattern, fetchLimit, offset];
+					bindings = [queryPattern, queryPattern, queryPattern, queryPattern, digits ? `%${digits}%` : queryPattern, fetchLimit, offset];
 				}
 
 				const { results } = await db.prepare(query).bind(...bindings).all();
@@ -1215,7 +1513,7 @@ export default {
 
 				const placeholders = ids.map(() => '?').join(', ');
 				const columns = body.projection === 'post_author'
-					? 'id, auth_provider, external_id, name, scid, icon_data, verify, admin, settings, block'
+					? 'id, auth_provider, external_id, name, scid, icon_data, bio, header_image, verify, admin, settings, block'
 					: '*';
 				const { results } = await db.prepare(
 					`SELECT ${columns} FROM users WHERE id IN (${placeholders})`
@@ -1301,6 +1599,8 @@ export default {
 							db.prepare('UPDATE sessions SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE trusted_login_ips SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE login_approvals SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE account_recovery_requests SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+							db.prepare('UPDATE blocked_login_ips SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE bot_tokens SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE posts SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE likes SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
@@ -1328,6 +1628,9 @@ export default {
 							// authorized apps and affinities
 							db.prepare('UPDATE authorized_apps SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE user_keyword_affinities SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+							// PK(user_id, post_id, kind) の衝突を避けつつ移行する
+							db.prepare('UPDATE OR IGNORE post_feedback SET user_id = ? WHERE user_id = ?').bind(nextId, previousId),
+							db.prepare('DELETE FROM post_feedback WHERE user_id = ?').bind(previousId),
 
 							db.prepare('UPDATE moderation_reports SET reporter_user_id = ? WHERE reporter_user_id = ?').bind(nextId, previousId),
 							db.prepare('UPDATE moderation_reports SET assigned_admin_id = ? WHERE assigned_admin_id = ?').bind(nextId, previousId),
@@ -1453,7 +1756,10 @@ export default {
 						db.prepare('DELETE FROM bot_tokens WHERE user_id = ?').bind(userId),
 						db.prepare('DELETE FROM trusted_login_ips WHERE user_id = ?').bind(userId),
 						db.prepare('DELETE FROM login_approvals WHERE user_id = ?').bind(userId),
+						db.prepare('DELETE FROM account_recovery_requests WHERE user_id = ?').bind(userId),
+						db.prepare('DELETE FROM blocked_login_ips WHERE user_id = ?').bind(userId),
 						db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').bind(userId),
+						db.prepare('DELETE FROM post_feedback WHERE user_id = ?').bind(userId),
 						db.prepare('DELETE FROM moderation_reports WHERE reporter_user_id = ?').bind(userId),
 						db.prepare('DELETE FROM users WHERE id = ?').bind(userId),
 					);
@@ -1474,6 +1780,101 @@ export default {
 				const shadow = Boolean(body.shadow);
 				await db.prepare('UPDATE users SET shadow = ? WHERE id = ?').bind(shadow ? 1 : 0, userId).run();
 				return json({ shadow });
+			}
+
+			if (method === 'POST' && pathname.match(/^\/users\/(\d+)\/auth-identity$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const sets = [];
+				const values = [];
+
+				if (body.scid !== undefined) {
+					sets.push('scid = ?');
+					values.push(body.scid == null ? null : String(body.scid));
+				}
+				if (body.auth_provider !== undefined) {
+					sets.push('auth_provider = ?');
+					values.push(body.auth_provider == null ? null : String(body.auth_provider).toLowerCase());
+				}
+				if (body.external_id !== undefined) {
+					sets.push('external_id = ?');
+					values.push(body.external_id == null ? null : String(body.external_id));
+				}
+				if (body.external_profile !== undefined) {
+					sets.push('external_profile = ?');
+					values.push(body.external_profile == null ? null : JSON.stringify(body.external_profile));
+				}
+				if (body.provider_domain !== undefined) {
+					sets.push('provider_domain = ?');
+					values.push(body.provider_domain == null ? null : String(body.provider_domain));
+				}
+
+				if (sets.length === 0) return badRequest('No auth identity fields');
+				values.push(userId);
+				await db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
+				const row = await db.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first();
+				return json(normalizeUserRow(row));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/auth-providers$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const { results } = await db.prepare('SELECT * FROM user_auth_providers WHERE user_id = ? ORDER BY id ASC').bind(userId).all();
+				return json((results || []).map(normalizeAuthProviderRow));
+			}
+
+			if (method === 'POST' && pathname.match(/^\/users\/(\d+)\/auth-providers$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const provider = String(body.provider || '').trim().toLowerCase();
+				const providerUserId = body.providerUserId == null ? '' : String(body.providerUserId).trim();
+				if (!provider || !providerUserId) return badRequest('Invalid auth provider');
+
+				const providerProfile = JSON.stringify(body.providerProfile && typeof body.providerProfile === 'object' ? body.providerProfile : {});
+				const existing = await db.prepare(
+					'SELECT * FROM user_auth_providers WHERE user_id = ? AND LOWER(provider) = ? AND LOWER(provider_user_id) = LOWER(?) LIMIT 1'
+				).bind(userId, provider, providerUserId).first();
+
+				if (existing) {
+					await db.prepare('UPDATE user_auth_providers SET provider_profile = ? WHERE id = ?').bind(providerProfile, existing.id).run();
+					const updated = await db.prepare('SELECT * FROM user_auth_providers WHERE id = ?').bind(existing.id).first();
+					return json(normalizeAuthProviderRow(updated));
+				}
+
+				const conflict = await db.prepare(
+					'SELECT id FROM user_auth_providers WHERE LOWER(provider) = ? AND LOWER(provider_user_id) = LOWER(?) LIMIT 1'
+				).bind(provider, providerUserId).first();
+				if (conflict) return json({ error: 'auth_provider_already_linked' }, 409);
+
+				const createdAt = body.createdAt ? String(body.createdAt) : new Date().toISOString();
+				const inserted = await db.prepare(
+					'INSERT INTO user_auth_providers (user_id, provider, provider_user_id, provider_profile, created_at) VALUES (?, ?, ?, ?, ?)'
+				).bind(userId, provider, providerUserId, providerProfile, createdAt).run();
+				if (provider === 'scratch') {
+					// Postgres実装と同じく、primaryのscidが未設定のときだけ補完する。
+					await db.prepare('UPDATE users SET scid = COALESCE(scid, ?) WHERE id = ?').bind(providerUserId, userId).run();
+				}
+				const row = await db.prepare('SELECT * FROM user_auth_providers WHERE id = ?').bind(inserted.meta.last_row_id).first();
+				return json(normalizeAuthProviderRow(row));
+			}
+
+			if (method === 'DELETE' && pathname.match(/^\/users\/(\d+)\/auth-providers$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const url = new URL(request.url);
+				const provider = String(url.searchParams.get('provider') || '').trim().toLowerCase();
+				const providerUserId = url.searchParams.get('providerUserId');
+				if (!provider) return badRequest('Invalid auth provider');
+
+				if (providerUserId) {
+					await db.prepare('DELETE FROM user_auth_providers WHERE user_id = ? AND LOWER(provider) = ? AND LOWER(provider_user_id) = LOWER(?)')
+						.bind(userId, provider, providerUserId).run();
+				} else {
+					await db.prepare('DELETE FROM user_auth_providers WHERE user_id = ? AND LOWER(provider) = ?')
+						.bind(userId, provider).run();
+				}
+				if (provider === 'scratch') {
+					await db.prepare('UPDATE users SET scid = NULL WHERE id = ?').bind(userId).run();
+				}
+				return json({ success: true });
 			}
 
 			if (method === 'POST' && pathname.match(/^\/users\/(\d+)\/profile$/)) {
@@ -1607,11 +2008,18 @@ export default {
 				if (method === 'POST' && pathname === '/moderation-reports/overdue') {
 					const body = await request.json();
 					const cutoff = String(body.cutoff || '');
+					// lease: 最近 claim した行は管理者が作業中。スイープ側で除外しないと再割り当てが二重対応を生む。
+					const claimStaleBefore = body.claimStaleBefore == null || body.claimStaleBefore === ''
+						? null
+						: String(body.claimStaleBefore);
+					const claimClause = claimStaleBefore ? 'AND (claimed_at IS NULL OR claimed_at <= ?)' : '';
+					const bindings = claimStaleBefore ? [cutoff, claimStaleBefore] : [cutoff];
 					const { results } = await db.prepare(
 						`SELECT * FROM moderation_reports
 						 WHERE status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at <= ?
+						 ${claimClause}
 						 ORDER BY assigned_at ASC`
-					).bind(cutoff).all();
+					).bind(...bindings).all();
 					return json((results || []).map(normalizeModerationReportRow));
 				}
 
@@ -1656,11 +2064,38 @@ export default {
 						.map(Number)
 						.filter(Number.isInteger))];
 					const assignedAt = body.assignedAt || new Date().toISOString();
-					await db.prepare(
+					// SELECT 時点の lease を信用しない: 読み取り後の再claimを無条件 UPDATE が潰して二重対応になるため、assign 自体を CAS にする。
+					const claimStaleBefore = body.claimStaleBefore == null || body.claimStaleBefore === ''
+						? null
+						: String(body.claimStaleBefore);
+					const claimClause = claimStaleBefore ? ' AND (claimed_at IS NULL OR claimed_at <= ?)' : '';
+					const bindings = [Number(body.adminId), assignedAt, JSON.stringify(excluded), reportId];
+					if (claimStaleBefore) bindings.push(claimStaleBefore);
+					const result = await db.prepare(
 						`UPDATE moderation_reports
-						 SET status = 'assigned', assigned_admin_id = ?, assigned_at = ?, excluded_admin_ids = ?
-						 WHERE id = ?`
-					).bind(Number(body.adminId), assignedAt, JSON.stringify(excluded), reportId).run();
+						 SET status = 'assigned', assigned_admin_id = ?, assigned_at = ?, excluded_admin_ids = ?, claimed_at = NULL
+						 WHERE id = ?${claimClause}`
+					).bind(...bindings).run();
+					// changes 0 = CAS 失敗。再SELECT して行を返すとサービス側は奪取成功と誤認する。
+					if (result.meta.changes === 0) return json(null);
+					const row = await db.prepare('SELECT * FROM moderation_reports WHERE id = ?').bind(reportId).first();
+					return json(normalizeModerationReportRow(row));
+				}
+
+				if (method === 'POST' && pathname.match(/^\/moderation-reports\/(\d+)\/claim$/)) {
+					const reportId = Number(pathname.split('/')[2]);
+					const body = await request.json();
+					// lease の更新でありロックではない: 現担当者なら何度でも成功させる（freshness 条件を置かない）。
+					// 呼び出し側が時刻を寄越さないと NULL になって lease が常に切れている事になるので現在時刻に倒す。
+					const claimedAt = typeof body.claimedAt === 'string' && body.claimedAt
+						? body.claimedAt
+						: new Date().toISOString();
+					const result = await db.prepare(
+						`UPDATE moderation_reports
+						 SET claimed_at = ?
+						 WHERE id = ? AND status = 'assigned' AND assigned_admin_id = ?`
+					).bind(claimedAt, reportId, Number(body.adminId)).run();
+					if (result.meta.changes === 0) return json(null);
 					const row = await db.prepare('SELECT * FROM moderation_reports WHERE id = ?').bind(reportId).first();
 					return json(normalizeModerationReportRow(row));
 				}
@@ -1671,7 +2106,7 @@ export default {
 					const now = new Date().toISOString();
 					const result = await db.prepare(
 						`UPDATE moderation_reports
-						 SET status = 'resolved', resolution = ?, resolved_at = ?
+						 SET status = 'resolved', resolution = ?, resolved_at = ?, claimed_at = NULL
 						 WHERE id = ? AND assigned_admin_id = ? AND status = 'assigned'`
 					).bind(JSON.stringify(body.resolution || {}), now, reportId, Number(body.adminId)).run();
 					if (result.meta.changes === 0) return json(null);
@@ -1790,14 +2225,14 @@ export default {
 				let bindings;
 
 				if (decodedCursor) {
-					query = `SELECT u.id, u.name, u.scid, u.handle, u.icon_data, f.created_at AS follow_created_at
+					query = `SELECT u.*, f.created_at AS follow_created_at
 						 FROM follows f JOIN users u ON u.id = f.following_id
 						 WHERE f.follower_id = ? AND (f.created_at < ? OR (f.created_at = ? AND f.following_id < ?))
 						 ORDER BY f.created_at DESC, f.following_id DESC LIMIT ?`;
 					bindings = [userId, decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id, fetchLimit];
 				} else {
 					const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
-					query = `SELECT u.id, u.name, u.scid, u.handle, u.icon_data, f.created_at AS follow_created_at
+					query = `SELECT u.*, f.created_at AS follow_created_at
 						 FROM follows f JOIN users u ON u.id = f.following_id
 						 WHERE f.follower_id = ?
 						 ORDER BY f.created_at DESC, f.following_id DESC LIMIT ? OFFSET ?`;
@@ -1812,15 +2247,16 @@ export default {
 				const nextCursor = hasMore && lastRow
 					? encodePostCursor({ id: Number(lastRow.id), created_at: lastRow.follow_created_at })
 					: null;
+				const users = slice.map(normalizeUserRow);
 
 				if (withNextCursor) {
 					return json({
-						users: slice,
+						users,
 						has_more: hasMore,
 						next_cursor: nextCursor,
 					});
 				}
-				return json(slice);
+				return json(users);
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/followers$/)) {
@@ -1833,14 +2269,14 @@ export default {
 				let bindings;
 
 				if (decodedCursor) {
-					query = `SELECT u.id, u.name, u.scid, u.handle, u.icon_data, f.created_at AS follow_created_at
+					query = `SELECT u.*, f.created_at AS follow_created_at
 						 FROM follows f JOIN users u ON u.id = f.follower_id
 						 WHERE f.following_id = ? AND (f.created_at < ? OR (f.created_at = ? AND f.follower_id < ?))
 						 ORDER BY f.created_at DESC, f.follower_id DESC LIMIT ?`;
 					bindings = [userId, decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id, fetchLimit];
 				} else {
 					const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
-					query = `SELECT u.id, u.name, u.scid, u.handle, u.icon_data, f.created_at AS follow_created_at
+					query = `SELECT u.*, f.created_at AS follow_created_at
 						 FROM follows f JOIN users u ON u.id = f.follower_id
 						 WHERE f.following_id = ?
 						 ORDER BY f.created_at DESC, f.follower_id DESC LIMIT ? OFFSET ?`;
@@ -1855,15 +2291,16 @@ export default {
 				const nextCursor = hasMore && lastRow
 					? encodePostCursor({ id: Number(lastRow.id), created_at: lastRow.follow_created_at })
 					: null;
+				const users = slice.map(normalizeUserRow);
 
 				if (withNextCursor) {
 					return json({
-						users: slice,
+						users,
 						has_more: hasMore,
 						next_cursor: nextCursor,
 					});
 				}
-				return json(slice);
+				return json(users);
 			}
 
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/following\/count$/)) {
@@ -2054,6 +2491,253 @@ export default {
 				return json((results || []).map(normalizeGroupRow));
 			}
 
+			// ==================== Spaces ====================
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/spaces$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 50), 100));
+				const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+				const { results } = await db.prepare(
+					`SELECT s.*, sm.role AS membership_role, sm.joined_at AS membership_joined_at,
+						 (SELECT COUNT(*) FROM space_members count_sm WHERE count_sm.space_id = s.id) AS member_count
+					 FROM space_members sm JOIN spaces s ON s.id = sm.space_id
+					 WHERE sm.user_id = ?
+					 ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?`
+				).bind(userId, limit, offset).all();
+				return json((results || []).map((row) => ({
+					...normalizeSpaceRow(row),
+					membership: normalizeSpaceMemberRow({ space_id: row.id, user_id: userId, role: row.membership_role, joined_at: row.membership_joined_at }),
+				})));
+			}
+
+			if (method === 'GET' && pathname === '/spaces/count') {
+				const ownerId = Number(url.searchParams.get('ownerId') || 0);
+				const row = await db.prepare('SELECT COUNT(*) AS count FROM spaces WHERE owner_id = ?').bind(ownerId).first();
+				return json({ count: Number(row?.count || 0) });
+			}
+
+			if (method === 'POST' && pathname === '/spaces/channels') {
+				const body = await request.json();
+				const id = String(body.id || '').trim();
+				const spaceId = String(body.spaceId ?? body.space_id ?? '').trim();
+				const name = String(body.name || '').trim();
+				const kind = String(body.kind || 'text');
+				if (!id || !spaceId || !name || name.length > 50 || !['text', 'voice'].includes(kind)) return badRequest('Invalid channel');
+				const sortOrder = Number(body.sortOrder ?? body.sort_order) || 0;
+				const now = body.createdAt || new Date().toISOString();
+				await db.prepare('INSERT INTO space_channels (id, space_id, name, kind, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+					.bind(id, spaceId, name, kind, sortOrder, now).run();
+				const row = await db.prepare('SELECT * FROM space_channels WHERE id = ?').bind(id).first();
+				return json(normalizeSpaceChannelRow(row));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/spaces\/channels\/([^/]+)$/)) {
+				const channelId = decodeURIComponent(pathname.split('/')[3]);
+				const row = await db.prepare('SELECT * FROM space_channels WHERE id = ?').bind(channelId).first();
+				return json(normalizeSpaceChannelRow(row));
+			}
+
+			if (method === 'PATCH' && pathname.match(/^\/spaces\/channels\/([^/]+)$/)) {
+				const channelId = decodeURIComponent(pathname.split('/')[3]);
+				const body = await request.json();
+				const sets = [];
+				const values = [];
+				if (body.name !== undefined) { sets.push('name = ?'); values.push(String(body.name).trim()); }
+				if (body.kind !== undefined) {
+					const kind = String(body.kind);
+					if (!['text', 'voice'].includes(kind)) return badRequest('Invalid channel kind');
+					sets.push('kind = ?'); values.push(kind);
+				}
+				if (body.sortOrder !== undefined || body.sort_order !== undefined) { sets.push('sort_order = ?'); values.push(Number(body.sortOrder ?? body.sort_order) || 0); }
+				if (sets.length === 0) return badRequest('No channel fields');
+				values.push(channelId);
+				await db.prepare(`UPDATE space_channels SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
+				const row = await db.prepare('SELECT * FROM space_channels WHERE id = ?').bind(channelId).first();
+				return json(normalizeSpaceChannelRow(row));
+			}
+
+			if (method === 'DELETE' && pathname.match(/^\/spaces\/channels\/([^/]+)$/)) {
+				const channelId = decodeURIComponent(pathname.split('/')[3]);
+				const info = await db.prepare('DELETE FROM space_channels WHERE id = ?').bind(channelId).run();
+				return json({ deleted: Number(info?.meta?.changes || 0) > 0 });
+			}
+
+			if (method === 'GET' && pathname === '/spaces') {
+				const query = String(url.searchParams.get('query') || '').trim().toLowerCase();
+				const includePrivate = url.searchParams.get('include_private') === 'true';
+				const groupIds = String(url.searchParams.get('group_ids') || '').split(',').map((value) => value.trim()).filter(Boolean);
+				const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 20), 100));
+				const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+				const clauses = groupIds.length ? [] : includePrivate ? [] : ["s.visibility = 'public'"];
+				const parameters = [];
+				if (groupIds.length) {
+					clauses.push(`s.group_id IN (${groupIds.map(() => '?').join(', ')})`);
+					parameters.push(...groupIds);
+				}
+				if (query) { clauses.push('(LOWER(s.name) LIKE ? OR LOWER(s.description) LIKE ?)'); parameters.push(`%${query}%`, `%${query}%`); }
+				const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+				parameters.push(limit, offset);
+				const { results } = await db.prepare(
+					`SELECT s.*, (SELECT COUNT(*) FROM space_members sm WHERE sm.space_id = s.id) AS member_count
+					 FROM spaces s ${where}
+					 ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?`
+				).bind(...parameters).all();
+				return json((results || []).map(normalizeSpaceRow));
+			}
+
+			if (method === 'POST' && pathname === '/spaces') {
+				const body = await request.json();
+				const id = String(body.id || '').trim();
+				const ownerId = Number(body.ownerId ?? body.owner_id);
+				const name = String(body.name || '').trim();
+				const visibility = String(body.visibility || 'public');
+				if (!id || !Number.isInteger(ownerId) || ownerId < 0 || !name || name.length > 50 || !['public', 'private', 'group'].includes(visibility)) return badRequest('Invalid space');
+				const description = String(body.description || '');
+				if (description.length > 2000) return badRequest('Invalid description');
+				const now = body.createdAt || new Date().toISOString();
+				await db.prepare(
+					'INSERT INTO spaces (id, owner_id, name, description, icon_data, header_image, visibility, group_id, created_at, updated_at, stage_settings) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+				).bind(id, ownerId, name, description, body.iconData ?? body.icon_data ?? null, body.headerImage ?? body.header_image ?? null, visibility, body.groupId ?? body.group_id ?? null, now, now, body.stage_settings || null).run();
+				const row = await db.prepare('SELECT s.*, 0 AS member_count FROM spaces s WHERE s.id = ?').bind(id).first();
+				return json(normalizeSpaceRow(row));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/spaces\/([^/]+)$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				const row = await db.prepare(
+					`SELECT s.*, (SELECT COUNT(*) FROM space_members sm WHERE sm.space_id = s.id) AS member_count
+					 FROM spaces s WHERE s.id = ? LIMIT 1`
+				).bind(spaceId).first();
+				return json(normalizeSpaceRow(row));
+			}
+
+			if (method === 'PATCH' && pathname.match(/^\/spaces\/([^/]+)$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				const body = await request.json();
+				const sets = [];
+				const values = [];
+				if (body.name !== undefined) { sets.push('name = ?'); values.push(String(body.name).trim()); }
+				if (body.description !== undefined) { sets.push('description = ?'); values.push(String(body.description || '')); }
+				if (body.stage_settings !== undefined) { sets.push('stage_settings = ?'); values.push(body.stage_settings); }
+				if (body.iconData !== undefined || body.icon_data !== undefined) { sets.push('icon_data = ?'); values.push(body.iconData ?? body.icon_data ?? null); }
+				if (body.headerImage !== undefined || body.header_image !== undefined) { sets.push('header_image = ?'); values.push(body.headerImage ?? body.header_image ?? null); }
+				if (body.visibility !== undefined) {
+					const visibility = String(body.visibility);
+					if (!['public', 'private', 'group'].includes(visibility)) return badRequest('Invalid visibility');
+					sets.push('visibility = ?'); values.push(visibility);
+				}
+				if (body.groupId !== undefined || body.group_id !== undefined) { sets.push('group_id = ?'); values.push(body.groupId ?? body.group_id ?? null); }
+				if (sets.length === 0) return badRequest('No space fields');
+				sets.push('updated_at = ?');
+				values.push(new Date().toISOString(), spaceId);
+				await db.prepare(`UPDATE spaces SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
+				const row = await db.prepare(
+					`SELECT s.*, (SELECT COUNT(*) FROM space_members sm WHERE sm.space_id = s.id) AS member_count
+					 FROM spaces s WHERE s.id = ? LIMIT 1`
+				).bind(spaceId).first();
+				return json(normalizeSpaceRow(row));
+			}
+
+			if (method === 'DELETE' && pathname.match(/^\/spaces\/([^/]+)$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				const info = await db.prepare('DELETE FROM spaces WHERE id = ?').bind(spaceId).run();
+				return json({ deleted: Number(info?.meta?.changes || 0) > 0 });
+			}
+
+			if (method === 'GET' && pathname.match(/^\/spaces\/([^/]+)\/channels$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				const { results } = await db.prepare('SELECT * FROM space_channels WHERE space_id = ? ORDER BY sort_order ASC, created_at ASC').bind(spaceId).all();
+				return json((results || []).map(normalizeSpaceChannelRow));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/spaces\/([^/]+)\/members$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 100), 200));
+				const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+				const { results } = await db.prepare('SELECT * FROM space_members WHERE space_id = ? ORDER BY joined_at ASC LIMIT ? OFFSET ?')
+					.bind(spaceId, limit, offset).all();
+				return json((results || []).map(normalizeSpaceMemberRow));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/spaces\/([^/]+)\/members\/(\d+)$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				const userId = Number(pathname.split('/')[4]);
+				const row = await db.prepare('SELECT * FROM space_members WHERE space_id = ? AND user_id = ? LIMIT 1').bind(spaceId, userId).first();
+				return json(normalizeSpaceMemberRow(row));
+			}
+
+			if (method === 'POST' && pathname.match(/^\/spaces\/([^/]+)\/member-count$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				await db.prepare('UPDATE spaces SET updated_at = ? WHERE id = ?').bind(new Date().toISOString(), spaceId).run();
+				const row = await db.prepare('SELECT COUNT(*) AS count FROM space_members WHERE space_id = ?').bind(spaceId).first();
+				return json({ memberCount: Number(row?.count || 0), member_count: Number(row?.count || 0) });
+			}
+
+			if (method === 'POST' && pathname.match(/^\/spaces\/([^/]+)\/members$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				const body = await request.json();
+				const userId = Number(body.userId ?? body.user_id);
+				if (!Number.isInteger(userId) || userId < 0) return badRequest('Invalid member');
+				const role = String(body.role || 'member');
+				if (!['owner', 'member'].includes(role)) return badRequest('Invalid role');
+				const now = body.joinedAt || new Date().toISOString();
+				await db.prepare(
+					`INSERT INTO space_members (space_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)
+					 ON CONFLICT (space_id, user_id) DO UPDATE SET role = EXCLUDED.role`
+				).bind(spaceId, userId, role, now).run();
+				const row = await db.prepare('SELECT * FROM space_members WHERE space_id = ? AND user_id = ? LIMIT 1').bind(spaceId, userId).first();
+				return json(normalizeSpaceMemberRow(row));
+			}
+
+			if (method === 'DELETE' && pathname.match(/^\/spaces\/([^/]+)\/members\/(\d+)$/)) {
+				const spaceId = decodeURIComponent(pathname.split('/')[2]);
+				const userId = Number(pathname.split('/')[4]);
+				const info = await db.prepare('DELETE FROM space_members WHERE space_id = ? AND user_id = ?').bind(spaceId, userId).run();
+				return json({ removed: Number(info?.meta?.changes || 0) > 0 });
+			}
+
+			if (method === 'GET' && pathname.match(/^\/spaces\/channels\/([^/]+)\/messages$/)) {
+				const channelId = decodeURIComponent(pathname.split('/')[3]);
+				const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 50), 100));
+				const beforeIdRaw = url.searchParams.get('before_id');
+				const parameters = [channelId];
+				let beforeClause = '';
+				if (beforeIdRaw != null && Number.isFinite(Number(beforeIdRaw))) {
+					parameters.push(Number(beforeIdRaw));
+					beforeClause = 'AND id < ?';
+				}
+				parameters.push(limit);
+				const { results } = await db.prepare(
+					`SELECT * FROM space_messages WHERE channel_id = ? ${beforeClause} ORDER BY id DESC LIMIT ?`
+				).bind(...parameters).all();
+				return json((results || []).map(normalizeSpaceMessageRow));
+			}
+
+			if (method === 'POST' && pathname.match(/^\/spaces\/channels\/([^/]+)\/messages$/)) {
+				const channelId = decodeURIComponent(pathname.split('/')[3]);
+				const body = await request.json();
+				const spaceId = String(body.spaceId ?? body.space_id ?? '').trim();
+				const userId = Number(body.userId ?? body.user_id);
+				const content = String(body.content || '').trim();
+				if (!spaceId || !Number.isInteger(userId) || userId < 0 || !content || content.length > 2000) return badRequest('Invalid message');
+				const now = body.createdAt || new Date().toISOString();
+				const info = await db.prepare('INSERT INTO space_messages (space_id, channel_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)')
+					.bind(spaceId, channelId, userId, content, now).run();
+				const row = await db.prepare('SELECT * FROM space_messages WHERE id = ?').bind(info.meta.last_row_id).first();
+				return json(normalizeSpaceMessageRow(row));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/spaces\/messages\/(\d+)$/)) {
+				const messageId = Number(pathname.split('/')[3]);
+				const row = await db.prepare('SELECT * FROM space_messages WHERE id = ? LIMIT 1').bind(messageId).first();
+				return json(normalizeSpaceMessageRow(row));
+			}
+
+			if (method === 'DELETE' && pathname.match(/^\/spaces\/messages\/(\d+)$/)) {
+				const messageId = Number(pathname.split('/')[3]);
+				const info = await db.prepare('DELETE FROM space_messages WHERE id = ?').bind(messageId).run();
+				return json({ deleted: Number(info?.meta?.changes || 0) > 0 });
+			}
+
 			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/bootstrap$/)) {
 				const userId = Number(pathname.split('/')[2]);
 				const notifLimit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 200), 200));
@@ -2227,9 +2911,9 @@ export default {
 			}
 
 			if (method === 'GET' && pathname === '/group-posts/search') {
-				const userId = Number(url.searchParams.get('userId')); const query = String(url.searchParams.get('query') || '').trim().toLowerCase(); if (!Number.isInteger(userId) || !query) return json({ ids: [], has_more: false, next_cursor: null }); const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 30), 100)); const offset = Math.max(0, Number(url.searchParams.get('offset') || 0)); const beforeId = Number(url.searchParams.get('beforeId')) || null;
+				const searchFilters = url.searchParams.get('searchFilters'); const userId = Number(url.searchParams.get('userId')); const query = String(url.searchParams.get('query') || '').trim().toLowerCase(); if (!Number.isInteger(userId) || (!query && !searchFilters)) return json({ ids: [], has_more: false, next_cursor: null }); const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 30), 100)); const offset = Math.max(0, Number(url.searchParams.get('offset') || 0)); const beforeId = Number(url.searchParams.get('beforeId')) || null;
 				const decodedCursor = decodePostCursor(url.searchParams.get('cursor'));
-				const clauses = ["gm.user_id = ?", "gm.status = 'active'", 'LOWER(p.content) LIKE ?']; const values = [userId, `%${query}%`];
+				const values = searchFilters ? [userId] : [userId, `%${query}%`]; const clauses = ["gm.user_id = ?", "gm.status = 'active'", ...(searchFilters ? buildPostSearchSql(JSON.parse(searchFilters), { dialect: 'sqlite', values, alias: 'p' }).clauses : ['LOWER(p.content) LIKE ?'])];
 				if (decodedCursor) { clauses.push('(p.created_at < ? OR (p.created_at = ? AND p.id < ?))'); values.push(decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id); } else if (beforeId) { clauses.push('p.id < ?'); values.push(beforeId); }
 				values.push(limit + 1); let offsetSql = ''; if (!beforeId && !decodedCursor) { values.push(offset); offsetSql = ' OFFSET ?'; }
 				const { results } = await db.prepare(`SELECT p.id, p.created_at FROM posts p JOIN group_memberships gm ON gm.group_id = p.group_id WHERE ${clauses.join(' AND ')} ORDER BY p.created_at DESC, p.id DESC LIMIT ?${offsetSql}`).bind(...values).all(); const rows = results || []; const selectedRows = rows.slice(0, limit); const ids = selectedRows.map((row) => Number(row.id)); const lastRow = selectedRows.length > 0 ? selectedRows[selectedRows.length - 1] : null; const nextCursor = rows.length > limit && lastRow ? (encodePostCursor(lastRow) || ids.at(-1) || null) : null; return json({ ids, has_more: rows.length > limit, next_cursor: nextCursor });
@@ -2500,6 +3184,7 @@ export default {
 				await db.prepare('DELETE FROM stars WHERE post_id = ?').bind(postId).run();
 				await db.prepare('DELETE FROM reposts WHERE post_id = ?').bind(postId).run();
 				await db.prepare('DELETE FROM pinned_posts WHERE post_id = ?').bind(postId).run();
+				await db.prepare('DELETE FROM post_feedback WHERE post_id = ?').bind(postId).run();
 				await db.prepare('DELETE FROM posts WHERE id = ?').bind(postId).run();
 				return json({ success: true });
 			}
@@ -2510,6 +3195,7 @@ export default {
 				await db.prepare('DELETE FROM stars WHERE post_id = ?').bind(postId).run();
 				await db.prepare('DELETE FROM reposts WHERE post_id = ?').bind(postId).run();
 				await db.prepare('DELETE FROM pinned_posts WHERE post_id = ?').bind(postId).run();
+				await db.prepare('DELETE FROM post_feedback WHERE post_id = ?').bind(postId).run();
 				await db.prepare('DELETE FROM posts WHERE id = ?').bind(postId).run();
 				return json({ success: true });
 			}
@@ -2525,6 +3211,81 @@ export default {
 				const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
 				const { results } = await db.prepare('SELECT * FROM posts WHERE user_id = ? AND group_id IS NULL ORDER BY created_at DESC, id DESC LIMIT ?').bind(userId, limit).all();
 				return json((results || []).map(normalizePostRow));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/scheduled$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const now = url.searchParams.get('now') || new Date().toISOString();
+				const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 50), 1), 100);
+				const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
+				const { results } = await db.prepare('SELECT * FROM posts WHERE user_id = ? AND group_id IS NULL AND scheduled_at IS NOT NULL AND scheduled_at > ? ORDER BY scheduled_at ASC LIMIT ? OFFSET ?').bind(userId, now, limit, offset).all();
+				return json((results || []).map(normalizePostRow));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/post-subscribers$/)) {
+				const authorUserId = Number(pathname.split('/')[2]);
+				const { results } = await db.prepare(
+					`SELECT u.id AS id, subscriber.value AS mode
+					 FROM users u, json_each(CASE WHEN json_valid(u.settings) = 1
+						 THEN json_extract(u.settings, '$.user_notifications') ELSE NULL END) AS subscriber
+					 WHERE subscriber.key = ? AND subscriber.value IN ('important', 'media', 'all')`
+				).bind(String(authorUserId)).all();
+				return json((results || []).map((row) => ({
+					userId: Number(row.id),
+					mode: row.mode,
+				})));
+			}
+
+			if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/audit-counters$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const row = await db.prepare(
+					`SELECT
+						(SELECT COUNT(*) FROM follows WHERE following_id = ?) AS follower_count,
+						(SELECT COUNT(*) FROM follows WHERE follower_id = ?) AS following_count,
+						(SELECT COUNT(*) FROM posts WHERE user_id = ? AND repost_to IS NULL) AS post_count`
+				).bind(userId, userId, userId).first();
+				return json({
+					userId,
+					followerCount: Number(row?.follower_count || 0),
+					followingCount: Number(row?.following_count || 0),
+					postCount: Number(row?.post_count || 0),
+				});
+			}
+
+			if (method === 'POST' && pathname.match(/^\/users\/(\d+)\/keyword-affinity$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const delta = Number(body.delta);
+				await adjustUserKeywordAffinitiesForTags(db, userId, body.tags, Number.isFinite(delta) ? delta : 1);
+				return json({ success: true });
+			}
+
+			if (method === 'POST' && pathname.match(/^\/users\/(\d+)\/post-feedback$/)) {
+				const userId = Number(pathname.split('/')[2]);
+				const body = await request.json();
+				const postId = Number(body.postId ?? body.post_id);
+				const kind = String(body.kind || 'not_interested');
+				if (!Number.isInteger(postId) || postId <= 0) return badRequest('postId is required');
+				await db.prepare(
+					`INSERT INTO post_feedback (user_id, post_id, kind, created_at)
+					 VALUES (?, ?, ?, ?)
+					 ON CONFLICT(user_id, post_id, kind) DO NOTHING`
+				).bind(userId, postId, kind, new Date().toISOString()).run();
+				return json({ success: true });
+			}
+
+			if (method === 'POST' && pathname.match(/^\/posts\/(\d+)\/audit-counters$/)) {
+				const postId = Number(pathname.split('/')[2]);
+				await db.prepare(
+					`UPDATE posts
+					 SET like_count = (SELECT COUNT(*) FROM likes WHERE post_id = ?),
+					     star_count = (SELECT COUNT(*) FROM stars WHERE post_id = ?),
+					     repost_count = (SELECT COUNT(*) FROM reposts WHERE post_id = ?),
+					     reply_count = (SELECT COUNT(*) FROM posts WHERE reply_to = ?)
+					 WHERE id = ?`
+				).bind(postId, postId, postId, postId, postId).run();
+				const row = await db.prepare('SELECT * FROM posts WHERE id = ?').bind(postId).first();
+				return json(normalizePostRow(row));
 			}
 
 			if (method === 'POST' && pathname === '/posts/timeline/ids') {
@@ -2632,151 +3393,107 @@ export default {
 				});
 			}
 
-				if (method === 'GET' && pathname === '/posts/recommended/ids') {
-					const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 30), 1), 100);
+				if (method === 'GET' && pathname === '/posts/recommended/candidates') {
+					// 採点は Node.js サーバー側で行うため、ここでは候補行だけを軽量に返す。
+					const windowSize = Math.min(Math.max(Number(url.searchParams.get('limit') || 240), 1), 800);
+					const candidateLimit = windowSize + 1;
 					const decodedCursor = decodePostCursor(url.searchParams.get('cursor'));
 					const beforeId = Number.isSafeInteger(Number(url.searchParams.get('beforeId'))) && Number(url.searchParams.get('beforeId')) > 0
 						? Number(url.searchParams.get('beforeId'))
 						: null;
 					const offset = (beforeId == null && !decodedCursor) ? Math.max(Number(url.searchParams.get('offset') || 0), 0) : 0;
-					const viewerIdParam = url.searchParams.get('viewerId');
-					const viewerId = viewerIdParam !== null && Number.isSafeInteger(Number(viewerIdParam))
-						? Number(viewerIdParam)
-						: null;
-					const includePosts = url.searchParams.get('includePosts') === 'true';
-					const scoringBlockSize = Math.max(240, limit * 8);
-					const candidateLimit = scoringBlockSize + 1;
+					// Postgres/インメモリと揃え、閲覧者が参加中のグループ投稿も候補に入れる（自投稿は除く）。
+					// 未ログインは -1 に正規化すると EXISTS も != も自然に不成立／成立になり、分岐が要らない。
+					const rawViewerId = Number(url.searchParams.get('viewerId'));
+					const scopeViewerId = Number.isSafeInteger(rawViewerId) && rawViewerId > 0 ? rawViewerId : -1;
+					const membershipExists = "(p.group_id IS NULL OR EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.group_id = p.group_id AND gm.user_id = ? AND gm.status = 'active'))";
+					const candidateHead = `${membershipExists} AND p.reply_to IS NULL AND p.user_id != ?`;
+					const viewerBindings = [scopeViewerId, scopeViewerId];
 					const candidateWhere = decodedCursor
-						? 'p.group_id IS NULL AND p.reply_to IS NULL AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))'
-						: (beforeId != null ? 'p.group_id IS NULL AND p.reply_to IS NULL AND p.id < ?' : 'p.group_id IS NULL AND p.reply_to IS NULL');
-					const candidateBindings = decodedCursor
-						? [decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id, candidateLimit, offset, scoringBlockSize]
-						: (beforeId != null
-							? [beforeId, candidateLimit, offset, scoringBlockSize]
-							: [candidateLimit, offset, scoringBlockSize]);
-					const commonCtes = `WITH candidate_source AS (
-							SELECT p.id, p.user_id, p.created_at, p.tags,
-								COALESCE(p.like_count, 0) AS like_count,
-								COALESCE(p.star_count, 0) AS star_count,
-								COALESCE(p.repost_count, 0) AS repost_count
-							FROM posts p
-							WHERE ${candidateWhere}
-							ORDER BY p.created_at DESC, p.id DESC
-							LIMIT ? OFFSET ?
-						), candidates AS (
-							SELECT id, user_id, created_at, tags, like_count, star_count, repost_count
-							FROM candidate_source
-							ORDER BY created_at DESC, id DESC
-							LIMIT ?
-					)`;
-					const engagementScore = `MIN(22.0,
-								/* Keep simple like and star scores below the repost score. */
-								c.like_count * 2.0 / (c.like_count + 4.0)
-								+ c.star_count * 4.0 / (c.star_count + 2.0)
-								+ c.repost_count * 10.0 / (c.repost_count + 2.0))`;
-					const recencyScore = `72.0 / (1.0 + MAX(0.0, (julianday('now') - julianday(c.created_at)) * 24.0) / 4.5)`;
-					const query = viewerId == null
-						? `${commonCtes}, scored AS (
-							SELECT c.id, c.created_at, ${recencyScore} + ${engagementScore} AS score
-							FROM candidates c
-						)
-						SELECT COALESCE(json_group_array(id), '[]') AS ids,
-								(SELECT COUNT(*) FROM candidate_source) AS candidate_count,
-								(SELECT created_at FROM candidate_source ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ${scoringBlockSize - 1}) AS cursor_created_at,
-								(SELECT id FROM candidate_source ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ${scoringBlockSize - 1}) AS cursor_id
-							FROM (
-								SELECT s.id FROM scored s
-								CROSS JOIN (SELECT AVG(score) AS average_score FROM scored) stats
-								WHERE s.score >= stats.average_score * 0.75
-								ORDER BY s.score DESC, s.created_at DESC, s.id DESC
-							)`
-						: `${commonCtes}, viewer_keyword_profile AS (
-							SELECT keyword, score
-							FROM user_keyword_affinities
-							WHERE user_id = ?
-							ORDER BY score DESC, keyword ASC
-							LIMIT 80
-						), viewer_keyword_affinity AS (
-							SELECT c.id AS post_id,
-								SUM(profile.score * CASE
-									WHEN profile.keyword = post_tag.value THEN 1.0
-									ELSE MIN(LENGTH(profile.keyword), LENGTH(post_tag.value)) * 1.0
-										/ MAX(LENGTH(profile.keyword), LENGTH(post_tag.value))
-								END) AS score
-							FROM candidates c
-								CROSS JOIN json_each(COALESCE(c.tags, '[]')) AS post_tag
-							CROSS JOIN viewer_keyword_profile profile
-							WHERE profile.keyword = post_tag.value
-								OR (
-									LENGTH(profile.keyword) >= 3
-									AND LENGTH(post_tag.value) >= 3
-									AND (instr(post_tag.value, profile.keyword) > 0 OR instr(profile.keyword, post_tag.value) > 0)
-								)
-							GROUP BY c.id
-							), viewer_reacted AS (
-								SELECT post_id FROM likes WHERE user_id = ?
-								UNION
-								SELECT post_id FROM stars WHERE user_id = ?
-								UNION
-								SELECT post_id FROM reposts WHERE user_id = ?
-							), direct_follows AS (
-							SELECT following_id AS user_id FROM follows WHERE follower_id = ?
-						), second_degree_follows AS (
-							SELECT DISTINCT f2.following_id AS user_id
-							FROM follows f1 JOIN follows f2 ON f2.follower_id = f1.following_id
-							WHERE f1.follower_id = ? AND f2.following_id <> ?
-						), scored AS (
-							SELECT c.id, c.created_at,
-								MAX(0.0, ${recencyScore} + ${engagementScore}
-									+ CASE WHEN df.user_id IS NOT NULL THEN 24.0 WHEN sdf.user_id IS NOT NULL THEN 10.0 ELSE 0.0 END
-									+ CASE WHEN vr.post_id IS NOT NULL THEN -35.0 ELSE 0.0 END
-									+ MIN(30.0, COALESCE(vka.score, 0) * 2.0)) AS score
-							FROM candidates c
-								LEFT JOIN viewer_keyword_affinity vka ON vka.post_id = c.id
-								LEFT JOIN viewer_reacted vr ON vr.post_id = c.id
-								LEFT JOIN direct_follows df ON df.user_id = c.user_id
-							LEFT JOIN second_degree_follows sdf ON sdf.user_id = c.user_id
-						)
-						SELECT COALESCE(json_group_array(id), '[]') AS ids,
-								(SELECT COUNT(*) FROM candidate_source) AS candidate_count,
-								(SELECT created_at FROM candidate_source ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ${scoringBlockSize - 1}) AS cursor_created_at,
-								(SELECT id FROM candidate_source ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ${scoringBlockSize - 1}) AS cursor_id
-							FROM (
-								SELECT s.id FROM scored s
-								CROSS JOIN (SELECT AVG(score) AS average_score FROM scored) stats
-								WHERE s.score >= stats.average_score * 0.75
-								ORDER BY s.score DESC, s.created_at DESC, s.id DESC
-							)`;
-					const bindings = viewerId == null
-						? candidateBindings
-							: [...candidateBindings, viewerId, viewerId, viewerId, viewerId, viewerId, viewerId, viewerId];
+						? `${candidateHead} AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))`
+						: (beforeId != null ? `${candidateHead} AND p.id < ?` : candidateHead);
+					const useOffset = !decodedCursor && beforeId == null;
+					const bindings = [...viewerBindings, ...(decodedCursor
+						? [decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id, candidateLimit]
+						: (beforeId != null ? [beforeId, candidateLimit] : [candidateLimit, offset]))];
+					const query = `SELECT p.id, p.user_id, p.created_at, p.tags,
+							COALESCE(p.like_count, 0) AS like_count,
+							COALESCE(p.star_count, 0) AS star_count,
+							COALESCE(p.repost_count, 0) AS repost_count
+						FROM posts p
+						WHERE ${candidateWhere}
+						ORDER BY p.created_at DESC, p.id DESC
+						LIMIT ?${useOffset ? ' OFFSET ?' : ''}`;
 					const { results } = await db.prepare(query).bind(...bindings).all();
-					const row = (results || [])[0] || {};
-					let ids = [];
-					try {
-						ids = Array.isArray(row.ids) ? row.ids : JSON.parse(row.ids || '[]');
-					} catch (_) {
-						ids = [];
-					}
-					const candidateCount = Math.max(0, Number(row.candidate_count) || 0);
-					const normalizedIds = ids.map(Number).filter(Number.isSafeInteger);
-					let posts = null;
-					if (includePosts && normalizedIds.length > 0) {
-						const placeholders = normalizedIds.map(() => '?').join(', ');
-						const postRows = await db.prepare(`SELECT * FROM posts WHERE id IN (${placeholders})`).bind(...normalizedIds).all();
-						const postsById = new Map((postRows.results || []).map((post) => [Number(post.id), normalizePostRow(post)]));
-						posts = normalizedIds.map((id) => postsById.get(id)).filter(Boolean);
-					}
-					const cursorPost = candidateCount > scoringBlockSize && row.cursor_created_at && row.cursor_id
-						? { id: Number(row.cursor_id), created_at: row.cursor_created_at }
-						: null;
+					const rows = results || [];
+					const hasMore = rows.length > windowSize;
+					const posts = rows.slice(0, windowSize).map((row) => ({
+						id: Number(row.id),
+						user_id: Number(row.user_id),
+						created_at: row.created_at,
+						tags: normalizePostTags(row.tags),
+						like_count: Number(row.like_count) || 0,
+						star_count: Number(row.star_count) || 0,
+						repost_count: Number(row.repost_count) || 0,
+					}));
+					const last = posts.length > 0 ? posts[posts.length - 1] : null;
 					return json({
-						ids: normalizedIds,
-						...(posts ? { posts } : {}),
-						has_more: candidateCount > scoringBlockSize,
-						next_cursor: cursorPost ? encodePostCursor(cursorPost) : null,
-						next_offset: offset + Math.min(candidateCount, scoringBlockSize),
-						use_offset_pagination: !decodedCursor,
+						ids: posts.map((post) => post.id),
+						posts,
+						has_more: hasMore,
+						next_cursor: hasMore && last ? encodePostCursor({ id: last.id, created_at: last.created_at }) : null,
+						next_offset: offset + posts.length,
+						use_offset_pagination: useOffset,
+					});
+				}
+
+				if (method === 'GET' && pathname.match(/^\/users\/(\d+)\/recommendation-profile$/)) {
+					const profileUserId = Number(pathname.split('/')[2]);
+					const [affinityRows, followRows, reactedRows, feedbackRows, extendedRows, userRow] = await Promise.all([
+						db.prepare('SELECT keyword, score, updated_at FROM user_keyword_affinities WHERE user_id = ? ORDER BY score DESC LIMIT 200').bind(profileUserId).all(),
+						db.prepare('SELECT following_id FROM follows WHERE follower_id = ? ORDER BY created_at DESC LIMIT 500').bind(profileUserId).all(),
+						db.prepare(`SELECT post_id FROM (
+								(SELECT post_id, created_at FROM likes WHERE user_id = ? ORDER BY created_at DESC LIMIT 100)
+								UNION ALL
+								(SELECT post_id, created_at FROM stars WHERE user_id = ? ORDER BY created_at DESC LIMIT 100)
+								UNION ALL
+								(SELECT post_id, created_at FROM reposts WHERE user_id = ? ORDER BY created_at DESC LIMIT 100)
+							) _r`).bind(profileUserId, profileUserId, profileUserId).all(),
+						db.prepare(`SELECT pf.post_id, p.user_id AS author_id
+							FROM post_feedback pf JOIN posts p ON p.id = pf.post_id
+							WHERE pf.user_id = ? AND pf.kind = 'not_interested'
+							ORDER BY pf.created_at DESC LIMIT 500`).bind(profileUserId).all(),
+						db.prepare(`SELECT DISTINCT f2.following_id AS user_id
+							FROM follows f1 JOIN follows f2 ON f2.follower_id = f1.following_id
+							WHERE f1.follower_id = ? AND f2.following_id <> ? LIMIT 1000`).bind(profileUserId, profileUserId).all(),
+						db.prepare('SELECT block FROM users WHERE id = ?').bind(profileUserId).first(),
+					]);
+					const affinities = (affinityRows.results || []).map((row) => ({
+						keyword: row.keyword,
+						score: Number(row.score) || 0,
+						updated_at: row.updated_at,
+					}));
+					const follows = (followRows.results || []).map((row) => Number(row.following_id)).filter(Number.isSafeInteger);
+					const reacted = [...new Set((reactedRows.results || []).map((row) => Number(row.post_id)).filter(Number.isSafeInteger))];
+					const dislikedPostIds = [];
+					const dislikedAuthorsSet = new Set();
+					for (const row of feedbackRows.results || []) {
+						dislikedPostIds.push(Number(row.post_id));
+						const authorId = Number(row.author_id);
+						if (Number.isSafeInteger(authorId)) dislikedAuthorsSet.add(authorId);
+					}
+					const extendedFollows = (extendedRows.results || []).map((row) => Number(row.user_id)).filter(Number.isSafeInteger);
+					let blockedAuthors = [];
+					const parsedBlock = parseJsonSafe(userRow?.block, []);
+					if (Array.isArray(parsedBlock)) blockedAuthors = parsedBlock.map(Number).filter(Number.isSafeInteger);
+					return json({
+						affinities,
+						follows,
+						extendedFollows,
+						reacted,
+						dislikedPostIds,
+						dislikedAuthors: [...dislikedAuthorsSet],
+						blockedAuthors,
 					});
 				}
 
@@ -2844,6 +3561,25 @@ export default {
 					? Number(url.searchParams.get('beforeId'))
 					: null;
 				const offset = (beforeId == null && !decodedCursor) ? Number(url.searchParams.get('offset') || 0) : 0;
+                const searchFilters = url.searchParams.get('searchFilters');
+                if (searchFilters) {
+                    const values = [];
+                    const { clauses } = buildPostSearchSql(JSON.parse(searchFilters), { dialect: 'sqlite', values });
+                    clauses.unshift('group_id IS NULL');
+                    if (decodedCursor) {
+                        clauses.push('(created_at < ? OR (created_at = ? AND id < ?))');
+                        values.push(decodedCursor.createdAt, decodedCursor.createdAt, decodedCursor.id);
+                    } else if (beforeId != null) {
+                        clauses.push('id < ?'); values.push(beforeId);
+                    }
+                    values.push(limit + 1, offset);
+                    const { results = [] } = await db.prepare(`SELECT * FROM posts WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).bind(...values).all();
+                    const selected = results.slice(0, limit);
+                    const ids = selected.map(row => row.id);
+                    const posts = includePosts ? (await attachInlinePostMetrics(db, selected, viewerId)).map(normalizePostRow) : null;
+                    return json({ ids, ...(posts ? { posts } : {}), has_more: results.length > limit,
+                        next_cursor: results.length > limit && selected.length ? encodePostCursor(selected[selected.length - 1]) : null });
+                }
 				if (!q.trim()) return json({ ids: [], has_more: false, next_cursor: null });
 
 				const fetchLimit = Math.max(200, (offset + limit) * 3);
@@ -2985,6 +3721,8 @@ export default {
 						author.scid AS author_scid,
 						author.handle AS author_handle,
 						author.icon_data AS author_icon_data,
+						author.bio AS author_bio,
+						author.header_image AS author_header_image,
 						author.verify AS author_verify,
 						author.admin AS author_admin,
 						author.settings AS author_settings,
@@ -3404,6 +4142,11 @@ export default {
 				const body = await request.json();
 				const userId = Number(body.userId);
 				await adjustUserKeywordAffinities(db, userId, postId, -15);
+				await db.prepare(
+					`INSERT INTO post_feedback (user_id, post_id, kind, created_at)
+					 VALUES (?, ?, 'not_interested', ?)
+					 ON CONFLICT(user_id, post_id, kind) DO NOTHING`,
+				).bind(userId, postId, new Date().toISOString()).run();
 				return json({ success: true });
 			}
 
@@ -3458,10 +4201,20 @@ export default {
 				const postId = Number(pathname.split('/')[2]);
 				const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
 				const { results } = await db.prepare(
-					`SELECT u.id as user_id, u.name, u.handle FROM reposts r
+					`SELECT u.id AS user_id, u.name, u.handle, u.icon_data, u.verify, u.admin, u.bio, r.created_at AS reposted_at FROM reposts r
 					 JOIN users u ON u.id = r.user_id WHERE r.post_id = ? ORDER BY r.created_at DESC LIMIT ?`
 				).bind(postId, limit).all();
-				return json(results || []);
+				return json((results || []).map((row) => ({
+					user_id: Number(row.user_id),
+					id: Number(row.user_id),
+					name: row.name,
+					handle: row.handle,
+					icon_data: row.icon_data,
+					verify: Boolean(row.verify),
+					admin: Boolean(row.admin),
+					bio: row.bio,
+					reposted_at: row.reposted_at ?? null,
+				})));
 			}
 
 			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/reposts\/count$/)) {
@@ -4148,28 +4901,36 @@ export default {
 			if (method === 'GET' && pathname.match(/^\/polls\/(\d+)\/voters$/)) {
 				const pollId = Number(pathname.split('/')[2]);
 				const { results } = await db.prepare(
-					`SELECT pv.option_id, pv.created_at, pv.other_text, u.id as user_id, u.name, u.scid, u.icon_data
-					 FROM poll_votes pv
-					 JOIN users u ON u.id = pv.user_id
-					 WHERE pv.poll_id = ?
-					 ORDER BY pv.created_at DESC`
+					`SELECT DISTINCT user_id
+					 FROM poll_votes
+					 WHERE poll_id = ?`
 				).bind(pollId).all();
-				return json(results || []);
+				return json((results || []).map((row) => Number(row.user_id)));
 			}
 
 			// ==================== Post Activities ====================
 
-			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/reposts$/)) {
+			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/stars$/)) {
 				const postId = Number(pathname.split('/')[2]);
 				const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
 				const { results } = await db.prepare(
-					`SELECT u.id, u.name, u.scid, u.icon_data, r.created_at
-					 FROM reposts r
-					 JOIN users u ON u.id = r.user_id
-					 WHERE r.post_id = ?
-					 ORDER BY r.created_at DESC LIMIT ?`
+					`SELECT u.id AS user_id, u.name, u.handle, u.icon_data, u.verify, u.admin, u.bio, s.created_at AS starred_at
+					 FROM stars s
+					 JOIN users u ON u.id = s.user_id
+					 WHERE s.post_id = ?
+					 ORDER BY s.created_at DESC LIMIT ?`
 				).bind(postId, limit).all();
-				return json(results || []);
+				return json((results || []).map((row) => ({
+					user_id: Number(row.user_id),
+					id: Number(row.user_id),
+					name: row.name,
+					handle: row.handle,
+					icon_data: row.icon_data,
+					verify: Boolean(row.verify),
+					admin: Boolean(row.admin),
+					bio: row.bio,
+					starred_at: row.starred_at ?? null,
+				})));
 			}
 
 			if (method === 'GET' && pathname.match(/^\/posts\/(\d+)\/quotes$/)) {
@@ -4188,13 +4949,23 @@ export default {
 				const postId = Number(pathname.split('/')[2]);
 				const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
 				const { results } = await db.prepare(
-					`SELECT u.id, u.name, u.scid, u.icon_data, l.created_at
+					`SELECT u.id AS user_id, u.name, u.handle, u.icon_data, u.verify, u.admin, u.bio, l.created_at AS liked_at
 					 FROM likes l
 					 JOIN users u ON u.id = l.user_id
 					 WHERE l.post_id = ?
 					 ORDER BY l.created_at DESC LIMIT ?`
 				).bind(postId, limit).all();
-				return json(results || []);
+				return json((results || []).map((row) => ({
+					user_id: Number(row.user_id),
+					id: Number(row.user_id),
+					name: row.name,
+					handle: row.handle,
+					icon_data: row.icon_data,
+					verify: Boolean(row.verify),
+					admin: Boolean(row.admin),
+					bio: row.bio,
+					liked_at: row.liked_at ?? null,
+				})));
 			}
 
 			return notFound(`Path ${method} ${pathname} not handled`);

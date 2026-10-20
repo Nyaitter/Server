@@ -21,7 +21,10 @@ function normalizePublicUrl(value) {
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
       return null;
     }
-    return parsed.origin;
+    // 任意の配信ベース（サブパス）配下でも成立するようパス接頭辞を保持する。
+    // 末尾スラッシュとクエリ・ハッシュは落とし、オリジンのみの指定ならオリジンを返す。
+    const basePath = parsed.pathname.replace(/\/+$/, '');
+    return `${parsed.origin}${basePath}`;
   } catch (_) {
     return null;
   }
@@ -39,10 +42,10 @@ function isSafeHost(host) {
 }
 
 /**
- * Derive this instance's public origin from the active request. Behind a proxy,
- * Express's req.protocol and req.hostname follow forwarded headers only when
- * server.trustProxy is enabled. PUBLIC_URL is only a safe fallback for jobs
- * that have no request context.
+ * Derive this instance's public base URL (origin + optional subpath) from the
+ * active request. Behind a proxy, Express's req.protocol and req.hostname follow
+ * forwarded headers only when server.trustProxy is enabled. A configured
+ * PUBLIC_URL is preferred and is the only way to keep a reverse-proxy subpath.
  */
 function getPublicUrl(req = null) {
   const configured = normalizePublicUrl(
@@ -105,7 +108,9 @@ function getPostShareUrl(req = null) {
         const parsed = new URL(publicBase);
         parsed.port = (port === 80 || port === 443) ? '' : String(port);
         return parsed.origin;
-      } catch (_) {}
+      } catch (_) {
+        // publicBase が URL として解釈できない場合はポート変更せず、そのまま返す。
+      }
     }
   }
 

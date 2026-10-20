@@ -112,7 +112,7 @@ router.post({
       });
     }
 
-    // 以前の許可済みスコープをそのまま適用して承認
+    // 既存の許可済みスコープをそのまま適用して承認
     const result = await manager.approveAuthorization(
       request_id,
       req.user.id,
@@ -219,6 +219,7 @@ router.get({
         handle: user.handle || null,
         icon_data: user.icon_data || null,
         me: user.me || null,
+        header_image: user.header_image || null,
         created_at: user.created_at || null,
       },
       scopes: req.user.scopes || ['*'],

@@ -2,7 +2,7 @@
   "name": "nyaitter-d1-proxy",
   "version": "1.0.0",
   "private": true,
-  "description": "Cloudflare D1 Proxy Worker for Nyaitter",
+  "description": "Nyaitter を Cloudflare D1 で使うための接続プログラム",
   "main": "src/index.js",
   "scripts": {
     "dev": "wrangler dev",

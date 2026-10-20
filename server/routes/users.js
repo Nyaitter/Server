@@ -12,7 +12,6 @@ const {
 	serializePublicProfile,
 	serializePostsByIds,
 	serializePostsBatch,
-	serializeNotification,
 } = require('../utils/serialize');
 const timelineCacheManager = require('../utils/TimelineCacheManager');
 const { getPublicUrl, getUserNyaitterId } = require('../utils/nyaitterAddress');
@@ -144,7 +143,7 @@ async function migrateReassignedAccountAttachments(db, storage, previousUserId, 
 		if (typeof storage.deleteMany === 'function') await storage.deleteMany(sourceKeys);
 		else if (typeof storage.delete === 'function') await Promise.all(sourceKeys.map((sourceKey) => storage.delete(sourceKey)));
 	} catch (error) {
-		// 参照更新後の旧キー削除に失敗しても、新しい参照と複製済みファイルは維持する。
+		// 参照更新後の元キー削除に失敗しても、新しい参照と複製済みファイルは維持する。
 		console.warn('[users] reassigned account attachment cleanup failed:', error.message);
 	}
 	return replacements.length;
@@ -239,37 +238,11 @@ async function sendStoredIcon(req, res, fileId) {
 	}
 }
 
-async function publishNewNotification(req, userId, notification) {
-	const structuredNotification = await serializeNotification(
-		getDbAdapter(req),
-		notification,
-		getPublicUrl(req),
-	);
-	if (!structuredNotification) return;
-
-	const realtime = req.app.locals.realtime;
-	if (realtime) {
-		try {
-			await realtime.publishNewNotification(userId, structuredNotification, getDbAdapter(req));
-		} catch (error) {
-			console.warn('[users] notification realtime delivery failed:', error.message);
-		}
-	}
-
-	const pushService = req.app.locals.pushNotificationService;
-	if (pushService?.enabled) {
-		void pushService.sendNotificationToUser(userId, structuredNotification, {
-			publicUrl: getPublicUrl(req),
-		}).catch((error) => {
-			console.warn('[users] notification push delivery failed:', error.message);
-		});
-	}
-}
-
 function serializeUserCard(user, publicUrl, { includeSearchExclusion = false } = {}) {
 	return {
 		...serializeUserBrief(user, publicUrl, { includeSearchExclusion }),
 		me: user.me || user.bio || '',
+		header_image: user.header_image || null,
 		created_at: user.created_at || user.createdAt || null,
 	};
 }
@@ -699,6 +672,7 @@ router.get({
 			? await db.getPostsByIds(mediaPostIds)
 			: [];
 		const viewablePostIds = new Set((await filterViewablePosts(db, mediaPosts, req.user?.id || null))
+			.filter((post) => !(post.scheduledAt ?? post.scheduled_at))
 			.map((post) => Number(post.id)));
 		const visibleMediaItems = mediaItems.filter((item) => viewablePostIds.has(Number(item.post_id)));
 		const nextCursor = mediaResult?.next_cursor || mediaItems?.next_cursor || null;
@@ -709,6 +683,45 @@ router.get({
 	} catch (err) {
 		console.error('[users] media error:', err);
 		res.status(500).json({ error: 'メディア取得に失敗しました' });
+	}
+});
+
+router.get({
+	path: '/:userId/scheduled',
+	summary: '本人の予約済み投稿一覧取得',
+	auth: 'required',
+}, requireAuth, async (req, res) => {
+	const db = getDbAdapter(req);
+	const userId = parseInt(req.params.userId, 10);
+	const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
+	const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+	if (!Number.isInteger(userId) || userId < 0) {
+		return res.status(400).json({ error: 'Invalid user id' });
+	}
+	if (Number(req.user?.id) !== userId) {
+		return res.status(403).json({ error: '予約済み投稿は本人のみ閲覧できます' });
+	}
+
+	try {
+		if (typeof db.getScheduledPostsByUser !== 'function') {
+			return res.json({ posts: [], has_more: false });
+		}
+		const now = new Date().toISOString();
+		const scheduled = await db.getScheduledPostsByUser(userId, now, { limit: limit + 1, offset });
+		const hasMore = scheduled.length > limit;
+		const page = scheduled.slice(0, limit);
+		const posts = await serializePostsByIds(
+			db,
+			page.map((post) => Number(post.id)),
+			req.user.id,
+			getPublicUrl(req),
+			req.user?.visibilityUser || null,
+		);
+		res.json({ posts, has_more: hasMore });
+	} catch (err) {
+		console.error('[users] scheduled error:', err);
+		res.status(500).json({ error: '予約済み投稿の取得に失敗しました' });
 	}
 });
 
@@ -789,17 +802,6 @@ router.put({
 		invalidateUserBriefCache(userId);
 		timelineCacheManager.updatePostAuthor(userId, { shadow: Boolean(shadow) });
 
-		try {
-			const LogHubManager = require('../services/managementTool/LogHubManager');
-			LogHubManager.appendExternalLog({
-				type: 'admin',
-				level: 'warn',
-				source: 'admin-action',
-				message: `[Admin] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) がユーザー #${userId} のステータスを更新 (shadow: ${Boolean(shadow)})`,
-				details: { adminUserId: req.user.id, targetUserId: userId, changes: { shadow } },
-			});
-		} catch (_) {}
-
 		res.json({ success: true, status });
 	} catch (err) {
 		console.error('[users] set status error:', err);
@@ -831,13 +833,12 @@ router.post({
 			const actionId = queue.enqueue('follow', async () => {
 				const result = await db.toggleFollow(followerId, followingId);
 				if (result.following) {
-					const notification = await createNotificationIfAllowed(db, {
+					await createNotificationIfAllowed(db, {
 						userId: followingId,
 						type: 'follow',
 						fromUserId: followerId,
 						target: { kind: 'user', id: followingId },
 					});
-					if (notification) await publishNewNotification(req, followingId, notification);
 				}
 			});
 			const updatedFollows = new Set(follows.map(Number));
@@ -848,13 +849,12 @@ router.post({
 		const result = await db.toggleFollow(followerId, followingId);
 
 			if (result.following) {
-				const notification = await createNotificationIfAllowed(db, {
+				await createNotificationIfAllowed(db, {
 					userId: followingId,
 					type: 'follow',
 					fromUserId: followerId,
 					target: { kind: 'user', id: followingId },
 				});
-				await publishNewNotification(req, followingId, notification);
 			}
 
 		const updatedFollows = await db.getFollowIds(followerId);
@@ -970,7 +970,7 @@ router.get({
 		const slice = Array.isArray(result) ? users.slice(0, limit) : users;
 		await attachGroupBadgesToUsers(db, slice);
 		res.json({
-			followers: slice.map((u) => serializeUserBrief(u)),
+			followers: slice.map((u) => serializeUserCard(u)),
 			has_more: hasMore,
 			next_cursor: nextCursor,
 		});
@@ -1006,7 +1006,7 @@ router.get({
 		const slice = Array.isArray(result) ? users.slice(0, limit) : users;
 		await attachGroupBadgesToUsers(db, slice);
 		res.json({
-			following: slice.map((u) => serializeUserBrief(u)),
+			following: slice.map((u) => serializeUserCard(u)),
 			has_more: hasMore,
 			next_cursor: nextCursor,
 		});
@@ -1047,6 +1047,7 @@ router.get({
 				knownViewer,
 			);
 			let filtered = await filterViewablePosts(db, all, currentUserId, visibilityContext);
+		filtered = filtered.filter((post) => !(post.scheduledAt ?? post.scheduled_at));
 		if (mode === 'posts') {
 			filtered = filtered.filter((p) => !p.replyTo);
 		} else if (mode === 'replies') {
@@ -1129,13 +1130,12 @@ router.post({
 				icon_data: completedUser.icon_data,
 				nyaitter_id: getUserNyaitterId(completedUser),
 			});
-			const notification = await db.createNotification({
+			await createNotificationIfAllowed(db, {
 				userId: reassignedUserId,
 				type: 'admin_notice',
 				message: `NyaitterIDを${getUserNyaitterId(updated)}へ再割り当てしました。`,
 				target: { kind: 'route', value: '#settings' },
 			});
-			if (notification) await publishNewNotification(req, reassignedUserId, notification);
 			return res.json({ user: await serializeUser(db, completedUser, reassignedUserId, getPublicUrl(req)) });
 
 	} catch (error) {
@@ -1231,7 +1231,8 @@ router.put({
 		invalidateSessionPrincipalCache(userId);
 		timelineCacheManager.updatePostAuthor(userId, {
 			name: updated.name,
-			bio: updated.bio,
+			me: updated.me || updated.bio || '',
+			bio: updated.bio || updated.me || '',
 			icon_data: updated.icon_data,
 			header_image: updated.header_image,
 		});
@@ -1277,17 +1278,6 @@ router.put({
 			verify: updated.verify,
 			admin: updated.admin,
 		});
-
-		try {
-			const LogHubManager = require('../services/managementTool/LogHubManager');
-			LogHubManager.appendExternalLog({
-				type: 'admin',
-				level: 'warn',
-				source: 'admin-action',
-				message: `[Admin] 管理者 @${req.user.name || req.user.username} (#${req.user.id}) がユーザー #${userId} を更新 (freeze: ${Boolean(freeze)}, verify: ${Boolean(verify)}, admin: ${Boolean(admin)})`,
-				details: { adminUserId: req.user.id, targetUserId: userId, changes: { verify, freeze, admin } },
-			});
-		} catch (_) {}
 
 		res.json({
 			user: await serializeUser(db, updated, req.user.id, getPublicUrl(req)),

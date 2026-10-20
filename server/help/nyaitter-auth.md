@@ -1,220 +1,100 @@
-# NyaitterAuthガイド
+# NyaitterAuth ガイド
 
-NyaitterAuth は、外部のWebサイトやBot、別のNyaitterサーバーが、Nyaitterのアカウントを使って安全にログイン・連携できる仕組みです。
+NyaitterAuth は、外部の Web サイト・Bot・別の Nyaitter サーバーが、Nyaitter のアカウントで安全にログイン・連携するための仕組みです。ユーザーはパスワードを渡さず、許可する権限を確認してから連携できます。
 
-ユーザーはパスワードを外部アプリに教えることなく、許可する権限を確認して安全に連携できます。
+連携したアプリは、設定画面の「連携アプリ」からいつでも権限を変更・解除できます。
 
----
-
-## 概要と特長
-
-1. **セキュアな認可フロー**:
-   - アプリケーションIDとシークレットによる事前リクエスト方式
-   - 認可コードは5分間のワンタイム利用
-   - トークンはSHA-256ハッシュでDBに安全に保存
-2. **きめ細やかな権限管理**:
-   - プロフィール閲覧、タイムライン閲覧、投稿、DM、通知などの権限を個別要求
-   - ユーザーは連携時にスコープを確認可能
-3. **ユーザーによる管理・解除**:
-   - 設定画面の「連携アプリ」一覧からいつでも付与権限の変更や連携解除が可能
-4. **継続アクセストークン (`continuous_access`)**:
-   - 継続アクセスを要求・承認された場合、バックグラウンド等でAPIを呼び出すための専用Bearerトークンを発行
-
----
-
-## 連携フロー
+## 連携の流れ
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as ユーザー
-    participant App as 外部アプリケーション (Client / Server)
+    participant App as 外部アプリ
     participant Nyaitter as Nyaitter サーバー
 
-    App->>Nyaitter: 1. POST /server/api/nyaitter-auth/initiate (app_id, api_token, redirect_uri, scopes)
-    Nyaitter-->>App: auth_url (/#nyaitter-auth?request_id=...), request_id
-    App->>User: 2. auth_url へリダイレクト
-    User->>Nyaitter: 3. 画面でアカウント選択・スコープ承認 (POST /approve)
-    Nyaitter-->>User: redirect_uri?code=authcode_...&state=...
-    User->>App: 4. コールバックURLへリダイレクト
-    App->>Nyaitter: 5. POST /server/api/nyaitter-auth/token (app_id, api_token, code)
-    Nyaitter-->>App: user情報, granted_scopes, access_token (continuous_access有効時)
-    Note over App,Nyaitter: 6. 以降、Authorization: Bearer <access_token> でAPI呼び出し
+    App->>Nyaitter: POST /server/api/nyaitter-auth/initiate
+    Nyaitter-->>App: auth_url, request_id
+    App->>User: auth_url へリダイレクト
+    User->>Nyaitter: 画面でスコープを承認
+    Nyaitter-->>User: redirect_uri?code=...&state=...
+    User->>App: コールバック URL へリダイレクト
+    App->>Nyaitter: POST /server/api/nyaitter-auth/token
+    Nyaitter-->>App: ユーザー情報・アクセストークン
 ```
 
----
+1. アプリが `initiate` を呼び、`auth_url` をユーザーのブラウザに渡します（有効期限 15 分）。
+2. ユーザーが画面で権限を確認して承認します。
+3. アプリが `code` を `token` と交換します（有効期限 5 分・使い捨て）。
+4. `continuous_access` を承認した場合だけ、継続アクセス用の `access_token` が発行されます。承認しない場合は単発のログイン確認として使えます。
 
-## 利用可能なスコープ (Scopes)
+## 権限（スコープ）
 
-| スコープ名 | 名称 | 必須 | 説明 |
-|---|---|---|---|
-| `profile:read` | 基本情報の閲覧 | **はい** | ユーザー名、アイコン、Nyaitter ID、自己紹介などの基本情報を閲覧します。 |
-| `posts:read` | タイムライン・ポストの閲覧 | いいえ | タイムライン、公開ポスト、返信を閲覧します。 |
-| `posts:write` | ポストの投稿・リアクション | いいえ | アカウントからポストの投稿、返信、いいね、リポスト等を行います。 |
-| `dm:read` | ダイレクトメッセージの閲覧 | いいえ | DMメッセージを閲覧します。 |
-| `dm:write` | ダイレクトメッセージの送信 | いいえ | アカウントからDMメッセージを送信します。 |
-| `notifications:read` | 通知の閲覧 | いいえ | 通知一覧を確認します。 |
-| `continuous_access` | 継続してアカウントにアクセス | いいえ | バックグラウンド等で継続してAPIにアクセスするための専用アクセストークンを発行します。 |
+| スコープ | できること | 必須 |
+|---|---|---|
+| `profile:read` | ユーザー名、アイコン、自己紹介を見る | はい |
+| `posts:read` | タイムライン、公開投稿、返信を見る | いいえ |
+| `posts:write` | 投稿、返信、いいね、リポストを行う | いいえ |
+| `dm:read` | DM を見る | いいえ |
+| `dm:write` | DM を送る | いいえ |
+| `notifications:read` | 通知を見る | いいえ |
+| `storage:access` | ファイルを保存・閲覧・更新・削除する | いいえ |
+| `continuous_access` | バックグラウンド用の専用アクセストークンを発行する | いいえ |
 
-> `offline_access` は `continuous_access` の別名として利用可能です。
+`offline_access` は `continuous_access` の別名です。`read:profile` などの読み替え用の別名も使えます。
 
----
+## API
 
-## API エンドポイント リファレンス
+`/server/api/` と `/server/` のどちらのプレフィックスでも呼び出せます。
 
-### 1. 認可リクエストの開始 (`POST /server/api/nyaitter-auth/initiate`)
+| 用途 | メソッドとパス | 内容 |
+|---|---|---|
+| 認可の開始 | `POST /server/api/nyaitter-auth/initiate` | 外部アプリのバックエンドから呼ぶ。`app_id`、`api_token`、`redirect_uri`、`scopes` を指定 |
+| リクエスト詳細 | `GET /server/api/nyaitter-auth/requests/:requestId` | 承認画面に表示する内容を取得 |
+| ユーザー承認 | `POST /server/api/nyaitter-auth/approve` | ログイン中のユーザーが権限を許可 |
+| コード交換 | `POST /server/api/nyaitter-auth/token` | `code` をユーザー情報とアクセストークンに交換 |
+| ユーザー情報取得 | `GET /server/api/nyaitter-auth/userinfo` | `Authorization: Bearer <access_token>` で呼ぶ |
 
-外部アプリケーションのバックエンドから呼び出し、認可セッションを開始します。
+### リクエスト例
 
-- **リクエスト**:
-  ```json
-  POST /server/api/nyaitter-auth/initiate
-  Content-Type: application/json
+```json
+POST /server/api/nyaitter-auth/initiate
+{
+  "app_id": "my_sample_app",
+  "api_token": "your-api-token",
+  "name": "サンプルアプリ",
+  "icon_url": "https://example.com/icon.png",
+  "redirect_uri": "https://example.com/oauth/callback",
+  "state": "random_csrf_token",
+  "scopes": ["profile:read", "posts:read", "continuous_access"]
+}
+```
 
-  {
-    "app_id": "my_sample_app",
-    "api_token": "secret_token_12345",
-    "name": "サンプルアプリ",
-    "icon_url": "https://example.com/icon.png",
-    "redirect_uri": "https://example.com/oauth/callback",
-    "state": "random_csrf_token",
-    "scopes": ["profile:read", "posts:read", "continuous_access"]
-  }
-  ```
+### レスポンス例
 
-- **レスポンス (200 OK)**:
-  ```json
-  {
-    "success": true,
-    "request_id": "req_8f1a2b3c4d5e6f...",
-    "auth_url": "https://nyaitter.example.com/#nyaitter-auth?request_id=req_8f1a2b3c4d5e6f...",
-    "expires_at": "2026-08-21T15:00:00.000Z"
-  }
-  ```
+```json
+{
+  "success": true,
+  "user": { "id": 12, "name": "nyanko", "scid": "nyanko_scratch" },
+  "granted_scopes": ["profile:read", "posts:read", "continuous_access"],
+  "access_token": "nyauth_...",
+  "token_type": "Bearer"
+}
+```
 
-ユーザーを `auth_url` へブラウザでリダイレクトしてください。有効期限は15分です。
+## 連携中のアプリを管理する
 
----
-
-### 2. 認可リクエスト情報の取得 (`GET /server/api/nyaitter-auth/requests/:requestId`)
-
-Nyaitterクライアントの承認画面 (`/#nyaitter-auth`) がリクエスト詳細を表示するために呼び出します。
-
-- **レスポンス (200 OK)**:
-  ```json
-  {
-    "success": true,
-    "request": {
-      "request_id": "req_8f1a2b3c4d5e6f...",
-      "app_id": "my_sample_app",
-      "name": "サンプルアプリ",
-      "icon_url": "https://example.com/icon.png",
-      "redirect_uri": "https://example.com/oauth/callback",
-      "scopes": [
-        {
-          "scope": "profile:read",
-          "name": "基本情報の閲覧",
-          "description": "ユーザー名、アイコン、Nyaitter ID、自己紹介などの基本情報を閲覧します。",
-          "required": true
-        },
-        {
-          "scope": "posts:read",
-          "name": "タイムライン・ポストの閲覧",
-          "description": "タイムライン、公開ポスト、返信を閲覧します。",
-          "required": false
-        }
-      ],
-      "state": "random_csrf_token",
-      "already_authorized": false,
-      "existing_scopes": [],
-      "expires_at": "2026-08-21T15:00:00.000Z"
-    }
-  }
-  ```
-
----
-
-### 3. 認可コードの交換 (`POST /server/api/nyaitter-auth/token`)
-
-ユーザー承認後にリダイレクトされた `code`を、ユーザー情報およびアクセストークンと交換します。
-
-- **リクエスト**:
-  ```json
-  POST /server/api/nyaitter-auth/token
-  Content-Type: application/json
-
-  {
-    "app_id": "my_sample_app",
-    "api_token": "secret_token_12345",
-    "code": "authcode_a1b2c3d4e5f6..."
-  }
-  ```
-
-- **レスポンス (200 OK)**:
-  ```json
-  {
-    "success": true,
-    "user": {
-      "id": 12,
-      "name": "nyanko",
-      "scid": "nyanko_scratch",
-      "handle": "nyanko@nyaitter.example.com",
-      "icon_data": "https://example.com/icon.png",
-      "me": "よろしくお願いします！",
-      "created_at": "2026-01-01T00:00:00.000Z"
-    },
-    "granted_scopes": ["profile:read", "posts:read", "continuous_access"],
-    "access_token": "nyauth_0123456789abcdef_abcdef0123456789...",
-    "token_type": "Bearer"
-  }
-  ```
-
-> `continuous_access` が承認されていない場合、`access_token` は発行されず単発のログイン確認として利用されます。
-
----
-
-### 4. ユーザー情報取得 (`GET /server/api/nyaitter-auth/userinfo`)
-
-発行されたアクセストークンを付与してユーザー情報を取得します。
-
-- **リクエスト**:
-  ```http
-  GET /server/api/nyaitter-auth/userinfo
-  Authorization: Bearer nyauth_0123456789abcdef_abcdef0123456789...
-  ```
-
-- **レスポンス (200 OK)**:
-  ```json
-  {
-    "success": true,
-    "user": {
-      "id": 12,
-      "name": "nyanko",
-      "scid": "nyanko_scratch",
-      "handle": "nyanko@nyaitter.example.com",
-      "icon_data": "https://example.com/icon.png",
-      "me": "よろしくお願いします！",
-      "created_at": "2026-01-01T00:00:00.000Z"
-    },
-    "scopes": ["profile:read", "posts:read", "continuous_access"],
-    "app_id": "my_sample_app"
-  }
-  ```
-
----
-
-## 連携アプリの管理 API
-
-ユーザーは自身のログインセッションから連携中アプリの一覧取得・権限変更・解除を行えます。
-
-| メソッド | パス | 説明 |
+| メソッド | パス | できること |
 |---|---|---|
 | `GET` | `/server/api/nyaitter-auth/authorized-apps` | 連携中のアプリ一覧を取得 |
-| `PATCH` | `/server/api/nyaitter-auth/authorized-apps/:id` | 連携中アプリの付与スコープを更新 |
-| `DELETE` | `/server/api/nyaitter-auth/authorized-apps/:id` | 連携中アプリの認証を取り消し |
+| `PATCH` | `/server/api/nyaitter-auth/authorized-apps/:id` | 権限を変更 |
+| `DELETE` | `/server/api/nyaitter-auth/authorized-apps/:id` | 連携を解除 |
 
----
+## 別の Nyaitter サーバーとログインを連携する
 
-## 他の Nyaitter サーバーとのログイン連携
+ログイン画面の「他の Nyaitter でログイン」に連携元サーバーの URL を入力すると、同じ手順で認証できます。
 
-別の Nyaitter サーバーを認証プロバイダーとして使用する場合、ログイン画面の「他のNyaitterでログイン」機能から連携元サーバーのURLを入力するだけで、NyaitterAuth のプロトコルを通じてシームレスに認証が行われます。
+## 関連ドキュメント
+
+- [認証プロバイダー設定](./auth-providers.md)
+- [拡張 API キー](./extension-keys.md)

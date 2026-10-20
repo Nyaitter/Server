@@ -1,12 +1,10 @@
 const timelineCacheManager = require('../utils/TimelineCacheManager');
-const { serializeNotifications } = require('../utils/serialize');
-const { getPublicUrl } = require('../utils/nyaitterAddress');
+const { createNotificationIfAllowed } = require('./NotificationDeliveryService');
 const { publishNewTimelinePost } = require('./PostActionProcessor');
 
 function startScheduledPostPublisher(
   dbAdapter,
   realtimeConnections,
-  pushNotificationService,
   { intervalMs = 15 * 1000, logger = console, autoStart = true } = {},
 ) {
   let running = false;
@@ -38,7 +36,7 @@ function startScheduledPostPublisher(
 
           const userId = Number(published.userId ?? published.user_id);
           if (!Number.isSafeInteger(userId)) continue;
-          const notification = await dbAdapter.createNotification({
+          await createNotificationIfAllowed(dbAdapter, {
             userId,
             type: 'scheduled_post',
             fromUserId: null,
@@ -46,17 +44,6 @@ function startScheduledPostPublisher(
             target: { kind: 'post', id: postId },
             message: '予約投稿を公開しました。',
           });
-          const [structured] = notification
-            ? await serializeNotifications(dbAdapter, [notification], getPublicUrl(), {
-                targetPosts: [published],
-              })
-            : [];
-          if (structured && realtimeConnections) {
-            await realtimeConnections.publishNewNotification(userId, structured, dbAdapter);
-            if (pushNotificationService?.enabled) {
-              void pushNotificationService.sendNotificationToUser(userId, structured).catch(() => {});
-            }
-          }
         } catch (error) {
           logger.warn?.(`[scheduled-posts] failed to publish post #${postId}:`, error.message);
         }

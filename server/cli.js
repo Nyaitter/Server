@@ -31,10 +31,6 @@ nscli — Nyaitter ローカル管理CLI
     nscli  maintenance enable
     nscli  maintenance disable
     nscli  maintenance status
-  nscli  nmt start
-  nscli  nmt stop
-  nscli  nmt restart
-  nscli  nmt status
   nscli extension-key create --name <拡張名> --scope nyaitter-auth --redirect-origin <URL> [--output <保存先>]
   nscli extension-key list
   nscli extension-key revoke <キーID>
@@ -179,119 +175,6 @@ async function setAdministrator(userIdArgument, admin) {
     );
 }
 
-// ── NMT (Nyaitter Management Tool) CLI Controls ─────────────────────────────
-const NMT_PID_FILE = path.join(PROJECT_ROOT, 'data', 'nmt.pid');
-const NMT_PORT = 4040;
-
-function getPidListeningOnPort(port) {
-    const { execSync } = require('child_process');
-    try {
-        const out = execSync(`lsof -t -i :${port} 2>/dev/null || fuser ${port}/tcp 2>/dev/null`, { encoding: 'utf8' }).trim();
-        if (out) {
-            const pids = out.split(/\s+/).map((p) => parseInt(p, 10)).filter((p) => !isNaN(p) && p !== process.pid);
-            if (pids.length > 0) return pids[0];
-        }
-    } catch (_) {}
-    return null;
-}
-
-function getNmtPid() {
-    try {
-        if (fs.existsSync(NMT_PID_FILE)) {
-            const pid = parseInt(fs.readFileSync(NMT_PID_FILE, 'utf8').trim(), 10);
-            if (!isNaN(pid)) {
-                try {
-                    process.kill(pid, 0);
-                    return pid;
-                } catch (_) {}
-            }
-        }
-    } catch (_) {}
-    return getPidListeningOnPort(NMT_PORT);
-}
-
-async function isPortAvailable(port) {
-    const net = require('net');
-    return new Promise((resolve) => {
-        const tester = net.createConnection({ port, host: '127.0.0.1' }, () => {
-            tester.end();
-            resolve(false); // ポート使用中
-        });
-        tester.on('error', () => resolve(true)); // ポート空き
-        tester.setTimeout(500, () => {
-            tester.destroy();
-            resolve(true);
-        });
-    });
-}
-
-async function startNmt() {
-    const existingPid = getNmtPid();
-    if (existingPid) {
-        console.log(`NMT は既に稼働中です (PID: ${existingPid})`);
-        return;
-    }
-
-    const standaloneScript = path.resolve(__dirname, 'services/managementTool/standalone.js');
-    const child = spawn(process.execPath, [standaloneScript], {
-        cwd: PROJECT_ROOT,
-        detached: true,
-        stdio: 'inherit',
-        env: { ...process.env },
-    });
-    child.unref();
-
-    console.log(`NMT を起動しました (PID: ${child.pid})`);
-}
-
-async function stopNmt() {
-    const pid = getNmtPid();
-    if (!pid) {
-        console.log('NMT は停止しています。');
-        return;
-    }
-
-    try {
-        process.kill(pid, 'SIGTERM');
-        console.log(`NMT (PID: ${pid}) へ停止シグナルを送信しました。解放を待機中...`);
-
-        // ポート解放を最大 5 秒待機
-        for (let i = 0; i < 25; i++) {
-            await sleep(200);
-            if (await isPortAvailable(NMT_PORT)) {
-                console.log('NMT ポートが解放されました。');
-                return;
-            }
-        }
-
-        // 強制終了
-        try {
-            process.kill(pid, 'SIGKILL');
-            console.log(`NMT (PID: ${pid}) を強制終了しました。`);
-        } catch (_) {}
-    } catch (err) {
-        console.warn(`NMT 停止処理注意: ${err.message}`);
-    }
-}
-
-async function restartNmt() {
-    const pid = getNmtPid();
-    if (pid) {
-        await stopNmt();
-        await sleep(500);
-    }
-    await startNmt();
-}
-
-function printNmtStatus() {
-    const pid = getNmtPid();
-    if (pid) {
-        console.log(`NMT: 稼働中 (PID: ${pid}, Port: ${NMT_PORT})`);
-    } else {
-        console.log('NMT: 停止中');
-    }
-}
-
 async function main(argv) {
     const [group, command, argument] = argv;
     if (!group || group === '--help' || group === '-h' || group === 'help') {
@@ -384,25 +267,6 @@ async function main(argv) {
                 return;
             }
             console.log(formatStatus(status));
-            return;
-        }
-    }
-
-    if (group === 'nmt') {
-        if (command === 'start') {
-            await startNmt();
-            return;
-        }
-        if (command === 'stop') {
-            await stopNmt();
-            return;
-        }
-        if (command === 'restart') {
-            await restartNmt();
-            return;
-        }
-        if (command === 'status') {
-            printNmtStatus();
             return;
         }
     }

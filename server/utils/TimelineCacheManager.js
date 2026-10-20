@@ -19,7 +19,7 @@ class TimelineCacheManager {
 		this.maxEntries = options.maxEntries ?? 300;
 		this.maxTimelineSize = options.maxTimelineSize ?? 60;
 		this.ringBufferSize = options.ringBufferSize ?? 500;
-		// Map<string, { idsAsc: number[], idsSet: Set<number>, postsById: Map, has_more: boolean, next_cursor: string|null, expiresAt: number }>
+		// Map<string, { idsAsc: number[], idsSet: Set<number>, postsById: Map, has_more: boolean, next_cursor: string|null, expiresAt: number, meta: EntryMeta|null }>
 		this.cache = new Map();
 		// In-Memory Ring Buffer for Zero-Latency Public Timeline
 		this.publicRingBuffer = []; // array of { id: number, created_at: string }
@@ -82,7 +82,23 @@ class TimelineCacheManager {
 		return entry.payload;
 	}
 
-	setPayload(key, payload, customTtlMs = null) {
+	// Invalidation matches on these structured fields rather than on the cache key,
+	// because the key embeds the raw search query and a query containing ':' would
+	// shift every subsequent field of any index-based parse.
+	_normalizeMeta(meta) {
+		if (!meta || typeof meta !== 'object') return null;
+		return {
+			mode: String(meta.mode ?? ''),
+			tab: String(meta.tab ?? ''),
+			order: String(meta.order ?? ''),
+			query: String(meta.query ?? ''),
+			profileUserId: Number(meta.profileUserId) || 0,
+			subType: String(meta.subType || 'all'),
+			viewerId: Number(meta.viewerId) || 0,
+		};
+	}
+
+	setPayload(key, payload, customTtlMs = null, meta = null) {
 		if (!payload) return;
 		if (this.cache.size >= this.maxEntries) {
 			const oldestKey = this.cache.keys().next().value;
@@ -92,6 +108,7 @@ class TimelineCacheManager {
 		this.cache.set(key, {
 			payload,
 			expiresAt: Date.now() + ttl,
+			meta: this._normalizeMeta(meta),
 		});
 	}
 
@@ -127,7 +144,7 @@ class TimelineCacheManager {
 	 * Stores timeline IDs in internal ascending order (chronological) to allow
 	 * efficient push() for new incoming posts.
 	 */
-	setIds(key, { ids = [], posts = [], has_more = false, next_cursor = null }, customTtlMs = null) {
+	setIds(key, { ids = [], posts = [], has_more = false, next_cursor = null }, customTtlMs = null, meta = null) {
 		if (!Array.isArray(ids)) return;
 
 		// Input IDs from DB are in descending order (newest first).
@@ -157,6 +174,7 @@ class TimelineCacheManager {
 			has_more: Boolean(has_more),
 			next_cursor: next_cursor == null || next_cursor === '' ? null : String(next_cursor),
 			expiresAt: Date.now() + ttl,
+			meta: this._normalizeMeta(meta),
 		});
 
 		// Auto seed ring buffer for public timelines
@@ -217,7 +235,11 @@ class TimelineCacheManager {
 	updatePostAuthor(userId, authorPatch = {}) {
 		const targetUserId = Number(userId);
 		if (!Number.isInteger(targetUserId) || targetUserId <= 0 || !authorPatch) return;
-		for (const entry of this.cache.values()) {
+		for (const [key, entry] of this.cache.entries()) {
+			if (entry.payload) {
+				this.cache.delete(key);
+				continue;
+			}
 			if (entry.postsById) {
 				for (const [postId, post] of entry.postsById) {
 					const authorId = Number(post.userId ?? post.user_id ?? post.author?.id ?? post.user?.id);
@@ -289,13 +311,14 @@ class TimelineCacheManager {
 				continue;
 			}
 
-			const parts = key.split(':');
-			const mode = parts[0];
-			const tab = parts[1];
-			const query = parts[2] || '';
-			const profileUserId = Number(parts[3]) || 0;
-			const subType = parts[4] || 'all';
-			const viewerId = Number(parts[7]) || 0;
+			const meta = entry.meta;
+			// Entries written without discriminators cannot be classified: drop them
+			// rather than risk serving a stale timeline.
+			if (!meta) {
+				this.cache.delete(key);
+				continue;
+			}
+			const { mode, tab, query, profileUserId, subType, viewerId } = meta;
 
 			// If it's a search query cache, invalidate it
 			if (query.length > 0) {

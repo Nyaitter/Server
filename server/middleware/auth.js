@@ -10,7 +10,7 @@ function buildContentSecurityPolicy() {
     "default-src 'self'",
     "base-uri 'self'",
     "object-src 'none'",
-    "frame-ancestors 'none'",
+    "frame-ancestors 'self'",
     "form-action 'self'",
     "script-src 'self' https://cdn.jsdelivr.net https://challenges.cloudflare.com",
     "frame-src 'self' https://challenges.cloudflare.com",
@@ -27,7 +27,7 @@ function buildContentSecurityPolicy() {
 
 const DEFAULT_CSP = buildContentSecurityPolicy();
 
-const PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=(), usb=()';
+const PERMISSIONS_POLICY = 'camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()';
 
 function parseCookies(req) {
   if (req._parsedCookies) return req._parsedCookies;
@@ -391,7 +391,7 @@ function flexibleCors(req, res, next) {
 function securityHeaders(req, res, next) {
   const sec = config.security || {};
 
-  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
 

@@ -79,8 +79,8 @@ function normalizeFollowRelationshipSnapshot(value) {
 
 /**
  * 候補投稿者に限定した閲覧者のフォロー関係を取得する。
- * 実装済みアダプターでは1回のDB操作で完了する。
- * 旧アダプターには安全な後方互換フォールバックを残す。
+ * 一括取得に対応するアダプターでは1回のDB操作で完了し、
+ * 非対応の場合は個別取得へ後退する。
  */
 async function getFollowRelationshipSnapshot(db, viewerId, authorIds) {
 	const normalizedViewerId = normalizeUserId(viewerId);

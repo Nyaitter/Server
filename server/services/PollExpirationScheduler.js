@@ -1,13 +1,9 @@
 'use strict';
 
 const { createNotificationIfAllowed } = require('./NotificationDeliveryService');
-const { serializeNotification } = require('../utils/serialize');
-const { getPublicUrl } = require('../utils/nyaitterAddress');
 
 function startPollExpirationScheduler(
   dbAdapter,
-  realtimeConnections,
-  pushNotificationService,
   { intervalMs = 60 * 1000, logger = console, autoStart = true } = {},
 ) {
   let running = false;
@@ -39,22 +35,13 @@ function startPollExpirationScheduler(
 
         // 1. ポスト主への通知
         try {
-          const authorNotification = await createNotificationIfAllowed(dbAdapter, {
+          await createNotificationIfAllowed(dbAdapter, {
             userId: authorId,
             type: 'poll_ended',
             fromUserId: authorId,
             target: { kind: 'post', id: postId },
             message: `投票「${title}」が終了しました。結果を確認しましょう！`,
           });
-          if (authorNotification && realtimeConnections) {
-            const structured = await serializeNotification(dbAdapter, authorNotification, getPublicUrl());
-            if (structured) {
-              await realtimeConnections.publishNewNotification(authorId, structured, dbAdapter);
-              if (pushNotificationService?.enabled) {
-                void pushNotificationService.sendNotificationToUser(authorId, structured).catch(() => {});
-              }
-            }
-          }
         } catch (err) {
           logger.warn?.('[polls] failed to notify author:', err.message);
         }
@@ -63,22 +50,13 @@ function startPollExpirationScheduler(
         const recipientVoters = voters.filter((vId) => Number(vId) !== authorId);
         for (const voterId of recipientVoters) {
           try {
-            const voterNotification = await createNotificationIfAllowed(dbAdapter, {
+            await createNotificationIfAllowed(dbAdapter, {
               userId: voterId,
               type: 'poll_ended',
               fromUserId: authorId,
               target: { kind: 'post', id: postId },
               message: `あなたが投票した「${title}」の投票が終了しました。結果を確認しましょう！`,
             });
-            if (voterNotification && realtimeConnections) {
-              const structured = await serializeNotification(dbAdapter, voterNotification, getPublicUrl());
-              if (structured) {
-                await realtimeConnections.publishNewNotification(voterId, structured, dbAdapter);
-                if (pushNotificationService?.enabled) {
-                  void pushNotificationService.sendNotificationToUser(voterId, structured).catch(() => {});
-                }
-              }
-            }
           } catch (err) {
             logger.warn?.('[polls] failed to notify voter:', err.message);
           }
