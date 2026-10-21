@@ -320,12 +320,17 @@ function inspect() {
     const userFilesPort = userFilesPortValue === '' || userFilesPortValue === null
         ? null
         : Number(userFilesPortValue);
-    if (userFilesEndpoint && (!userFilesEndpoint.startsWith('/') || /[?#]/.test(userFilesEndpoint))) {
+    // config.js と同じく、先頭が / のパスか、外部配信のための HTTP(S) URL を許可する。
+    const userFilesEndpointValid = !userFilesEndpoint || (
+        (userFilesEndpoint.startsWith('/') || isHttpUrl(userFilesEndpoint)) &&
+        !/[?#]/.test(userFilesEndpoint)
+    );
+    if (!userFilesEndpointValid) {
         addIssue(
             'error',
             'USER_FILES_ENDPOINT_INVALID',
-            `ユーザーファイルの公開パスが無効です: ${userFilesEndpoint}`,
-            'NYAITTER_USER_FILES_ENDPOINT または userFiles.endpoint に /uploads のような先頭が / のパスを設定してください。',
+            `ユーザーファイルの公開先が無効です: ${userFilesEndpoint}`,
+            'NYAITTER_USER_FILES_ENDPOINT または userFiles.endpoint に /uploads のような先頭が / のパスか、https://files.example.com のような外部URLを設定してください。',
         );
     }
     if (userFilesPort !== null && (!Number.isInteger(userFilesPort) || userFilesPort < 1 || userFilesPort > 65535)) {
