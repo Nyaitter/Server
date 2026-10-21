@@ -29,9 +29,12 @@ function requestId(req, res, next) {
  * Must be called before any middleware that uses req.ip
  */
 function applyTrustProxy(app) {
-  if (config.server?.trustProxy) {
-    app.set('trust proxy', true);
-    console.log('[system] trust proxy enabled');
+  const value = config.server?.trustProxy;
+  if (value) {
+    // true = すべてのプロキシを信頼、数値 = 信頼するホップ数、
+    // 文字列 = Express が解釈する 'loopback' やサブネットなど。
+    app.set('trust proxy', value);
+    console.log(`[system] trust proxy enabled (${typeof value === 'boolean' ? 'all' : value})`);
   }
 }
 

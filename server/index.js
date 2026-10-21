@@ -92,7 +92,9 @@ if (process.env.DEV_BYPASS_AUTH === 'true') {
 const app = express();
 app.disable('x-powered-by');
 
-const PORT = Number(process.env.PORT) || config.server.port || 3000;
+const PORT = config.server.port || 3000;
+const LISTEN_HOST = config.server.listenHost;
+const DISPLAY_HOST = LISTEN_HOST || 'localhost';
 const API_ENDPOINT = config.server.apiEndpoint;
 const apiPath = (suffix = '') => {
     const normalizedSuffix = String(suffix || '').replace(/^\/+/, '');
@@ -750,12 +752,8 @@ async function startServer() {
     app.locals.dbAdapter = dbAdapter;
     app.locals.storageAdapter = storageAdapter;
     const userFileEndpoint = config.userFiles?.endpoint || null;
-const postShareUrl = config.postShareUrl
-    ? config.postShareUrl
-    : (config.postSharePort
-        ? `${config.server.publicUrl || ''}`.replace(/\/+$/, '') + `:${config.postSharePort}`.replace(/^:+/, '')
-        : null);
-const turnstileSiteKey = config.turnstile?.siteKey || '';
+    const postShareUrl = getPostShareUrl();
+    const turnstileSiteKey = config.turnstile?.siteKey || '';
 
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
     pollExpirationScheduler = startPollExpirationScheduler(dbAdapter);
@@ -782,15 +780,15 @@ const turnstileSiteKey = config.turnstile?.siteKey || '';
     });
     console.log(`[operator-control] Listening on ${operatorControl.socketPath}`);
 
-    httpServer.listen(PORT, async () => {
+    httpServer.listen(PORT, LISTEN_HOST, async () => {
         console.log(`
 ╔══════════════════════════════════════════════════════════════
 ║  Nyaitter Server                                           
 ╠══════════════════════════════════════════════════════════════
-║  Server running at:   http://localhost:${PORT}
+║  Server running at:   http://${DISPLAY_HOST}:${PORT}
 ║
-║  Health check:        http://localhost:${PORT}${apiPath('/health')}
-║  Frontend (SPA):      http://localhost:${PORT}/
+║  Health check:        http://${DISPLAY_HOST}:${PORT}${apiPath('/health')}
+║  Frontend (SPA):      http://${DISPLAY_HOST}:${PORT}/
 ║
 ║  DB Adapter:      ${process.env.DB_ADAPTER || 'memory'}
 ║  Storage Adapter: ${process.env.STORAGE_ADAPTER || 'local'}
@@ -801,8 +799,8 @@ const turnstileSiteKey = config.turnstile?.siteKey || '';
             userFilesServer.once('error', (error) => {
                 console.error(`[user-files] Failed to listen on port ${userFilesPort}:`, error.message);
             });
-            userFilesServer.listen(userFilesPort, () => {
-                console.log(`[user-files] Serving ${userFilesEndpoint} on http://localhost:${userFilesPort}${userFilesEndpoint}`);
+            userFilesServer.listen(userFilesPort, LISTEN_HOST, () => {
+                console.log(`[user-files] Serving ${userFilesEndpoint} on http://${DISPLAY_HOST}:${userFilesPort}${userFilesEndpoint}`);
             });
         }
 
@@ -812,8 +810,8 @@ const turnstileSiteKey = config.turnstile?.siteKey || '';
             postShareServer.once('error', (error) => {
                 console.error(`[share-server] Failed to listen on port ${sharePort}:`, error.message);
             });
-            postShareServer.listen(sharePort, () => {
-                console.log(`[share-server] Listening for post share traffic on http://localhost:${sharePort}`);
+            postShareServer.listen(sharePort, LISTEN_HOST, () => {
+                console.log(`[share-server] Listening for post share traffic on http://${DISPLAY_HOST}:${sharePort}`);
             });
         }
 

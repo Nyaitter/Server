@@ -9,6 +9,7 @@
 - [ ] `STORAGE_ADAPTER` と、保存先の設定を済ませた（[ローカル保存](./storage-local.md) / [Cloudflare R2](./storage-r2.md)）。
 - [ ] `NODE_ENV=production` と `PUBLIC_URL`（公開する HTTPS URL）を設定した。
 - [ ] リバースプロキシの背後で動かす場合は `TRUST_PROXY=true` を設定した。直接公開する場合は設定しない。
+- [ ] 外部に直接公開しない構成では、待ち受け先を `HOST=127.0.0.1` または `NYAITTER_BIND=127.0.0.1:3000` にした。
 - [ ] `NYAITTER_CORS_ALLOWED_ORIGINS` に、公開する画面のオリジンだけを指定した。
 - [ ] `npm run check:config` でエラーが出ない。
 - [ ] サーバーを再起動し、ログイン、投稿、画像表示を確認した。

@@ -1,5 +1,6 @@
 const { parseDuration, parseIntegerRange } = require('./utils/settingFormats');
 const { normalizeProviders } = require('./utils/aiSettings');
+const { resolveListenTarget } = require('./utils/listenAddress');
 
 const isProduction = (process.env.NODE_ENV || 'development') === 'production';
 
@@ -22,6 +23,22 @@ function envBoolean(name, fallback) {
   if (['false', '0', 'no', 'off'].includes(String(value).toLowerCase())) return false;
   console.warn(`[config] ${name} must be a boolean; using configured default.`);
   return Boolean(fallback);
+}
+
+function parseTrustProxySetting(value) {
+  if (value === true || value === false) return value;
+  if (value === undefined || value === null) return false;
+  const raw = String(value).trim();
+  if (!raw) return false;
+  const lower = raw.toLowerCase();
+  if (['true', 'yes', 'on'].includes(lower)) return true;
+  if (['false', 'no', 'off'].includes(lower)) return false;
+
+  // 数値は信頼するプロキシのホップ数として扱う。Express は
+  // 'loopback' や '10.0.0.0/8' のような文字列も受け付ける。
+  const hops = Number(raw);
+  if (Number.isInteger(hops) && hops >= 0) return hops;
+  return raw;
 }
 
 function envNonNegativeInteger(name, fallback) {
@@ -235,6 +252,16 @@ const configuredUserFilesEndpoint = process.env.NYAITTER_USER_FILES_ENDPOINT !==
   ? process.env.NYAITTER_USER_FILES_ENDPOINT
   : get('userFiles.endpoint', undefined);
 
+// 待ち受けアドレス。`NYAITTER_BIND=0.0.0.0:3000` のような host:port 指定に対応する。
+// 未指定なら従来どおり全インターフェースで待ち受ける。
+const serverHostSetting = readSetting(['NYAITTER_HOST', 'HOST'], ['server.host'], '');
+const serverBindSetting = readSetting(['NYAITTER_BIND'], ['server.bind'], '');
+const serverListen = resolveListenTarget({
+  host: serverHostSetting,
+  bind: serverBindSetting,
+  port: parseInt(process.env.PORT, 10) || get('server.port', 3000),
+});
+
 const config = {
   ai: {
     providers: aiProviderSettings(),
@@ -242,9 +269,17 @@ const config = {
     workDir: require('path').resolve(__dirname, readSetting(['AI_WORK_DIR'], ['ai.workDir'], 'data/ai/requests')),
   },
   server: {
-    port: parseInt(process.env.PORT, 10) || get('server.port', 3000),
+    port: serverListen.port,
+    // 待ち受け先。host 未設定なら全インターフェース。bind は host:port 形式の上書き。
+    host: String(serverHostSetting || '').trim(),
+    bind: String(serverBindSetting || '').trim(),
+    listenHost: serverListen.host,
     jsonBodyLimit: process.env.JSON_BODY_LIMIT || get('server.jsonBodyLimit', '2mb'),
-    trustProxy: process.env.TRUST_PROXY === 'true' || get('server.trustProxy', false),
+    trustProxy: parseTrustProxySetting(
+      process.env.TRUST_PROXY !== undefined
+        ? process.env.TRUST_PROXY
+        : get('server.trustProxy', false),
+    ),
     apiEndpoint,
     publicUrl: readSetting(
       ['NYAITTER_API_PUBLIC_URL', 'NYAITTER_API_URL', 'API_PUBLIC_URL'],
