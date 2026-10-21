@@ -1,6 +1,6 @@
 const { parseDuration, parseIntegerRange } = require('./utils/settingFormats');
 const { normalizeProviders } = require('./utils/aiSettings');
-const { resolveListenTarget } = require('./utils/listenAddress');
+const { resolveListenTarget, resolveOptionalHost } = require('./utils/listenAddress');
 
 const isProduction = (process.env.NODE_ENV || 'development') === 'production';
 
@@ -262,6 +262,16 @@ const serverListen = resolveListenTarget({
   port: parseInt(process.env.PORT, 10) || get('server.port', 3000),
 });
 
+// 個別サーバーのホスト。未設定ならメインサーバーと同じホストで待ち受ける。
+const userFilesHostSetting = readSetting(['NYAITTER_USER_FILES_HOST'], ['userFiles.host'], '');
+const postShareHostSetting = readSetting(
+  ['NYAITTER_POST_SHARE_HOST'],
+  ['postShare.host', 'posts.shareHost'],
+  '',
+);
+const userFilesListenHost = resolveOptionalHost(userFilesHostSetting, serverListen.host);
+const postShareListenHost = resolveOptionalHost(postShareHostSetting, serverListen.host);
+
 const config = {
   ai: {
     providers: aiProviderSettings(),
@@ -297,6 +307,9 @@ const config = {
         : configuredUserFilesEndpoint,
     ),
     port: configuredUserFilesPort,
+    // 専用ポートで配信するときの待ち受けホスト。未設定ならメインと同じ。
+    host: String(userFilesHostSetting || '').trim(),
+    listenHost: userFilesListenHost,
   },
 
   static: {
@@ -1034,6 +1047,9 @@ const config = {
   },
 
   postSharePort: envNonNegativeInteger('POST_SHARE_PORT', get('postSharePort', get('posts.sharePort', 0))) || null,
+  // 投稿共有サーバーの待ち受けホスト。未設定ならメインと同じ。
+  postShareHost: String(postShareHostSetting || '').trim(),
+  postShareListenHost: postShareListenHost,
 
   // スペースの音声通話（WebRTC）。
   // ICE サーバーは TURN 認証情報付きのものを推奨。未指定の場合は公開 STUN のみを使う。

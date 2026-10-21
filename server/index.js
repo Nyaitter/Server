@@ -95,6 +95,8 @@ app.disable('x-powered-by');
 const PORT = config.server.port || 3000;
 const LISTEN_HOST = config.server.listenHost;
 const DISPLAY_HOST = LISTEN_HOST || 'localhost';
+const USER_FILES_HOST = config.userFiles.listenHost;
+const POST_SHARE_HOST = config.postShareListenHost;
 const API_ENDPOINT = config.server.apiEndpoint;
 const apiPath = (suffix = '') => {
     const normalizedSuffix = String(suffix || '').replace(/^\/+/, '');
@@ -799,8 +801,8 @@ async function startServer() {
             userFilesServer.once('error', (error) => {
                 console.error(`[user-files] Failed to listen on port ${userFilesPort}:`, error.message);
             });
-            userFilesServer.listen(userFilesPort, LISTEN_HOST, () => {
-                console.log(`[user-files] Serving ${userFilesEndpoint} on http://${DISPLAY_HOST}:${userFilesPort}${userFilesEndpoint}`);
+            userFilesServer.listen(userFilesPort, USER_FILES_HOST, () => {
+                console.log(`[user-files] Serving ${userFilesEndpoint} on http://${USER_FILES_HOST || 'localhost'}:${userFilesPort}${userFilesEndpoint}`);
             });
         }
 
@@ -810,8 +812,8 @@ async function startServer() {
             postShareServer.once('error', (error) => {
                 console.error(`[share-server] Failed to listen on port ${sharePort}:`, error.message);
             });
-            postShareServer.listen(sharePort, LISTEN_HOST, () => {
-                console.log(`[share-server] Listening for post share traffic on http://${DISPLAY_HOST}:${sharePort}`);
+            postShareServer.listen(sharePort, POST_SHARE_HOST, () => {
+                console.log(`[share-server] Listening for post share traffic on http://${POST_SHARE_HOST || 'localhost'}:${sharePort}`);
             });
         }
 

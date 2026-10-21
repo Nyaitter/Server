@@ -14,18 +14,61 @@ npm start
 
 ブラウザで <http://localhost:3000/> を開きます。`server/.env` を変更したらサーバーを再起動してください。設定の不備は `npm run check:config` で確認できます。
 
-### 待ち受け先を変える
+### サーバーごとの待ち受け設定
 
-規定ではすべてのインターフェースの `3000` 番で待ち受けます。特定のアドレスだけに絞る場合は `HOST` を、`host:port` 形式でまとめて指定する場合は `NYAITTER_BIND` を使います。
+Nyaitter サーバーは用途ごとに別の HTTP サーバーを持ちます。ホストとポートをそれぞれ指定できます。
+
+| サーバー | 用途 | ポート | ホスト | 未設定時 |
+|---|---|---|---|---|
+| メイン | API・画面・WebSocket | `PORT`（既定 `3000`） | `HOST` / `NYAITTER_HOST` / `server.host` | 全インターフェース |
+| ユーザーファイル | 画像・添付の配信 | `NYAITTER_USER_FILES_PORT` / `userFiles.port` | `NYAITTER_USER_FILES_HOST` / `userFiles.host` | 専用サーバーなし。メイン配下で配信 |
+| 投稿共有 | クローラー向けOGP | `POST_SHARE_PORT`（メインと別のときだけ起動） | `NYAITTER_POST_SHARE_HOST` / `postShare.host` | 起動せずメインが配信 |
+| 埋め込みメール | メール送信の受け口 | `EMBEDDED_MAIL_SERVER_PORT`（既定 `2525`） | `EMBEDDED_MAIL_SERVER_HOST`（既定 `0.0.0.0`） | 起動しない |
+| 運用コントロール | CLI からの操作 | Unix ソケット | `NYAITTER_OPERATOR_SOCKET`（既定 `/tmp/nyaitter-operator.sock`） | 常に起動 |
+
+- `NYAITTER_BIND=0.0.0.0:3000` を指定すると、メインサーバーのホストとポートをまとめて上書きできます（`HOST` / `PORT` より優先）。
+- ユーザーファイルと投稿共有のホストは、指定しなければメインサーバーと同じホストで待ち受けます。
+- ホストにはホスト名、IPv4、IPv6（`::` や `::1`）を指定できます。不正な値は起動時に警告され、`npm run check:config` で検出されます。
+
+#### リバースプロキシの背後で公開する
+
+直接公開せず、プロキシだけが接続できるようにします。
 
 ```dotenv
 HOST=127.0.0.1
 PORT=3000
-# または host:port 形式で指定する
+TRUST_PROXY=true
+PUBLIC_URL=https://nyaitter.example.com
+```
+
+#### 直接公開する
+
+```dotenv
+HOST=0.0.0.0
+PORT=3000
+# または
 NYAITTER_BIND=0.0.0.0:3000
 ```
 
-`NYAITTER_BIND` は `[::]:3000`、`:3000`、`3000`、`127.0.0.1` も受け付けます。未設定なら従来どおり全インターフェースで待ち受けます。リバースプロキシの背後では `HOST=127.0.0.1` にして直接公開しない構成も選べます。
+#### 画像を別ポート、投稿共有を別オリジンにする
+
+```dotenv
+PORT=3000
+NYAITTER_USER_FILES_PORT=3001
+NYAITTER_USER_FILES_HOST=127.0.0.1
+POST_SHARE_PORT=3002
+NYAITTER_POST_SHARE_HOST=0.0.0.0
+POST_SHARE_URL=https://share.example.com
+```
+
+#### 埋め込みメールサーバーを立てる
+
+```dotenv
+EMBEDDED_MAIL_SERVER_ENABLED=true
+EMBEDDED_MAIL_SERVER_HOST=0.0.0.0
+EMBEDDED_MAIL_SERVER_PORT=2525
+EMBEDDED_MAIL_HOSTNAME=mail.example.com
+```
 
 ## 2. データを保存する
 

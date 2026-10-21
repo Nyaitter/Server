@@ -176,6 +176,22 @@ function inspect() {
         );
     }
 
+    const perServerHosts = [
+        { value: firstSetting(['NYAITTER_USER_FILES_HOST'], config, ['userFiles.host'], ''), label: 'NYAITTER_USER_FILES_HOST / userFiles.host' },
+        { value: firstSetting(['NYAITTER_POST_SHARE_HOST'], config, ['postShare.host', 'posts.shareHost'], ''), label: 'NYAITTER_POST_SHARE_HOST / postShare.host' },
+    ];
+    for (const item of perServerHosts) {
+        const value = String(item.value || '').trim();
+        if (value && !isValidHost(value)) {
+            addIssue(
+                'error',
+                'HOST_INVALID',
+                `${item.label} がホスト名またはIPアドレスとして無効です: ${value}`,
+                'ホスト名、IPv4、IPv6 のいずれかを設定するか、未設定にしてメインサーバーと同じホストで待ち受けてください。',
+            );
+        }
+    }
+
     const apiEndpoint = String(
         setting('NYAITTER_API_ENDPOINT', config, 'server.apiEndpoint', '/server'),
     ).trim();

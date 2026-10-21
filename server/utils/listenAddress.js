@@ -112,9 +112,23 @@ function resolveListenTarget(serverConfig = {}) {
   };
 }
 
+/**
+ * 個別サーバーのホスト指定を検証する。未設定または不正なら fallback を返す。
+ */
+function resolveOptionalHost(value, fallback = undefined) {
+  const host = String(value === undefined || value === null ? '' : value).trim();
+  if (!host) return fallback;
+  if (!isValidHost(host)) {
+    console.warn(`[config] 待ち受けホストが不正なため既定値を使います: ${host}`);
+    return fallback;
+  }
+  return host;
+}
+
 module.exports = {
   DEFAULT_PORT,
   isValidHost,
   parseBindAddress,
   resolveListenTarget,
+  resolveOptionalHost,
 };
