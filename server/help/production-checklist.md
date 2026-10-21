@@ -5,6 +5,7 @@
 ## 設定
 
 - [ ] `DB_ADAPTER` を `postgres` または `d1` にし、`npm run migrate` を実行した。`memory` のままでは再起動でデータが消える。
+- [ ] Node.js を `22.23.4` 以上（または `24.22.1` 以上）にした。2026-10-21 の HIGH 脆弱性修正（Brotli RCE など）を含みます。Node.js 20 は 2026-07 に EOL のため使わない。
 - [ ] `STORAGE_ADAPTER` と、保存先の設定を済ませた（[ローカル保存](./storage-local.md) / [Cloudflare R2](./storage-r2.md)）。
 - [ ] `NODE_ENV=production` と `PUBLIC_URL`（公開する HTTPS URL）を設定した。
 - [ ] リバースプロキシの背後で動かす場合は `TRUST_PROXY=true` を設定した。直接公開する場合は設定しない。

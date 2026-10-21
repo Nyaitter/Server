@@ -17,20 +17,20 @@
     "nscli": "node server/cli.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1110.0",
-    "@aws-sdk/s3-request-presigner": "^3.1110.0",
+    "@aws-sdk/client-s3": "^3.1154.0",
+    "@aws-sdk/s3-request-presigner": "^3.1154.0",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2",
+    "express": "^4.22.3",
     "kuromoji": "^0.1.2",
-    "pg": "^8.23.0",
+    "pg": "^8.23.1",
     "sharp": "^0.35.5",
     "swagger-autogen": "^2.23.7",
     "swagger-ui-express": "^5.0.1",
     "web-push": "^3.6.7",
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=22.23.4"
   },
   "overrides": {
     "qs": "^6.16.0",
