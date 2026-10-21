@@ -71,13 +71,54 @@ function invalidateUserReactions(userId = null) {
   }
 }
 async function applyUserReactionsToPayload(db,payload,userId) {
-  const snapshot = await getUserReactions(db,userId);
-  if (!snapshot || !Array.isArray(payload?.posts)) return payload;
+  if (!Array.isArray(payload?.posts)) return payload;
+  const id = Number(userId);
+  if (!Number.isSafeInteger(id) || id <= 0) return payload;
+
+  // ページに含まれる投稿IDだけを対象に、ページ単位で本人リアクションを解決する。
+  // ユーザーの全リアクション一覧(getUserReactions)は「いいね/スター総数」に
+  // 比例して重くなるため、ページ単位で取得できない場合だけフォールバックする。
+  const ids = new Set();
+  const collect = post => {
+    if (!post || typeof post !== 'object') return;
+    const postId = Number(post.id);
+    if (Number.isSafeInteger(postId) && postId > 0) ids.add(postId);
+    if (post.reply_to_post) collect(post.reply_to_post);
+    if (post.reposted_post) collect(post.reposted_post);
+  };
+  for (const post of payload.posts) collect(post);
+
+  let likedSet = null;
+  let starredSet = null;
+  if (ids.size > 0 && typeof db?.getViewerPostReactions === 'function') {
+    try {
+      const rows = await db.getViewerPostReactions([...ids], id);
+      likedSet = new Set();
+      starredSet = new Set();
+      for (const row of rows || []) {
+        const postId = Number(row?.post_id);
+        if (!Number.isSafeInteger(postId)) continue;
+        if (row?.liked_by_me) likedSet.add(postId);
+        if (row?.starred_by_me) starredSet.add(postId);
+      }
+    } catch (_) {
+      likedSet = null;
+      starredSet = null;
+    }
+  }
+  if (!likedSet || !starredSet) {
+    const snapshot = await getUserReactions(db,id);
+    if (!snapshot) return payload;
+    likedSet = snapshot.like;
+    starredSet = snapshot.star;
+  }
+
   const copied = new WeakMap();
   const decorate = post => {
     if (!post || typeof post !== 'object') return post;
     if (copied.has(post)) return copied.get(post);
-    const value = {...post,liked_by_me:snapshot.like.has(Number(post.id)),starred_by_me:snapshot.star.has(Number(post.id))};
+    const postId = Number(post.id);
+    const value = {...post,liked_by_me:likedSet.has(postId),starred_by_me:starredSet.has(postId)};
     copied.set(post,value);
     for (const key of ['reply_to_post','reposted_post']) {
       if (post[key]) value[key] = decorate(post[key]);

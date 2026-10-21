@@ -231,6 +231,11 @@ async function extractPostKeywords(content) {
   return combined;
 }
 
+// 起動時に辞書構築をバックグラウンド開始する。これにより、初回の投稿が
+// kuromoji 辞書ビルド (数百ms〜数秒) でブロックされなくなる。
+// 生成結果自体は従来と同一。
+void buildTokenizer();
+
 module.exports = {
   extractPostKeywords,
   extractPostWords,

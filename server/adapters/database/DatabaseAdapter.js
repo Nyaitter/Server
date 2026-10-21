@@ -225,6 +225,17 @@ class DatabaseAdapter {
 	// ==================== Groups ====================
 	async createGroup(groupData) { throw new Error('createGroup() must be implemented'); }
 	async getGroupById(groupId) { throw new Error('getGroupById() must be implemented'); }
+
+	/**
+	 * 複数グループの一括取得。既定では単件取得を並列化する。
+	 * バッチ取得に対応するアダプターは上書きする。
+	 */
+	async getGroupsByIds(groupIds) {
+		const ids = [...new Set((groupIds || []).map(String).filter(Boolean))];
+		if (ids.length === 0) return [];
+		const groups = await Promise.all(ids.map((id) => this.getGroupById(id).catch(() => null)));
+		return groups.filter(Boolean);
+	}
 	async updateGroup(groupId, fields) { throw new Error('updateGroup() must be implemented'); }
 	async deleteGroup(groupId) { throw new Error('deleteGroup() must be implemented'); }
 	async transferGroupOwnership(groupId, newOwnerId) { throw new Error('transferGroupOwnership() must be implemented'); }

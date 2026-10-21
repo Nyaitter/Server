@@ -1,5 +1,5 @@
 const api = require('../utils/ApiRegistry');
-const TtlValueCache = require('../utils/TtlValueCache');
+const RefreshAheadCache = require('../utils/RefreshAheadCache');
 const { requireAuth } = require('../middleware/auth');
 
 const router = api.createRouter({
@@ -14,10 +14,21 @@ function getDbAdapter(req) {
 
 const rankingCaches = new WeakMap();
 
+// ランキング集計は投稿数に比例して重いので、fresh 60s の間はそのまま返し、
+// fresh 超過〜stale 10min は古い順位を即返して裏で1回だけ再集計する。
+// これによりリクエストが重い集計を待たない。db インスタンス単位で保持する。
+const RANKING_FRESH_MS = 60 * 1000;
+const RANKING_STALE_MS = 10 * 60 * 1000;
+const RANKING_MAX_ENTRIES = 2000;
+
 function getRankingCache(db) {
   let cache = rankingCaches.get(db);
   if (!cache) {
-    cache = new TtlValueCache({ ttlMs: 30000, maxEntries: 2000 });
+    cache = new RefreshAheadCache({
+      freshMs: RANKING_FRESH_MS,
+      staleMs: RANKING_STALE_MS,
+      maxEntries: RANKING_MAX_ENTRIES,
+    });
     rankingCaches.set(db, cache);
   }
   return cache;

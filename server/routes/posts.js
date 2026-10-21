@@ -41,7 +41,7 @@ const path = require('path');
 const fs = require('fs');
 const { isCrawler, generatePostOgpTags, generatePostHtml } = require('../services/OgpService');
 const { decodePostCursor } = require('../utils/postCursor');
-const TtlValueCache = require('../utils/TtlValueCache');
+const RefreshAheadCache = require('../utils/RefreshAheadCache');
 
 const api = require("../utils/ApiRegistry");
 const router = api.createRouter({
@@ -52,43 +52,42 @@ const router = api.createRouter({
 const { createRateLimiter } = require('../middleware/rateLimit');
 const postWriteLimiter = createRateLimiter(config.rateLimit.postWrite);
 const searchLimiter = createRateLimiter(config.rateLimit.profileUpdate ?? config.rateLimit.postWrite);
-const trendingHashtagsCache = new WeakMap();
-const TRENDING_HASHTAGS_CACHE_TTL_MS = 30 * 1000;
+// トレンド系の集計も重いため、fresh 30s の間はそのまま返し、
+// fresh 超過〜stale 5min は古い値を即返して裏で1回だけ再計算する。
+// db インスタンス単位で保持し、maxEntries でメモリ増加を抑える。
+const TRENDING_FRESH_MS = 30 * 1000;
+const TRENDING_STALE_MS = 5 * 60 * 1000;
+const TRENDING_HASHTAGS_MAX_ENTRIES = 200;
+const TRENDING_POSTS_MAX_ENTRIES = 100;
 
-async function getCachedTrendingHashtags(db, limit, type) {
-	let entries = trendingHashtagsCache.get(db);
-	if (!entries) {
-		entries = new Map();
-		trendingHashtagsCache.set(db, entries);
-	}
-	const key = `${limit}:${type}`;
-	const cached = entries.get(key);
-	const now = Date.now();
-	if (cached?.value && cached.expiresAt > now) return cached.value;
-	if (cached?.promise) return cached.promise;
+const trendingHashtagsCaches = new WeakMap();
 
-	const promise = db.getTrendingHashtags(limit, { type, detailed: true })
-		.then((value) => {
-			entries.set(key, { value, expiresAt: Date.now() + TRENDING_HASHTAGS_CACHE_TTL_MS });
-			return value;
-		})
-		.catch((error) => {
-			entries.delete(key);
-			throw error;
+function getCachedTrendingHashtags(db, limit, type) {
+	let cache = trendingHashtagsCaches.get(db);
+	if (!cache) {
+		cache = new RefreshAheadCache({
+			freshMs: TRENDING_FRESH_MS,
+			staleMs: TRENDING_STALE_MS,
+			maxEntries: TRENDING_HASHTAGS_MAX_ENTRIES,
 		});
-	entries.set(key, { promise });
-	return promise;
+		trendingHashtagsCaches.set(db, cache);
+	}
+	return cache.get(`trending-hashtags:${limit}:${type}`, () => db.getTrendingHashtags(limit, { type, detailed: true }));
 }
 
-const trendingPostsCache = new WeakMap();
+const trendingPostsCaches = new WeakMap();
 
 function getCachedTrendingPosts(db, limit) {
-	let cache = trendingPostsCache.get(db);
+	let cache = trendingPostsCaches.get(db);
 	if (!cache) {
-		cache = new TtlValueCache({ ttlMs: 30000, maxEntries: 100 });
-		trendingPostsCache.set(db, cache);
+		cache = new RefreshAheadCache({
+			freshMs: TRENDING_FRESH_MS,
+			staleMs: TRENDING_STALE_MS,
+			maxEntries: TRENDING_POSTS_MAX_ENTRIES,
+		});
+		trendingPostsCaches.set(db, cache);
 	}
-	return cache.get(`trending:${limit}`, () => db.getTrendingPosts(limit));
+	return cache.get(`trending-posts:${limit}`, () => db.getTrendingPosts(limit));
 }
 
 function getDbAdapter(req) {

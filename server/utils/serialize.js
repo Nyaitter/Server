@@ -542,7 +542,30 @@ async function fetchUsersByIds(db, userIds) {
 }
 
 async function fetchPostMetrics(db, allPosts, currentUserId, knownViewer = null) {
-	const reactions = currentUserId != null ? await getUserReactions(db,currentUserId) : null;
+	// ページ内のリアクションは、アダプタのインライン状態かページ単位の問い合わせで
+	// 解決できる。ユーザーの全リアクション一覧(getUserReactions)は「いいね/スター
+	// 総数」に比例して重くなるため、ページ単位で解決できない場合だけフォールバックに使う。
+	const posts = Array.isArray(allPosts) ? allPosts : [];
+	const hasInlineViewerReaction = currentUserId != null && posts.length > 0 && posts.every((post) => (
+		post && typeof post === 'object'
+		&& Object.prototype.hasOwnProperty.call(post, 'liked_by_me')
+		&& Object.prototype.hasOwnProperty.call(post, 'starred_by_me')
+	));
+	const hasCounters = posts.length > 0 && posts.every((post) => (
+		post && typeof post === 'object'
+		&& (post.like_count !== undefined || post.likeCount !== undefined)
+		&& (post.reply_count !== undefined || post.replyCount !== undefined)
+		&& (post.star_count !== undefined || post.starCount !== undefined)
+		&& (post.repost_count !== undefined || post.repostCount !== undefined)
+	));
+	const canResolvePerPage = hasInlineViewerReaction
+		|| (hasCounters && typeof db.getViewerPostReactions === 'function')
+		|| typeof db.getPostMetricsBatch === 'function';
+	if (currentUserId == null || canResolvePerPage) {
+		return fetchPostMetricsFromAdapter(db, allPosts, currentUserId, knownViewer);
+	}
+
+	const reactions = await getUserReactions(db,currentUserId);
 	const metrics = await fetchPostMetricsFromAdapter(db,allPosts,reactions ? null : currentUserId,knownViewer);
 	if (!reactions) return metrics;
 	return metrics.map(metric => ({...metric,
@@ -829,7 +852,30 @@ async function serializePostsBatch(
 	const postKeywordBackfillService = db?.postKeywordBackfillService;
 	const groupIds = [...new Set(allPosts.filter(post => visibleByPostId.get(Number(post.id)))
 		.map(post => post.groupId ?? post.group_id).filter(Boolean).map(String))];
-	const groupsById = new Map(await Promise.all(groupIds.map(async id => [id, await db.getGroupById(id)])));
+	const groupsById = new Map();
+	if (groupIds.length > 0) {
+		// グループはページ内の出現数だけ取得する。バッチ対応アダプターでは1クエリに集約する。
+		if (typeof db.getGroupsByIds === 'function') {
+			try {
+				const groups = await db.getGroupsByIds(groupIds);
+				for (const group of groups) {
+					if (group?.id != null) groupsById.set(String(group.id), group);
+				}
+			} catch (error) {
+				console.warn('[serialize] batch group fetch fallback:', error.message);
+			}
+		}
+		const missingGroupIds = groupIds.filter((id) => !groupsById.has(String(id)));
+		if (missingGroupIds.length > 0) {
+			const fetched = await Promise.all(missingGroupIds.map(async (id) => [
+				id,
+				await db.getGroupById(id).catch(() => null),
+			]));
+			for (const [id, group] of fetched) {
+				if (group) groupsById.set(String(id), group);
+			}
+		}
+	}
 	if (postKeywordBackfillService) {
 		for (const post of allPosts) {
 			if (!visibleByPostId.get(Number(post.id))) continue;

@@ -12,7 +12,8 @@ const {
   normalizeContentType,
 } = require('../adapters/storage/safeStoragePath');
 const {
-  canViewPost,
+  createPostVisibilityContext,
+  canViewPostWithContext,
 } = require('../utils/postVisibility');
 const {
   createNotificationIfAllowed,
@@ -25,10 +26,27 @@ const {
   normalizeGroupId,
   requireGroupPermission,
   listActiveGroupMemberIds,
+  hasPermission,
 } = require('./GroupService');
 
 const idempotencyCache = new Map();
 const recentUserPostSignatures = new Map();
+// 同時に投入された完全同一の編集アクションを1回の実行へ集約する (二重送信対策)。
+const inFlightEditActions = new Map();
+
+/**
+ * キーワード抽出は投稿保存を妨げてはならない。抽出器の失敗 (辞書構築失敗・
+ * 予期しないトークナイズエラー) 時はタグ無しで保存を継続する。
+ * 成功時の結果は従来と完全に同一。
+ */
+async function extractPostKeywordsSafely(viewContent) {
+  try {
+    return await extractPostKeywords(viewContent);
+  } catch (error) {
+    console.warn('[post-actions] keyword extraction failed; saving without tags:', error.message);
+    return [];
+  }
+}
 
 function pruneIdempotencyCache(now = Date.now()) {
   for (const [key, entry] of idempotencyCache) {
@@ -160,8 +178,8 @@ function normalizeTargetPostId(value) {
   return Number.isInteger(postId) && postId > 0 ? postId : null;
 }
 
-async function notifyGroupAnnouncement(context, group, post) {
-  const memberIds = await listActiveGroupMemberIds(context.db, group.id);
+async function notifyGroupAnnouncement(context, group, post, knownMemberIds = null) {
+  const memberIds = knownMemberIds || await listActiveGroupMemberIds(context.db, group.id);
   await Promise.all(memberIds
     .filter((memberId) => Number(memberId) !== Number(post.userId))
     .map(async (memberId) => {
@@ -241,7 +259,7 @@ async function processCreatePostAction(context, payload) {
   const relatedPosts = new Map();
   const targetIds = [...new Set([replyTo, repostTo].filter(Boolean))];
   let targetPosts = [];
-  if (typeof context.db.getPostsByIds === 'function') {
+  if (targetIds.length > 0 && typeof context.db.getPostsByIds === 'function') {
     try {
       targetPosts = await context.db.getPostsByIds(targetIds);
     } catch (_) {
@@ -252,19 +270,27 @@ async function processCreatePostAction(context, payload) {
     targetPosts = await Promise.all(targetIds.map((targetId) => context.db.getPostById(targetId)));
   }
   const targetPostsById = new Map((targetPosts || []).filter(Boolean).map((post) => [Number(post.id), post]));
-  for (const targetId of targetIds) {
-    const target = targetPostsById.get(Number(targetId));
-    if (!target || !(await canViewPost(
+  // 返信先/リポスト先は高々2件。可視性コンテキストを1回だけ構築し、
+  // 各対象の判定に使い回す (従来は対象ごとに個別に構築していた)。
+  const resolvedTargets = targetIds.map((targetId) => targetPostsById.get(Number(targetId)) || null);
+  if (resolvedTargets.some((target) => !target)) {
+    throw new Error('Post not found');
+  }
+  if (resolvedTargets.length > 0) {
+    const targetVisibilityContext = await createPostVisibilityContext(
       context.db,
-      target,
+      resolvedTargets,
       userId,
       null,
-      null,
       postingUser,
-    ))) {
-      throw new Error('Post not found');
+    );
+    for (let index = 0; index < targetIds.length; index += 1) {
+      const target = resolvedTargets[index];
+      if (!canViewPostWithContext(target, targetVisibilityContext)) {
+        throw new Error('Post not found');
+      }
+      relatedPosts.set(targetIds[index], target);
     }
-    relatedPosts.set(targetId, target);
   }
 
   const rawReplyControl = payload.replyControl ?? payload.reply_control ?? 'everyone';
@@ -357,8 +383,14 @@ async function processCreatePostAction(context, payload) {
   if (groupId) {
     group = await context.db.getGroupById(groupId);
     if (!group) throw new Error('Group not found');
-    await requireGroupPermission(context.db, group, userId, 'post');
-    if (groupAnnouncement) await requireGroupPermission(context.db, group, userId, 'announce');
+    const membershipState = await requireGroupPermission(context.db, group, userId, 'post');
+    // announce 権限は既に解決済みのメンバーシップで判定でき、DB再取得は不要。
+    if (groupAnnouncement
+      && !hasPermission(group, membershipState.membership, membershipState.role, 'announce')) {
+      const error = new Error('グループ操作の権限がありません。');
+      error.statusCode = 403;
+      throw error;
+    }
   }
 
   const pollAttachment = attachments.find((a) => a && a.type === 'poll') || (payload.poll && typeof payload.poll === 'object' ? payload.poll : null);
@@ -376,7 +408,7 @@ async function processCreatePostAction(context, payload) {
   });
 
   const viewContent = isSimpleRepost ? '' : extractViewContent(content);
-  const tags = isSimpleRepost ? [] : await extractPostKeywords(viewContent);
+  const tags = isSimpleRepost ? [] : await extractPostKeywordsSafely(viewContent);
   const postService = new PostService({
     dbAdapter: context.db,
     storageAdapter: context.storage,
@@ -432,9 +464,12 @@ async function processCreatePostAction(context, payload) {
   const replyTarget = replyTo ? relatedPosts.get(replyTo) : null;
   const repostTarget = repostTo ? relatedPosts.get(repostTo) : null;
   const needsGroupRecipientCheck = Boolean(group && (replyTarget || repostTarget || /@\d+/.test(content)));
-  const activeGroupMemberIds = needsGroupRecipientCheck
-    ? new Set(await listActiveGroupMemberIds(context.db, group.id))
+  // グループメンバー一覧は、宛先チェックとグループアナウンス通知の双方で
+  // 必要になる場合があるため、1回だけ取得して共有する。
+  const groupMemberIds = (group && (needsGroupRecipientCheck || groupAnnouncement))
+    ? await listActiveGroupMemberIds(context.db, group.id)
     : null;
+  const activeGroupMemberIds = needsGroupRecipientCheck ? new Set(groupMemberIds) : null;
   const canNotifyPostRecipient = (recipientId) => (
     !activeGroupMemberIds || activeGroupMemberIds.has(Number(recipientId))
   );
@@ -480,7 +515,7 @@ async function processCreatePostAction(context, payload) {
   }
 
   if (groupAnnouncement && group) {
-    notificationTasks.push(notifyGroupAnnouncement(context, group, post));
+    notificationTasks.push(notifyGroupAnnouncement(context, group, post, groupMemberIds));
   }
 
   // 購読者通知
@@ -553,13 +588,12 @@ async function processDeletePostAction(context, { postId, userId, admin = false 
   );
 }
 
-async function processEditPostAction(context, { postId, userId, content, attachments, mask, lock, replyControl }) {
+async function runEditPostAction(context, { postId, userId, content, attachments, mask, lock, replyControl }) {
   const post = await context.db.getPostById(postId);
   if (!post) throw new Error('Post not found');
   if (post.userId !== userId) throw new Error('You can only edit your own posts');
 
   const { extractViewContent } = require('../utils/viewContent');
-  const { extractPostKeywords } = require('./PostKeywordService');
 
   const normalizedContent = content.trim();
   const viewContent = extractViewContent(normalizedContent);
@@ -567,7 +601,7 @@ async function processEditPostAction(context, { postId, userId, content, attachm
     content: normalizedContent,
     viewContent,
     view_content: viewContent,
-    tags: await extractPostKeywords(viewContent),
+    tags: await extractPostKeywordsSafely(viewContent),
     tagsGeneratedAt: new Date().toISOString(),
     attachments: Array.isArray(attachments) && attachments.length > 0 ? attachments : null,
     mask: !!mask,
@@ -634,6 +668,40 @@ async function processEditPostAction(context, { postId, userId, content, attachm
   timelineCacheManager.updatePost(moderatedPost);
   enqueueGeminiModeration(context, moderatedPost);
   return moderatedPost;
+}
+
+/**
+ * 完全に同一の編集が同時に投入された場合は、1回の実行結果を共有する。
+ * 添付を含む編集はキーが本文だけでは一意にならないため対象外とする。
+ * 先の実行が完了すれば即座にキーは解放され、通常の連続編集には影響しない。
+ */
+function buildEditDedupeKey({ postId, userId, content, mask, lock, replyControl }) {
+  if (postId == null || userId == null || typeof content !== 'string') return null;
+  return [
+    Number(postId),
+    Number(userId),
+    replyControl === undefined ? 'u' : String(replyControl),
+    mask ? 1 : 0,
+    lock ? 1 : 0,
+    content,
+  ].join('\u0000');
+}
+
+async function processEditPostAction(context, payload) {
+  const hasAttachments = Array.isArray(payload.attachments) && payload.attachments.length > 0;
+  if (hasAttachments) return runEditPostAction(context, payload);
+
+  const dedupeKey = buildEditDedupeKey(payload);
+  if (!dedupeKey) return runEditPostAction(context, payload);
+
+  const existing = inFlightEditActions.get(dedupeKey);
+  if (existing) return existing;
+
+  const task = runEditPostAction(context, payload).finally(() => {
+    if (inFlightEditActions.get(dedupeKey) === task) inFlightEditActions.delete(dedupeKey);
+  });
+  inFlightEditActions.set(dedupeKey, task);
+  return task;
 }
 
 module.exports = {

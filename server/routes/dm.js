@@ -384,6 +384,15 @@ async function serializeGroupDm(db, dm, userId, { includePosts = true, usersById
 	);
 	const acceptedList = getAcceptedDmMemberIds(dm);
 	const isPending = !acceptedList.includes(Number(userId));
+	// 一覧取得では dm.post が最新1件のみの正規化済み DM が返るため、
+	// 会話全体の件数は dm.message_count を優先し、無ければ従来どおり件数でフォールバックする。
+	// (InMemory / D1 アダプタは message_count を返さない可能性がある)
+	const rawMessageCount = Number(dm.message_count);
+	const messageCount = (dm.message_count !== undefined
+		&& dm.message_count !== null
+		&& Number.isFinite(rawMessageCount))
+		? rawMessageCount
+		: messages.length;
 
 	return {
 		id: dm.id,
@@ -394,7 +403,7 @@ async function serializeGroupDm(db, dm, userId, { includePosts = true, usersById
 		host_id: dm.host_id,
 		created_at: dm.created_at || dm.createdAt || dm.time || null,
 		post: includePosts ? messages : [],
-		message_count: messages.length,
+		message_count: messageCount,
 		latest_message: includePosts ? null : (latestMessage ? {
 			id: latestMessage.id,
 			created_at: latestMessage.created_at,

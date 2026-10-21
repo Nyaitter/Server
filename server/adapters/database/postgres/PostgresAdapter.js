@@ -337,13 +337,29 @@ function normalizeGroupDmRow(row, viewerId = null) {
 	if (!row) return null;
 	const member = parseJsonSafe(row.member, []);
 	const unread = parseJsonSafe(row.unread, {});
-	const post = parseJsonSafe(row.post, []);
 	const time = toIsoString(row.time);
 	const createdAt = toIsoString(row.created_at);
 	const memberList = Array.isArray(member) ? member.map(Number).filter(Number.isInteger) : [];
 	const accepted = Array.isArray(unread?._accepted)
 		? unread._accepted.map(Number).filter(Number.isInteger)
 		: memberList;
+
+	// 一覧取得(getGroupDmsForUser)では post 全履歴を読まず、集約カラム
+	// (message_count / latest_message)だけを受け取る。row.post がある経路
+	// (getGroupDm など)は従来どおり全 post を返す。
+	let post;
+	if (row.post !== undefined) {
+		const parsedPost = parseJsonSafe(row.post, []);
+		post = Array.isArray(parsedPost) ? parsedPost : [];
+	} else {
+		const latest = row.latest_message !== undefined ? row.latest_message : row.latest_post;
+		post = latest == null ? [] : [latest];
+	}
+
+	const rawMessageCount = row.message_count !== undefined && row.message_count !== null
+		? Number(row.message_count)
+		: post.length;
+	const messageCount = Number.isFinite(rawMessageCount) ? rawMessageCount : post.length;
 
 	const res = {
 		id: String(row.id),
@@ -352,7 +368,8 @@ function normalizeGroupDmRow(row, viewerId = null) {
 		member: memberList,
 		accepted,
 		unread: typeof unread === 'object' && unread !== null ? unread : {},
-		post: Array.isArray(post) ? post : [],
+		post,
+		message_count: messageCount,
 		time,
 		created_at: createdAt,
 	};
@@ -1416,7 +1433,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			// dm_channels participants
 			const { rows: channels } = await client.query(
-				'SELECT id, participants FROM dm_channels WHERE $1::int = ANY(participants)',
+				'SELECT id, participants FROM dm_channels WHERE participants @> ARRAY[$1]::int[]',
 				[previousId],
 			);
 			for (const channel of channels) {
@@ -1426,7 +1443,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 			// group_dms
 			const { rows: groups } = await client.query(
-				'SELECT id, host_id, member, post, unread FROM group_dms WHERE host_id = $1::int OR $1::int = ANY(member)',
+				'SELECT id, host_id, member, post, unread FROM group_dms WHERE host_id = $1::int OR member @> ARRAY[$1]::int[]',
 				[previousId],
 			);
 			for (const group of groups) {
@@ -1577,7 +1594,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			}
 
 			const { rows: channelRows } = await client.query(
-				`SELECT id, participants FROM dm_channels WHERE $1::int = ANY(participants) FOR UPDATE`,
+				`SELECT id, participants FROM dm_channels WHERE participants @> ARRAY[$1]::int[] FOR UPDATE`,
 				[userId],
 			);
 			for (const channel of channelRows) {
@@ -1589,7 +1606,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			const { rows: groupRows } = await client.query(
 `SELECT id, host_id, member, post, unread
 					 FROM group_dms
-					 WHERE host_id = $1 OR $1::int = ANY(member)
+					 WHERE host_id = $1 OR member @> ARRAY[$1]::int[]
 					 FOR UPDATE`,
 				[userId],
 			);
@@ -2377,6 +2394,20 @@ class PostgresAdapter extends DatabaseAdapter {
 			[String(groupId)],
 		);
 		return normalizeGroupRow(rows[0] || null);
+	}
+
+	async getGroupsByIds(groupIds) {
+		const ids = [...new Set((groupIds || []).map(String).filter(Boolean))];
+		if (ids.length === 0) return [];
+		const { rows } = await this.pool.query(
+			`SELECT g.*, (
+				SELECT COUNT(*)::int FROM group_memberships gm
+				WHERE gm.group_id = g.id AND gm.status = 'active'
+			) AS member_count
+			FROM groups g WHERE g.id = ANY($1::uuid[]) AND g.deleted_at IS NULL`,
+			[ids],
+		);
+		return rows.map((row) => normalizeGroupRow(row)).filter(Boolean);
 	}
 
 	async updateGroup(groupId, fields) {
@@ -5461,7 +5492,7 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	async getDmList(userId) {
 		const { rows } = await this.pool.query(
-			'SELECT * FROM dm_channels WHERE $1::int = ANY(participants)',
+			'SELECT * FROM dm_channels WHERE participants @> ARRAY[$1]::int[]',
 			[Number(userId)],
 		);
 		return rows.map((r) => ({
@@ -5569,9 +5600,10 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	async getUnreadDmCount(userId) {
 		const { rows } = await this.pool.query(
+			// participants @> ARRAY[$1] は整数配列の GIN 索引 (gin(participants)) を利用できる形。
 			`SELECT COUNT(*)::int as count FROM dm_messages m
 			 JOIN dm_channels c ON c.id = m.channel_id
-			 WHERE $1::int = ANY(c.participants)
+			 WHERE c.participants @> ARRAY[$1]::int[]
 			   AND m.sender_id != $1
 			   AND m.read_at IS NULL`,
 			[Number(userId)],
@@ -5630,9 +5662,15 @@ class PostgresAdapter extends DatabaseAdapter {
 		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
 		const safeOffset = Math.max(Number(offset) || 0, 0);
 		return this._cachedGroupDmRead(`list:${Number(userId)}:${safeLimit}:${safeOffset}`, async () => {
+			// 会話の全メッセージ(post)は一覧では不要。末尾メッセージと件数のみ取得する。
+			// member @> ARRAY[$1] は整数配列の GIN 索引 (gin(member)) を利用できる形。
 			const { rows } = await this.pool.query(
-				`SELECT * FROM group_dms WHERE $1::INTEGER = ANY(member)
-				 ORDER BY time DESC LIMIT $2 OFFSET $3`,
+				`SELECT id, host_id, title, member, unread, time, created_at,
+				        message_count,
+				        latest_message
+				   FROM group_dms
+				  WHERE member @> ARRAY[$1]::int[]
+				  ORDER BY time DESC LIMIT $2 OFFSET $3`,
 				[Number(userId), safeLimit, safeOffset],
 			);
 			return rows.map((row) => normalizeGroupDmRow(row, Number(userId)));
@@ -5642,7 +5680,7 @@ class PostgresAdapter extends DatabaseAdapter {
 	async getGroupDmVisibilityDataForUser(userId) {
 		return this._cachedGroupDmRead(`visibility:${Number(userId)}`, async () => {
 			const { rows } = await this.pool.query(
-				`SELECT id, member, unread FROM group_dms WHERE $1::INTEGER = ANY(member)`,
+				`SELECT id, member, unread FROM group_dms WHERE member @> ARRAY[$1]::int[]`,
 				[Number(userId)],
 			);
 			return rows.map((row) => ({
@@ -5708,7 +5746,11 @@ class PostgresAdapter extends DatabaseAdapter {
 			values.push(Number(updates.host_id ?? updates.hostId));
 		}
 		if (updates.post !== undefined) {
-			sets.push(`post = $${i++}::jsonb`);
+			const postPlaceholder = `$${i++}`;
+			sets.push(`post = ${postPlaceholder}::jsonb`);
+			// 一覧用の集約カラムも同時に更新する。
+			sets.push(`message_count = jsonb_array_length(${postPlaceholder}::jsonb)`);
+			sets.push(`latest_message = CASE WHEN jsonb_array_length(${postPlaceholder}::jsonb) > 0 THEN (${postPlaceholder}::jsonb) -> -1 ELSE NULL END`);
 			values.push(JSON.stringify(updates.post));
 		}
 		if (updates.unread !== undefined) {
@@ -5768,6 +5810,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			const { rows } = await client.query(
 				`UPDATE group_dms
 				 SET post = $1::jsonb,
+				     message_count = message_count + 1,
+				     latest_message = $1::jsonb -> -1,
 				     time = $2,
 				     unread = $3::jsonb
 				 WHERE id = $4
@@ -5795,7 +5839,7 @@ class PostgresAdapter extends DatabaseAdapter {
 	async getGroupDmUnreadCounts(userId) {
 		return this._cachedGroupDmRead(`unread-counts:${Number(userId)}`, async () => {
 			const { rows } = await this.pool.query(
-				'SELECT id, member, unread FROM group_dms WHERE $1::int = ANY(member)',
+				'SELECT id, member, unread FROM group_dms WHERE member @> ARRAY[$1]::int[]',
 				[Number(userId)],
 			);
 			const counts = [];
@@ -5811,7 +5855,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		return this._cachedGroupDmRead(`unread-total:${Number(userId)}`, async () => {
 			const { rows } = await this.pool.query(
 				`SELECT COALESCE(SUM(COALESCE((unread ->> $2)::int, 0)), 0)::int AS total
-				 FROM group_dms WHERE $1::int = ANY(member)`,
+				 FROM group_dms WHERE member @> ARRAY[$1]::int[]`,
 				[Number(userId), String(userId)],
 			);
 			return Number(rows[0]?.total || 0);
