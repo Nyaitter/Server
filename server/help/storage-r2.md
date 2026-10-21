@@ -1,8 +1,17 @@
 # Cloudflare R2 設定ガイド
 
-画像を Cloudflare R2 に保存する手順です。画像が多かったり、複数サーバーで動かしたりする場合に向いています。
+画像を Cloudflare R2 に保存する手順です。複数サーバーで動かす場合や、画像・動画が多い場合に使います。
 
-## 1. 設定する（`server/.env`）
+## 1. R2 を用意する
+
+Cloudflare のダッシュボードで R2 バケットを作成し、S3 API 用のアクセストークンを発行します。次の値を控えます。
+
+- Account ID
+- バケット名
+- Access Key ID
+- Secret Access Key
+
+## 2. 設定する（`server/.env`）
 
 ```dotenv
 STORAGE_ADAPTER=r2
@@ -15,14 +24,12 @@ R2_SECRET_ACCESS_KEY=シークレットアクセスキー
 R2_PUBLIC_DOMAIN=https://media.example.com
 ```
 
-`STORAGE_USER_QUOTA_MB` は 1 人あたりの保存上限（MB）です。
+`STORAGE_USER_QUOTA_MB` は 1 人あたりの保存上限（MB）です。`npm run check:config` で必須項目の不足を確認できます。
 
-## 2. 画像の配信先を分ける（任意）
+## 3. 画像の配信先を決める
 
-`R2_PUBLIC_DOMAIN` を設定すると、画像は Cloudflare から直接配信され、サーバーの負担が減ります。
+`R2_PUBLIC_DOMAIN` を設定すると、画像は Cloudflare から直接配信され、URL も固定されます。バケットの公開読み取りを有効にし、`media.example.com` などのカスタムドメインを接続してください。
 
-配信先を分ける場合は、`NYAITTER_USER_FILES_ENDPOINT` にも同じ URL を設定してください。Web 画面側は `page/manifest.json` の `user_file_endpoint` でも指定できます。
+未設定の場合は 1 時間で切れる署名付き URL が返るため、外部に貼った画像が後から表示されません。公開するサーバーでは設定してください。
 
-## 関連ドキュメント
-
-[ローカル保存 設定ガイド](./storage-local.md) / [Cloudflare 連携構成](./cloudflare-hybrid.md)
+アクセストークンは対象バケットの読み書きに必要な権限だけを付け、`server/.env` を公開しないでください。

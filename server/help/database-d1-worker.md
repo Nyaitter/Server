@@ -1,12 +1,13 @@
 # Cloudflare D1 設定ガイド
 
-Cloudflare D1 をデータベースとして使う手順です。専用の接続プログラム（Worker）を経由して通信します。
+Cloudflare D1 をデータベースとして使う手順です。専用の Worker を経由して通信します。Cloudflare アカウントと Node.js 20.9 以上が必要です。
 
 ## 1. D1 データベースを作る
 
 ```bash
 cd workers/d1-proxy
 npm install
+npx wrangler login
 npx wrangler d1 create nyaitter-d1
 ```
 
@@ -18,7 +19,7 @@ npx wrangler d1 create nyaitter-d1
 npx wrangler secret put AUTH_TOKEN
 ```
 
-安全なランダム文字列を入力してください。
+安全なランダム文字列を入力します。この値は手順 4 の `D1_WORKER_TOKEN` に使用します。
 
 ## 3. テーブルを作り、Worker を公開する
 
@@ -39,18 +40,8 @@ D1_WORKER_URL=https://あなたのWorker名.workers.dev
 D1_WORKER_TOKEN=手順2で設定したAUTH_TOKEN
 ```
 
-`npm run check:config` で不備がないか確認できます。
-
-## 開発時の Worker 操作
-
-`workers/d1-proxy` で次のコマンドを使えます。
-
-```bash
-npm run dev
-npm run migrate:local
-npm run migrate:remote
-```
+`npm run check:config` で不備を確認できます。Worker の操作コマンドは [D1 Proxy Worker](../../workers/d1-proxy/README.md) にあります。
 
 ## 関連ドキュメント
 
-[D1 Proxy Worker の説明](../../workers/d1-proxy/README.md) / [本番公開前チェックリスト](./production-checklist.md) / [Cloudflare 連携構成](./cloudflare-hybrid.md)
+[本番公開前チェックリスト](./production-checklist.md) / [Cloudflare 連携構成](./cloudflare-hybrid.md)

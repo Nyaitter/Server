@@ -1,27 +1,10 @@
 # NyaitterAuth ガイド
 
-NyaitterAuth は、外部の Web サイト・Bot・別の Nyaitter サーバーが、Nyaitter のアカウントで安全にログイン・連携するための仕組みです。ユーザーはパスワードを渡さず、許可する権限を確認してから連携できます。
+外部の Web サイト・Bot・別の Nyaitter サーバーが、Nyaitter のアカウントでログイン・連携するための仕組みです。ユーザーはパスワードを渡さず、許可する権限を確認してから連携します。
 
 連携したアプリは、設定画面の「連携アプリ」からいつでも権限を変更・解除できます。
 
 ## 連携の流れ
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as ユーザー
-    participant App as 外部アプリ
-    participant Nyaitter as Nyaitter サーバー
-
-    App->>Nyaitter: POST /server/api/nyaitter-auth/initiate
-    Nyaitter-->>App: auth_url, request_id
-    App->>User: auth_url へリダイレクト
-    User->>Nyaitter: 画面でスコープを承認
-    Nyaitter-->>User: redirect_uri?code=...&state=...
-    User->>App: コールバック URL へリダイレクト
-    App->>Nyaitter: POST /server/api/nyaitter-auth/token
-    Nyaitter-->>App: ユーザー情報・アクセストークン
-```
 
 1. アプリが `initiate` を呼び、`auth_url` をユーザーのブラウザに渡します（有効期限 15 分）。
 2. ユーザーが画面で権限を確認して承認します。
@@ -57,8 +40,9 @@ sequenceDiagram
 
 ### リクエスト例
 
+`POST /server/api/nyaitter-auth/initiate` の本文です。
+
 ```json
-POST /server/api/nyaitter-auth/initiate
 {
   "app_id": "my_sample_app",
   "api_token": "your-api-token",
@@ -71,6 +55,8 @@ POST /server/api/nyaitter-auth/initiate
 ```
 
 ### レスポンス例
+
+`token` のレスポンスです。
 
 ```json
 {
@@ -90,11 +76,6 @@ POST /server/api/nyaitter-auth/initiate
 | `PATCH` | `/server/api/nyaitter-auth/authorized-apps/:id` | 権限を変更 |
 | `DELETE` | `/server/api/nyaitter-auth/authorized-apps/:id` | 連携を解除 |
 
-## 別の Nyaitter サーバーとログインを連携する
-
-ログイン画面の「他の Nyaitter でログイン」に連携元サーバーの URL を入力すると、同じ手順で認証できます。
-
 ## 関連ドキュメント
 
-- [認証プロバイダー設定](./auth-providers.md)
-- [拡張 API キー](./extension-keys.md)
+[認証プロバイダー設定](./auth-providers.md) / [拡張 API キー](./extension-keys.md)

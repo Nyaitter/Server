@@ -61,10 +61,17 @@ const { startAccountRecoveryScheduler } = require('./services/AccountRecoverySch
 const PostActionQueue = require('./services/PostActionQueue');
 const PostEventOutbox = require('./services/PostEventOutbox');
 const PostKeywordBackfillService = require('./services/PostKeywordBackfillService');
-const { getPublicUrl, getFrontendUrl } = require('./utils/nyaitterAddress');
+const { getPublicUrl, getFrontendUrl, getPostShareUrl } = require('./utils/nyaitterAddress');
 const { startOperatorControlServer } = require('./utils/operatorControl');
 const { getEmbeddedMailServer } = require('./services/mail/EmbeddedMailServer');
-const { isCrawler, generatePostOgpTags, generatePostHtml } = require('./services/OgpService');
+const {
+    isCrawler,
+    generatePostOgpTags,
+    generatePostHtml,
+    generateGroupHtml,
+    generateStageHtml,
+} = require('./services/OgpService');
+const { getPublicGroup, getPublicStage } = require('./services/EmbedService');
 const { getGuestCallSession } = require('./services/GuestCallSessionService');
 
 let embeddedMailServer = null;
@@ -550,6 +557,62 @@ if (hasStaticPage) {
                     return res.send(postPageHtmlTemplate);
                 }
                 return res.status(404).send('Post not found');
+            })();
+        }
+
+        // ── Dynamic OGP Rendering for Group & Stage URLs ──
+        const embedMatch = cleanPath.match(/^\/(groups?|stages?|spaces?)\/([^/]+)\/?$/i);
+        if (embedMatch) {
+            const kind = /^group/i.test(embedMatch[1]) ? 'group' : 'stage';
+            const embedId = embedMatch[2];
+            return (async () => {
+                try {
+                    const db = app.locals.dbAdapter;
+                    const publicUrl = getPublicUrl(req);
+                    const shareBase = getPostShareUrl(req).replace(/\/+$/, '');
+                    const frontendUrl = getFrontendUrl(req).replace(/\/+$/, '');
+                    const userAgent = req.headers['user-agent'] || '';
+
+                    if (kind === 'group') {
+                        const group = await getPublicGroup(db, embedId);
+                        if (isCrawler(userAgent)) {
+                            if (!group) return res.status(404).type('text/plain').send('Not Found');
+                            const html = generateGroupHtml({
+                                group,
+                                publicUrl,
+                                frontendUrl,
+                                shareUrl: `${shareBase}/groups/${encodeURIComponent(group.id)}`,
+                            });
+                            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+                            return res.send(html);
+                        }
+                        // クローラー以外は限定公開・非公開でもログイン済みなら
+                        // クライアント側で閲覧できるよう SPA へ返す。
+                        const visibleGroup = group || await db.getGroupById(String(embedId).toLowerCase()).catch(() => null);
+                        if (!visibleGroup) return res.status(404).type('text/plain').send('Not Found');
+                        return res.redirect(302, `${frontendUrl}/#group/${encodeURIComponent(embedId.toLowerCase())}`);
+                    }
+
+                    const result = await getPublicStage(db, embedId);
+                    if (isCrawler(userAgent)) {
+                        if (!result) return res.status(404).type('text/plain').send('Not Found');
+                        const html = generateStageHtml({
+                            stage: result.stage,
+                            host: result.host,
+                            publicUrl,
+                            frontendUrl,
+                            shareUrl: `${shareBase}/stages/${encodeURIComponent(result.stage.id)}`,
+                        });
+                        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+                        return res.send(html);
+                    }
+                    const visibleStage = result?.stage || await db.getSpaceById(String(embedId).toLowerCase()).catch(() => null);
+                    if (!visibleStage) return res.status(404).type('text/plain').send('Not Found');
+                    return res.redirect(302, `${frontendUrl}/#stage/${encodeURIComponent(embedId.toLowerCase())}`);
+                } catch (err) {
+                    console.warn('[ogp] Failed to render group/stage embed:', err.message);
+                    return res.status(404).type('text/plain').send('Not Found');
+                }
             })();
         }
 

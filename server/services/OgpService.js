@@ -596,13 +596,218 @@ function generatePostHtml({ post, author, publicUrl, frontendUrl = null }) {
 </html>`;
 }
 
+const GROUP_VISIBILITY_LABELS = {
+	open: '公開',
+	open_invite: '承認制',
+	private: '限定公開',
+	invite: '招待制',
+};
+
+const STAGE_STATUS_LABELS = {
+	live: '配信中',
+	scheduled: '配信予定',
+	ended: '終了',
+};
+
+function truncateDescription(value, fallback, maxLength = 300) {
+	const text = String(value || '').trim();
+	if (!text) return fallback;
+	return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function groupImageUrl(group, publicUrl) {
+	const raw = group?.header_image || group?.headerImage || group?.icon_data || group?.iconData;
+	return resolveMediaUrl(raw, publicUrl);
+}
+
+function generateEntityOgpTags({ title, description, imageUrl, shareUrl, publicUrl }) {
+	const image = imageUrl || `${publicUrl}/logo.png`;
+	const oEmbedUrl = `${publicUrl}/api/oembed?url=${encodeURIComponent(shareUrl)}`;
+	return `
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <meta name="theme-color" content="#79529c" />
+
+    <!-- Open Graph / Facebook / Discord -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Nyaitter" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:url" content="${escapeHtml(shareUrl)}" />
+    <meta property="og:image" content="${escapeHtml(image)}" />
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@Nyaitter" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
+    <meta name="twitter:image" content="${escapeHtml(image)}" />
+
+    <!-- oEmbed -->
+    <link rel="alternate" type="application/json+oembed" href="${escapeHtml(oEmbedUrl)}" title="${escapeHtml(title)}" />
+`;
+}
+
+function generateGroupOgpTags({ group, publicUrl, shareUrl }) {
+	const name = group?.name || 'グループ';
+	const title = `${name} - Nyaitter`;
+	const description = truncateDescription(group?.description, 'Nyaitterのグループ');
+	const url = shareUrl || `${publicUrl}/groups/${encodeURIComponent(group?.id ?? '')}`;
+	return generateEntityOgpTags({
+		title,
+		description,
+		imageUrl: groupImageUrl(group, publicUrl),
+		shareUrl: url,
+		publicUrl,
+	});
+}
+
+function generateStageOgpTags({ stage, host, publicUrl, shareUrl }) {
+	const name = stage?.name || 'ステージ';
+	const title = `${name} - Nyaitter ステージ`;
+	const description = truncateDescription(
+		stage?.description,
+		`${host?.name || 'ホスト'}が配信するNyaitterのステージ`,
+	);
+	const url = shareUrl || `${publicUrl}/stages/${encodeURIComponent(stage?.id ?? '')}`;
+	return generateEntityOgpTags({
+		title,
+		description,
+		imageUrl: resolveAuthorAvatar(host, publicUrl),
+		shareUrl: url,
+		publicUrl,
+	});
+}
+
+function generateEntityHtml({ ogpTags, heading, meta, description, imageUrl, targetUrl, accent = '#79529c' }) {
+	return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    ${ogpTags}
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 600px; margin: 30px auto; padding: 16px; color: #222; line-height: 1.6; background-color: #f7f9fa; }
+        .card { border: 1px solid #e1e8ed; border-radius: 16px; overflow: hidden; background: #fff; box-shadow: 0 4px 14px rgba(0,0,0,0.06); }
+        .cover { width: 100%; max-height: 220px; object-fit: cover; display: block; background: #f3f4f6; }
+        .body { padding: 24px; }
+        .badge { display: inline-block; margin-bottom: 8px; padding: 2px 10px; border-radius: 999px; background: ${escapeHtml(accent)}1a; color: ${escapeHtml(accent)}; font-size: 0.78em; font-weight: 700; }
+        h1 { margin: 0 0 8px; font-size: 1.4em; color: #111; word-break: break-word; }
+        .meta { margin: 0 0 12px; color: #657786; font-size: 0.9em; }
+        .description { margin: 0; font-size: 1.02em; word-break: break-word; white-space: pre-wrap; }
+        .footer { margin-top: 22px; padding-top: 14px; border-top: 1px solid #f0f3f5; display: flex; justify-content: space-between; align-items: center; font-size: 0.9em; color: #888; }
+        .footer a { color: ${escapeHtml(accent)}; text-decoration: none; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        ${imageUrl ? `<img class="cover" src="${escapeHtml(imageUrl)}" alt="" />` : ''}
+        <div class="body">
+            ${meta ? `<span class="badge">${escapeHtml(meta)}</span>` : ''}
+            <h1>${escapeHtml(heading)}</h1>
+            <p class="description">${escapeHtml(description)}</p>
+            <div class="footer">
+                <span>Nyaitter</span>
+                <a href="${escapeHtml(targetUrl)}">Nyaitterで開く</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`;
+}
+
+function generateGroupHtml({ group, publicUrl, frontendUrl = null, shareUrl = null }) {
+	const name = group?.name || 'グループ';
+	const url = (shareUrl || `${publicUrl}/groups/${encodeURIComponent(group?.id ?? '')}`).replace(/\/+$/, '');
+	const targetUrl = `${String(frontendUrl || publicUrl).replace(/\/+$/, '')}/#group/${encodeURIComponent(group?.id ?? '')}`;
+	return generateEntityHtml({
+		ogpTags: generateGroupOgpTags({ group, publicUrl, shareUrl: url }),
+		heading: name,
+		meta: GROUP_VISIBILITY_LABELS[group?.visibility] || '公開',
+		description: truncateDescription(group?.description, '説明はありません。', 1000),
+		imageUrl: groupImageUrl(group, publicUrl),
+		targetUrl,
+	});
+}
+
+function generateStageHtml({ stage, host, publicUrl, frontendUrl = null, shareUrl = null }) {
+	const name = stage?.name || 'ステージ';
+	const url = (shareUrl || `${publicUrl}/stages/${encodeURIComponent(stage?.id ?? '')}`).replace(/\/+$/, '');
+	const targetUrl = `${String(frontendUrl || publicUrl).replace(/\/+$/, '')}/#stage/${encodeURIComponent(stage?.id ?? '')}`;
+	const hostName = host?.name || 'ホスト';
+	return generateEntityHtml({
+		ogpTags: generateStageOgpTags({ stage, host, publicUrl, shareUrl: url }),
+		heading: name,
+		meta: STAGE_STATUS_LABELS[stage?.status] || 'ステージ',
+		description: truncateDescription(stage?.description, `${hostName}が配信するNyaitterのステージ`, 1000),
+		imageUrl: resolveAuthorAvatar(host, publicUrl),
+		targetUrl,
+	});
+}
+
+function generateEntityOembed({ title, meta, description, imageUrl, targetUrl, publicUrl }) {
+	const html = `<blockquote class="nyaitter-embed" style="max-width:540px;margin:12px auto;padding:16px;background:#ffffff;border:1px solid #e1e8ed;border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#222;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+    ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px;margin-bottom:12px;" />` : ''}
+    ${meta ? `<div style="font-size:12px;font-weight:700;letter-spacing:0.04em;color:#79529c;margin-bottom:4px;">${escapeHtml(meta)}</div>` : ''}
+    <div style="font-weight:700;font-size:18px;color:#111;word-break:break-word;">${escapeHtml(title)}</div>
+    <div style="margin-top:8px;font-size:15px;line-height:1.5;word-break:break-word;white-space:pre-wrap;">${escapeHtml(description)}</div>
+    <div style="margin-top:12px;padding-top:8px;border-top:1px solid #f0f3f5;font-size:12px;color:#888;display:flex;justify-content:space-between;align-items:center;">
+        <span>Nyaitter</span>
+        <a href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" style="color:#79529c;text-decoration:none;font-weight:600;">Nyaitterで表示</a>
+    </div>
+</blockquote>`;
+
+	return {
+		version: '1.0',
+		type: 'rich',
+		provider_name: 'Nyaitter',
+		provider_url: publicUrl,
+		title,
+		html,
+		width: 540,
+		height: imageUrl ? 300 : 200,
+	};
+}
+
+function generateGroupOembedJson({ group, publicUrl, groupUrl }) {
+	const name = group?.name || 'グループ';
+	return generateEntityOembed({
+		title: name,
+		meta: `グループ・${GROUP_VISIBILITY_LABELS[group?.visibility] || '公開'}`,
+		description: truncateDescription(group?.description, '説明はありません。', 1000),
+		imageUrl: groupImageUrl(group, publicUrl),
+		targetUrl: groupUrl,
+		publicUrl,
+	});
+}
+
+function generateStageOembedJson({ stage, host, publicUrl, stageUrl }) {
+	const name = stage?.name || 'ステージ';
+	const hostName = host?.name || 'ホスト';
+	return generateEntityOembed({
+		title: name,
+		meta: `ステージ・${STAGE_STATUS_LABELS[stage?.status] || '公開'}`,
+		description: truncateDescription(stage?.description, `${hostName}が配信するNyaitterのステージ`, 1000),
+		imageUrl: resolveAuthorAvatar(host, publicUrl),
+		targetUrl: stageUrl,
+		publicUrl,
+	});
+}
+
 module.exports = {
 	isCrawler,
 	generatePostOgpTags,
 	generatePostHtml,
 	generateOembedJson,
+	generateGroupOgpTags,
+	generateGroupHtml,
+	generateGroupOembedJson,
+	generateStageOgpTags,
+	generateStageHtml,
+	generateStageOembedJson,
 	renderDecoratedContentHtml,
 	resolveAuthorAvatar,
+	resolveMediaUrl,
 	formatUserDisplayId,
 	extractMediaAttachments,
 	escapeHtml,

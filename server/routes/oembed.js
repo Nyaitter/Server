@@ -1,8 +1,13 @@
 'use strict';
 
 const api = require('../utils/ApiRegistry');
-const { generateOembedJson } = require('../services/OgpService');
+const {
+	generateOembedJson,
+	generateGroupOembedJson,
+	generateStageOembedJson,
+} = require('../services/OgpService');
 const { getPublicUrl } = require('../utils/nyaitterAddress');
+const { parseEmbedTarget, getPublicGroup, getPublicStage } = require('../services/EmbedService');
 
 const router = api.createRouter({
 	tag: 'oembed',
@@ -22,6 +27,29 @@ router.get({
 
 	try {
 		const parsed = new URL(rawUrl);
+		const db = req.app.locals.dbAdapter;
+		const publicUrl = getPublicUrl(req);
+		const entity = parseEmbedTarget(rawUrl);
+		if (entity) {
+			if (entity.kind === 'group') {
+				const group = await getPublicGroup(db, entity.id);
+				if (!group) return res.status(404).json({ error: 'Group not found' });
+				return res.json(generateGroupOembedJson({
+					group,
+					publicUrl,
+					groupUrl: rawUrl,
+				}));
+			}
+			const result = await getPublicStage(db, entity.id);
+			if (!result) return res.status(404).json({ error: 'Stage not found' });
+			return res.json(generateStageOembedJson({
+				stage: result.stage,
+				host: result.host,
+				publicUrl,
+				stageUrl: rawUrl,
+			}));
+		}
+
 		let postId = null;
 		const pathMatch = parsed.pathname.match(/\/(?:posts?|api\/posts)\/(\d+)/i);
 		if (pathMatch) {
@@ -39,14 +67,12 @@ router.get({
 			return res.status(404).json({ error: 'Post not found from URL' });
 		}
 
-		const db = req.app.locals.dbAdapter;
 		const post = await db.getPostById(postId);
 		if (!post) {
 			return res.status(404).json({ error: 'Post not found' });
 		}
 
 		const author = await db.getUserById(post.userId ?? post.user_id);
-		const publicUrl = getPublicUrl(req);
 		const oembedData = generateOembedJson({
 			post,
 			author,

@@ -2,6 +2,7 @@ const dns = require('dns').promises;
 const https = require('https');
 const net = require('net');
 const { serializePost } = require('../utils/serialize');
+const { parseEmbedTarget, getPublicGroup, getPublicStage } = require('./EmbedService');
 
 const MAX_URL_LENGTH = 2048;
 const MAX_HTML_BYTES = 128 * 1024;
@@ -516,6 +517,39 @@ async function getUrlCard(value, context = {}) {
           cardCache.set(cacheKey, { card: postCard, expiresAt: now + CACHE_TTL_MS });
           pruneCardCache(now);
           return postCard;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 2. Nyaitter のグループ・ステージは、公開範囲を確認したうえで
+  //    自ホストへのクローラーアクセスに依存せずリンクカードを作る。
+  const entity = parseEmbedTarget(value);
+  if (entity && context.db) {
+    try {
+      if (entity.kind === 'group') {
+        const group = await getPublicGroup(context.db, entity.id);
+        if (group) {
+          return {
+            type: 'link',
+            url: value,
+            hostname: 'Nyaitter',
+            title: `${group.name || 'グループ'} - Nyaitter`,
+            description: String(group.description || 'Nyaitterのグループ').slice(0, 280),
+            site_name: 'Nyaitter',
+          };
+        }
+      } else {
+        const result = await getPublicStage(context.db, entity.id);
+        if (result) {
+          return {
+            type: 'link',
+            url: value,
+            hostname: 'Nyaitter',
+            title: `${result.stage.name || 'ステージ'} - Nyaitter`,
+            description: String(result.stage.description || `${result.host?.name || 'ホスト'}が配信するステージ`).slice(0, 280),
+            site_name: 'Nyaitter',
+          };
         }
       }
     } catch (_) {}

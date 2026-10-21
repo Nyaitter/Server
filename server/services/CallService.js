@@ -81,7 +81,7 @@ class CallService {
     }
 
     roster(room) {
-        return [...room.values()].map(({ user_id, name, handle, nyaitterId, guest, role, muted, camera, screenStreamId, screenLabel, chatDisabled, forceMuted, forceCameraOff, forcePinned }) => ({ user_id, name, handle, nyaitter_id: nyaitterId || null, guest: Boolean(guest), role, muted: Boolean(muted || forceMuted), camera: Boolean(camera && !forceCameraOff), chat_disabled: Boolean(chatDisabled), force_muted: Boolean(forceMuted), force_camera_off: Boolean(forceCameraOff), force_pinned: Boolean(forcePinned), screen_stream_id: screenStreamId || null, screen_label: screenLabel || null }));
+        return [...room.values()].map(({ user_id, name, handle, nyaitterId, guest, role, muted, camera, screenStreamId, screenTrackId, screenLabel, chatDisabled, forceMuted, forceCameraOff, forcePinned }) => ({ user_id, name, handle, nyaitter_id: nyaitterId || null, guest: Boolean(guest), role, muted: Boolean(muted || forceMuted), camera: Boolean(camera && !forceCameraOff), chat_disabled: Boolean(chatDisabled), force_muted: Boolean(forceMuted), force_camera_off: Boolean(forceCameraOff), force_pinned: Boolean(forcePinned), screen_stream_id: screenStreamId || null, screen_track_id: screenTrackId || null, screen_label: screenLabel || null }));
     }
 
     publish(key, event) {
@@ -135,6 +135,7 @@ class CallService {
                 stageStatus = info.stage.status;
                 if (info.role === 'audience' && entry.screenStreamId) {
                     entry.screenStreamId = null;
+                    entry.screenTrackId = null;
                     entry.screenLabel = null;
                     this.publish(key, { type: 'call:screen', user_id: uid, active: false });
                 }
@@ -226,7 +227,16 @@ class CallService {
             const currentRoom = this.rooms.get(key);
             const existing = currentRoom?.get(userId);
             if (existing?.socket === socket) {
-                this.send(socket, { type: 'call:joined', room: key, role: existing.role, roster: this.roster(this.rooms.get(key)), request_id: message.request_id });
+                const user = info.guest ? null : await db.getUserById(userId);
+                existing.role = info.role;
+                existing.muted = info.role === 'audience' || message.muted !== false;
+                existing.camera = info.role !== 'audience' && Boolean(message.camera);
+                existing.watching = false;
+                existing.name = user?.name || existing.name || (info.guest ? 'ゲスト' : `ユーザー ${userId}`);
+                existing.handle = user?.scid || user?.username || existing.handle || (info.guest ? 'ゲスト' : `ユーザー ${userId}`);
+                existing.nyaitterId = user?.nyaitter_id || user?.nyaitterId || existing.nyaitterId || user?.id || null;
+                this.send(socket, { type: 'call:joined', room: key, role: existing.role, owner_id: info.owner_id, roster: this.roster(this.rooms.get(key)), request_id: message.request_id });
+                this.publishRoster(key);
                 return;
             }
             if (existing) fail(409, '別のタブでこの通話に参加しています。');
@@ -307,9 +317,15 @@ class CallService {
                 else this.rooms.delete(key);
                 return;
             }
-            if (action === 'mute') { target.forceMuted = true; target.muted = true; }
-            if (action === 'camera') { target.forceCameraOff = true; target.camera = false; }
-            if (action === 'chat') target.chatDisabled = true;
+            if (action === 'mute') {
+                target.forceMuted = !target.forceMuted;
+                if (target.forceMuted) target.muted = true;
+            }
+            if (action === 'camera') {
+                target.forceCameraOff = !target.forceCameraOff;
+                if (target.forceCameraOff) target.camera = false;
+            }
+            if (action === 'chat') target.chatDisabled = !target.chatDisabled;
             if (action === 'pin') { target.forcePinned = !target.forcePinned; }
             if (action === 'promote') {
                 if (target.role !== 'audience') fail(400, 'リスナーのみ昇格できます。');
@@ -323,23 +339,34 @@ class CallService {
                 const speakerIds = await stageSpeakerIds(this.getDb(), id);
                 await updateStageSpeakers(this.getDb(), id, speakerIds.filter(uid => String(uid) !== String(target.user_id)));
                 target.role = 'audience'; target.muted = true; target.camera = false;
-                target.screenStreamId = null; target.screenLabel = null;
+                target.screenStreamId = null; target.screenTrackId = null; target.screenLabel = null;
                 this.publish(key, { type: 'call:screen', user_id: target.user_id, active: false });
             }
-            this.send(target.socket, { type: 'call:moderated', room: key, action });
+            this.send(target.socket, {
+                type: 'call:moderated',
+                room: key,
+                action,
+                value: action === 'mute' ? target.forceMuted
+                    : action === 'camera' ? target.forceCameraOff
+                        : action === 'chat' ? target.chatDisabled
+                            : action === 'pin' ? target.forcePinned : undefined,
+            });
             this.publishRoster(key);
         } else if (message.type === 'call:screen') {
             if (info.role === 'audience') fail(403, '画面共有には発言権が必要です。');
             if (message.active) {
                 const streamId = String(message.stream_id || '');
-                if (!streamId || streamId.length > 200) fail(400, '画面共有を確認できません。');
+                const trackId = String(message.track_id || '');
+                if (!streamId || streamId.length > 200 || !trackId || trackId.length > 200) fail(400, '画面共有を確認できません。');
                 entry.screenStreamId = streamId;
+                entry.screenTrackId = trackId;
                 entry.screenLabel = `@${String(entry.handle).replace(/^@/, '')}のスクリーン`;
             } else {
                 entry.screenStreamId = null;
+                entry.screenTrackId = null;
                 entry.screenLabel = null;
             }
-            this.publish(key, { type: 'call:screen', user_id: userId, active: Boolean(message.active), stream_id: entry.screenStreamId, label: entry.screenLabel });
+            this.publish(key, { type: 'call:screen', user_id: userId, active: Boolean(message.active), stream_id: entry.screenStreamId, track_id: entry.screenTrackId, label: entry.screenLabel });
         } else if (message.type === 'call:chat' || message.type === 'call:transcript') {
             if (entry.guest) fail(403, 'ゲストはコメントできません。');
             if (message.type === 'call:chat' && entry.chatDisabled) fail(403, 'ホストによりチャットが無効になっています。');
