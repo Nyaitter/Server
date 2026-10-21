@@ -26,6 +26,9 @@ const { extractViewContent } = require('../../../utils/viewContent');
 const { isFuzzyMatch, calculateStringSimilarity } = require('../../../utils/fuzzySearch');
 const { encodePostCursor, decodePostCursor } = require('../../../utils/postCursor');
 
+const GROUP_DM_READ_CACHE_TTL_MS = 2000;
+const GROUP_DM_READ_CACHE_MAX_ENTRIES = 1000;
+
 
 function parseJsonSafe(value, fallback = null) {
 	if (value === null || value === undefined) return fallback;
@@ -476,6 +479,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			10,
 			Math.min(5000, Math.floor(Number(options.retryBaseDelayMs) || 50)),
 		);
+		this.groupDmReadCache = new Map();
+		this.groupDmReadCacheGeneration = 0;
 	}
 
 	async connect() {
@@ -585,7 +590,9 @@ class PostgresAdapter extends DatabaseAdapter {
 
 	async importDataSnapshot(snapshot, options = {}) {
 		if (!this.pool) throw new Error('PostgreSQL adapter is not connected');
-		return importPostgresSnapshot(this.pool, normalizeSnapshot(snapshot), options);
+		const result = await importPostgresSnapshot(this.pool, normalizeSnapshot(snapshot), options);
+		this._clearGroupDmReadCache();
+		return result;
 	}
 
 	_reassignReportSnapshotUserIds(snapshot, previousId, nextId) {
@@ -1166,6 +1173,66 @@ class PostgresAdapter extends DatabaseAdapter {
 			values,
 		);
 		return rows.map(normalizeUserRow);
+	}
+
+	async getUserRecommendationProfile(userId) {
+		const id = Number(userId);
+		if (!Number.isSafeInteger(id) || id <= 0) {
+			return {
+				affinities: [], follows: [], extendedFollows: [], reacted: [],
+				dislikedPostIds: [], dislikedAuthors: [], blockedAuthors: [],
+			};
+		}
+		const [affinityResult, followResult, extendedResult, reactionResult, feedback, user] = await Promise.all([
+			this.pool.query(
+				'SELECT keyword, score, updated_at FROM user_keyword_affinities WHERE user_id = $1 ORDER BY score DESC LIMIT 200',
+				[id],
+			),
+			this.pool.query(
+				'SELECT following_id FROM follows WHERE follower_id = $1 ORDER BY created_at DESC LIMIT 500',
+				[id],
+			),
+			this.pool.query(
+				`SELECT DISTINCT f2.following_id AS user_id
+				 FROM follows f1
+				 JOIN follows f2 ON f2.follower_id = f1.following_id
+				 WHERE f1.follower_id = $1 AND f2.following_id <> $1
+				 LIMIT 1000`,
+				[id],
+			),
+			this.pool.query(
+				`SELECT post_id FROM (
+					(SELECT post_id, created_at FROM likes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
+					UNION ALL
+					(SELECT post_id, created_at FROM stars WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
+					UNION ALL
+					(SELECT post_id, created_at FROM reposts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)
+				) _r`,
+				[id],
+			),
+			this.getPostFeedbackForUser(id).catch(() => ({ postIds: [], authorIds: [] })),
+			this.getUserById(id).catch(() => null),
+		]);
+		const follows = (followResult.rows || []).map((row) => Number(row.following_id));
+		const directFollows = new Set(follows);
+		const extendedFollows = new Set();
+		for (const row of extendedResult.rows || []) {
+			const candidateId = Number(row.user_id);
+			if (Number.isSafeInteger(candidateId) && !directFollows.has(candidateId)) extendedFollows.add(candidateId);
+		}
+		return {
+			affinities: (affinityResult.rows || []).map((row) => ({
+				keyword: row.keyword,
+				score: Number(row.score) || 0,
+				updated_at: row.updated_at,
+			})),
+			follows,
+			extendedFollows: [...extendedFollows],
+			reacted: [...new Set((reactionResult.rows || []).map((row) => Number(row.post_id)).filter(Number.isSafeInteger))],
+			dislikedPostIds: feedback?.postIds || [],
+			dislikedAuthors: feedback?.authorIds || [],
+			blockedAuthors: normalizeBlockList(user?.block, id),
+		};
 	}
 
 	async getUserStatus(userId) {
@@ -1957,6 +2024,16 @@ class PostgresAdapter extends DatabaseAdapter {
 		return mapAccountRecovery(rows[0]);
 	}
 
+	async getOpenAccountRecoveryRequest(userId) {
+		const { rows } = await this.pool.query(
+			`SELECT * FROM account_recovery_requests
+			 WHERE user_id = $1 AND status IN ('waiting', 'approved')
+			 ORDER BY started_at DESC LIMIT 1`,
+			[Number(userId)],
+		);
+		return mapAccountRecovery(rows[0]);
+	}
+
 	async rotateAccountRecoveryToken(id, tokenHash) {
 		const { rows } = await this.pool.query(
 			`UPDATE account_recovery_requests SET request_token_hash = $2
@@ -2001,7 +2078,8 @@ class PostgresAdapter extends DatabaseAdapter {
 	}
 
 	async decideAccountRecoveryRequest(userId, id, decision) {
-		const status = (decision === 'approve' || decision === 'approved') ? 'approved' : 'blocked';
+		if (decision !== 'approve' && decision !== 'block') return null;
+		const status = decision === 'approve' ? 'approved' : 'blocked';
 		const now = new Date().toISOString();
 		const { rows } = await this.pool.query(
 			`UPDATE account_recovery_requests SET status = $3, decided_at = $4, decided_by = 'user'
@@ -2013,6 +2091,17 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (rows[0]) return mapAccountRecovery(rows[0]);
 		const existing = await this.getAccountRecoveryRequest(id);
 		return existing && Number(existing.userId) === Number(userId) ? existing : null;
+	}
+
+	async expireAccountRecoveryRequest(id) {
+		const { rows } = await this.pool.query(
+			`UPDATE account_recovery_requests
+			 SET status = 'expired', decided_at = COALESCE(decided_at, NOW())
+			 WHERE id = $1 AND status = 'approved'
+			 RETURNING *`,
+			[String(id)],
+		);
+		return mapAccountRecovery(rows[0]);
 	}
 
 	async approveDueAccountRecoveryRequest(id, decidedBy = 'timeout') {
@@ -5490,33 +5579,84 @@ class PostgresAdapter extends DatabaseAdapter {
 		return Number(rows[0]?.count || 0);
 	}
 
+	_clearGroupDmReadCache() {
+		this.groupDmReadCacheGeneration += 1;
+		this.groupDmReadCache.clear();
+	}
+
+	_cachedGroupDmRead(key, loader) {
+		const now = Date.now();
+		const cached = this.groupDmReadCache.get(key);
+		if (cached && cached.expiresAt > now) return cached.value;
+		if (cached) this.groupDmReadCache.delete(key);
+
+		if (this.groupDmReadCache.size >= GROUP_DM_READ_CACHE_MAX_ENTRIES) {
+			for (const [cachedKey, entry] of this.groupDmReadCache) {
+				if (entry.expiresAt <= now) this.groupDmReadCache.delete(cachedKey);
+			}
+			if (this.groupDmReadCache.size >= GROUP_DM_READ_CACHE_MAX_ENTRIES) {
+				const oldestKey = this.groupDmReadCache.keys().next().value;
+				if (oldestKey !== undefined) this.groupDmReadCache.delete(oldestKey);
+			}
+		}
+
+		const generation = this.groupDmReadCacheGeneration;
+		const promise = Promise.resolve()
+			.then(loader)
+			.then((value) => {
+				if (
+					this.groupDmReadCacheGeneration === generation
+					&& this.groupDmReadCache.get(key)?.value === promise
+				) {
+					this.groupDmReadCache.set(key, {
+						value,
+						expiresAt: Date.now() + GROUP_DM_READ_CACHE_TTL_MS,
+					});
+				}
+				return value;
+			})
+			.catch((error) => {
+				if (this.groupDmReadCache.get(key)?.value === promise) this.groupDmReadCache.delete(key);
+				throw error;
+			});
+		this.groupDmReadCache.set(key, {
+			value: promise,
+			expiresAt: Date.now() + GROUP_DM_READ_CACHE_TTL_MS,
+		});
+		return promise;
+	}
+
 	async getGroupDmsForUser(userId, { limit = 50, offset = 0 } = {}) {
 		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
 		const safeOffset = Math.max(Number(offset) || 0, 0);
-		const { rows } = await this.pool.query(
-			`SELECT * FROM group_dms WHERE $1::INTEGER = ANY(member)
-			 ORDER BY time DESC LIMIT $2 OFFSET $3`,
-			[Number(userId), safeLimit, safeOffset],
-		);
-		return rows.map((row) => normalizeGroupDmRow(row, Number(userId)));
+		return this._cachedGroupDmRead(`list:${Number(userId)}:${safeLimit}:${safeOffset}`, async () => {
+			const { rows } = await this.pool.query(
+				`SELECT * FROM group_dms WHERE $1::INTEGER = ANY(member)
+				 ORDER BY time DESC LIMIT $2 OFFSET $3`,
+				[Number(userId), safeLimit, safeOffset],
+			);
+			return rows.map((row) => normalizeGroupDmRow(row, Number(userId)));
+		});
 	}
 
 	async getGroupDmVisibilityDataForUser(userId) {
-		const { rows } = await this.pool.query(
-			`SELECT id, member, unread FROM group_dms WHERE $1::INTEGER = ANY(member)`,
-			[Number(userId)],
-		);
-		return rows.map((row) => ({
-			id: String(row.id),
-			member: (row.member || []).map(Number),
-			accepted: (() => {
-				const unread = typeof row.unread === 'object' && row.unread !== null
-					? row.unread
-					: parseJsonSafe(row.unread, {});
-				return Array.isArray(unread._accepted) ? unread._accepted.map(Number) : (row.member || []).map(Number);
-			})(),
-			unread: typeof row.unread === 'object' && row.unread !== null ? row.unread : parseJsonSafe(row.unread, {}),
-		}));
+		return this._cachedGroupDmRead(`visibility:${Number(userId)}`, async () => {
+			const { rows } = await this.pool.query(
+				`SELECT id, member, unread FROM group_dms WHERE $1::INTEGER = ANY(member)`,
+				[Number(userId)],
+			);
+			return rows.map((row) => ({
+				id: String(row.id),
+				member: (row.member || []).map(Number),
+				accepted: (() => {
+					const unread = typeof row.unread === 'object' && row.unread !== null
+						? row.unread
+						: parseJsonSafe(row.unread, {});
+					return Array.isArray(unread._accepted) ? unread._accepted.map(Number) : (row.member || []).map(Number);
+				})(),
+				unread: typeof row.unread === 'object' && row.unread !== null ? row.unread : parseJsonSafe(row.unread, {}),
+			}));
+		});
 	}
 
 	async getGroupDm(dmId) {
@@ -5545,6 +5685,7 @@ class PostgresAdapter extends DatabaseAdapter {
 			 RETURNING *`,
 			[id, hostId, title, member, JSON.stringify(unreadObj), now],
 		);
+		this._clearGroupDmReadCache();
 		return normalizeGroupDmRow(rows[0], hostId);
 	}
 
@@ -5586,6 +5727,7 @@ class PostgresAdapter extends DatabaseAdapter {
 		}
 
 		if (sets.length === 0) {
+			this._clearGroupDmReadCache();
 			return this.getGroupDm(dmId);
 		}
 
@@ -5594,12 +5736,13 @@ class PostgresAdapter extends DatabaseAdapter {
 			`UPDATE group_dms SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
 			values,
 		);
+		this._clearGroupDmReadCache();
 		if (!rows[0]) return null;
 		return normalizeGroupDmRow(rows[0]);
 	}
 
 	async appendToGroupDm(dmId, message, senderId = null) {
-		return this._withTransaction(async (client) => {
+		const result = await this._withTransaction(async (client) => {
 			const { rows: existingRows } = await client.query(
 				'SELECT * FROM group_dms WHERE id = $1 FOR UPDATE',
 				[String(dmId)],
@@ -5633,47 +5776,56 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 			return normalizeGroupDmRow(rows[0], senderId);
 		});
+		this._clearGroupDmReadCache();
+		return result;
 	}
 
 	async markGroupDmRead(dmId, userId) {
-		return this._withTransaction(async (client) => {
+		const result = await this._withTransaction(async (client) => {
 			const { rows } = await client.query('SELECT unread FROM group_dms WHERE id = $1 FOR UPDATE', [String(dmId)]);
 			if (!rows[0]) return;
 			const unread = { ...(typeof rows[0].unread === 'object' && rows[0].unread !== null ? rows[0].unread : parseJsonSafe(rows[0].unread, {})) };
 			unread[String(userId)] = 0;
 			await client.query('UPDATE group_dms SET unread = $2::jsonb WHERE id = $1', [String(dmId), JSON.stringify(unread)]);
 		});
+		this._clearGroupDmReadCache();
+		return result;
 	}
 
 	async getGroupDmUnreadCounts(userId) {
-		const { rows } = await this.pool.query(
-			'SELECT id, member, unread FROM group_dms WHERE $1::int = ANY(member)',
-			[Number(userId)],
-		);
-		const counts = [];
-		for (const r of rows) {
-			const unread = typeof r.unread === 'object' && r.unread !== null ? r.unread : parseJsonSafe(r.unread, {});
-			counts.push({ dm_id: r.id, unread_count: Number(unread[String(userId)] || 0) });
-		}
-		return counts;
+		return this._cachedGroupDmRead(`unread-counts:${Number(userId)}`, async () => {
+			const { rows } = await this.pool.query(
+				'SELECT id, member, unread FROM group_dms WHERE $1::int = ANY(member)',
+				[Number(userId)],
+			);
+			const counts = [];
+			for (const r of rows) {
+				const unread = typeof r.unread === 'object' && r.unread !== null ? r.unread : parseJsonSafe(r.unread, {});
+				counts.push({ dm_id: r.id, unread_count: Number(unread[String(userId)] || 0) });
+			}
+			return counts;
+		});
 	}
 
 	async getGroupDmUnreadTotal(userId) {
-		const { rows } = await this.pool.query(
-			`SELECT COALESCE(SUM(COALESCE((unread ->> $2)::int, 0)), 0)::int AS total
-			 FROM group_dms WHERE $1::int = ANY(member)`,
-			[Number(userId), String(userId)],
-		);
-		return Number(rows[0]?.total || 0);
+		return this._cachedGroupDmRead(`unread-total:${Number(userId)}`, async () => {
+			const { rows } = await this.pool.query(
+				`SELECT COALESCE(SUM(COALESCE((unread ->> $2)::int, 0)), 0)::int AS total
+				 FROM group_dms WHERE $1::int = ANY(member)`,
+				[Number(userId), String(userId)],
+			);
+			return Number(rows[0]?.total || 0);
+		});
 	}
 
 	async deleteGroupDm(dmId) {
 		const { rowCount } = await this.pool.query('DELETE FROM group_dms WHERE id = $1', [String(dmId)]);
+		this._clearGroupDmReadCache();
 		return rowCount > 0;
 	}
 
 	async leaveGroupDm(dmId, userId) {
-		return this._withTransaction(async (client) => {
+		const result = await this._withTransaction(async (client) => {
 			const { rows } = await client.query('SELECT member, unread FROM group_dms WHERE id = $1 FOR UPDATE', [String(dmId)]);
 			if (!rows[0]) return false;
 
@@ -5687,6 +5839,8 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 			return true;
 		});
+		this._clearGroupDmReadCache();
+		return result;
 	}
 
 	async findGroupDmByMembers(memberIds) {

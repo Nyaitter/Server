@@ -39,11 +39,13 @@ class DatabaseAdapter {
 	async getAccountRecoveryRequest(id) { throw new Error('getAccountRecoveryRequest() must be implemented'); }
 	async getAccountRecoveryRequestByToken(id, tokenHash) { throw new Error('getAccountRecoveryRequestByToken() must be implemented'); }
 	async getActiveAccountRecoveryRequest(userId, ipHash) { throw new Error('getActiveAccountRecoveryRequest() must be implemented'); }
+	async getOpenAccountRecoveryRequest(userId) { throw new Error('getOpenAccountRecoveryRequest() must be implemented'); }
 	async rotateAccountRecoveryToken(id, tokenHash) { throw new Error('rotateAccountRecoveryToken() must be implemented'); }
 	async listAccountRecoveryRequestsToNotify(cutoff) { throw new Error('listAccountRecoveryRequestsToNotify() must be implemented'); }
 	async markAccountRecoveryNotified(id, notifiedAt) { throw new Error('markAccountRecoveryNotified() must be implemented'); }
 	async listDueAccountRecoveryRequests(now) { throw new Error('listDueAccountRecoveryRequests() must be implemented'); }
 	async decideAccountRecoveryRequest(userId, id, decision) { throw new Error('decideAccountRecoveryRequest() must be implemented'); }
+	async expireAccountRecoveryRequest(id) { throw new Error('expireAccountRecoveryRequest() must be implemented'); }
 	async approveDueAccountRecoveryRequest(id, decidedBy) { throw new Error('approveDueAccountRecoveryRequest() must be implemented'); }
 	async consumeAccountRecoveryRequest(id, tokenHash) { throw new Error('consumeAccountRecoveryRequest() must be implemented'); }
 	async blockLoginIp(userId, data) { throw new Error('blockLoginIp() must be implemented'); }
@@ -361,6 +363,18 @@ class DatabaseAdapter {
 
 	async getPostFeedbackForUser(userId) {
 		throw new Error('getPostFeedbackForUser() must be implemented');
+	}
+
+	async getUserRecommendationProfile(userId) {
+		return {
+			affinities: [],
+			follows: [],
+			extendedFollows: [],
+			reacted: [],
+			dislikedPostIds: [],
+			dislikedAuthors: [],
+			blockedAuthors: [],
+		};
 	}
 
 	async getProfilePostIds(params = {}) {

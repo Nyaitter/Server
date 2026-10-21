@@ -31,15 +31,19 @@ function getOrPersistHmacSecret() {
     fs.writeFileSync(secretPath, generated, { encoding: 'utf8', mode: 0o600 });
     return generated;
   } catch (_) {
-    // ファイルシステムへの書き込みが制限されている場合のフォールバック。
-    // この値はリポジトリに見えるので、使っていること自体を運用者に必ず知らせる
-    // （LOGIN_SECURITY_HMAC_SECRET を設定するか、DATA_DIR を書き込み可能にする）。
+    // シークレットを永続化できない場合、固定値を使うとIPハッシュを外部から計算できる。
+    // 本番では起動を止め、開発ではプロセス内だけのランダム値に留める。
+    if ((process.env.NODE_ENV || 'development') === 'production') {
+      throw new Error(
+        'LOGIN_SECURITY_HMAC_SECRET を設定するか、DATA_DIR を書き込み可能にしてください。'
+        + 'IPハッシュ用のシークレットを安全に保存できません。',
+      );
+    }
     console.error(
-      '[login-security] LOGIN_SECURITY_HMAC_SECRET 未設定かつ DATA_DIR にシークレットを保存できません。'
-      + 'IP ハッシュは既知の固定値で計算されます（信頼IP・ブロックIPの相関が外部から計算可能）。'
-      + '必ず環境変数でシークレットを設定してください。',
+      '[login-security] シークレットを保存できないため、このプロセス内だけの一時値を使用します。'
+      + '再起動すると信頼IP・ブロックIPの照合がリセットされます。',
     );
-    return 'nyaitter-auth-default-secure-hmac-secret-salt';
+    return crypto.randomBytes(32).toString('base64url');
   }
 }
 

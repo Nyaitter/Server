@@ -41,6 +41,7 @@ const path = require('path');
 const fs = require('fs');
 const { isCrawler, generatePostOgpTags, generatePostHtml } = require('../services/OgpService');
 const { decodePostCursor } = require('../utils/postCursor');
+const TtlValueCache = require('../utils/TtlValueCache');
 
 const api = require("../utils/ApiRegistry");
 const router = api.createRouter({
@@ -77,6 +78,17 @@ async function getCachedTrendingHashtags(db, limit, type) {
 		});
 	entries.set(key, { promise });
 	return promise;
+}
+
+const trendingPostsCache = new WeakMap();
+
+function getCachedTrendingPosts(db, limit) {
+	let cache = trendingPostsCache.get(db);
+	if (!cache) {
+		cache = new TtlValueCache({ ttlMs: 30000, maxEntries: 100 });
+		trendingPostsCache.set(db, cache);
+	}
+	return cache.get(`trending:${limit}`, () => db.getTrendingPosts(limit));
 }
 
 function getDbAdapter(req) {
@@ -453,7 +465,7 @@ router.get({
 	const limit = Math.min(parseInt(req.query.limit, 10) || 20, 50);
 
 		try {
-						const posts = await db.getTrendingPosts(limit);
+						const posts = await getCachedTrendingPosts(db, limit);
 				const currentUserId = req.user ? req.user.id : null;
 				const knownViewer = req.user?.visibilityUser || null;
 				const visibilityContext = await createPostVisibilityContext(

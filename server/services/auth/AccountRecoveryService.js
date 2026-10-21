@@ -139,10 +139,35 @@ class AccountRecoveryService {
       throw err;
     }
 
+    const trusted = await this.db.getTrustedLoginIp(user.id, metadata.ipHash);
+    if (trusted) {
+      const err = new Error('この場所はすでに信頼されています。通常どおりログインしてください。');
+      err.status = 409;
+      err.code = 'account_recovery_not_needed';
+      throw err;
+    }
+
     const stats = await this._gatherStats(user);
 
-    const existing = await this.db.getActiveAccountRecoveryRequest(user.id, metadata.ipHash);
+    let existing = await this.db.getOpenAccountRecoveryRequest(user.id);
+    // 承認済みのまま放置された依頼は、別の場所からの再開を永久に妨げないよう期限切れにする。
+    if (existing?.status === 'approved' && this._isApprovalStale(existing)) {
+      await this.db.expireAccountRecoveryRequest(existing.id);
+      existing = null;
+    }
+    if (existing && existing.ipHash !== metadata.ipHash) {
+      const err = new Error('このアカウントでは、別の場所から復旧手続きが進行中です。そちらの完了を待つか、心当たりがない場合は届いた通知からブロックしてください。');
+      err.status = 409;
+      err.code = 'account_recovery_in_progress';
+      throw err;
+    }
     if (existing) {
+      if (existing.status !== 'waiting') {
+        const err = new Error('この復旧依頼はすでに承認されています。ログインを最初からやり直してください。');
+        err.status = 409;
+        err.code = 'account_recovery_already_approved';
+        throw err;
+      }
       const token = generateApprovalPollToken();
       const rotated = await this.db.rotateAccountRecoveryToken(existing.id, hashApprovalPollToken(token));
       if (!rotated) {
@@ -166,18 +191,51 @@ class AccountRecoveryService {
     const { waitUntil } = this._computeWait(trustScore);
     const token = generateApprovalPollToken();
 
-    const request = await this.db.createAccountRecoveryRequest({
-      userId: user.id,
-      ipHash: metadata.ipHash,
-      ipMasked: metadata.ipMasked,
-      userAgent: metadata.userAgent,
-      authProvider,
-      requestTokenHash: hashApprovalPollToken(token),
-      trustScore,
-      waitUntil,
-    });
+    let request;
+    try {
+      request = await this.db.createAccountRecoveryRequest({
+        userId: user.id,
+        ipHash: metadata.ipHash,
+        ipMasked: metadata.ipMasked,
+        userAgent: metadata.userAgent,
+        authProvider,
+        requestTokenHash: hashApprovalPollToken(token),
+        trustScore,
+        waitUntil,
+      });
+    } catch (error) {
+      const conflict = error?.code === '23505'
+        || error?.status === 409
+        || /unique|constraint/i.test(String(error?.message || ''));
+      if (!conflict) throw error;
+
+      // 同時操作で1件だけ作成された場合、同じ場所からの再試行なら待機を引き継ぐ。
+      const open = await this.db.getOpenAccountRecoveryRequest(user.id);
+      if (open?.status === 'waiting' && open.ipHash === metadata.ipHash) {
+        const retryToken = generateApprovalPollToken();
+        const rotated = await this.db.rotateAccountRecoveryToken(open.id, hashApprovalPollToken(retryToken));
+        if (rotated) return { request: rotated, token: retryToken, resumed: true };
+      }
+      const err = new Error('このアカウントでは復旧手続きが進行中です。そちらの完了を待つか、心当たりがない場合は届いた通知からブロックしてください。');
+      err.status = 409;
+      err.code = 'account_recovery_in_progress';
+      throw err;
+    }
 
     return { request, token, resumed: false };
+  }
+
+  async resumeActiveRecovery({ user, metadata }) {
+    if (!this.recoveryConfig.enabled) return null;
+    const blocked = typeof this.db.getBlockedLoginIp === 'function'
+      ? await this.db.getBlockedLoginIp(user.id, metadata.ipHash)
+      : null;
+    if (blocked) return null;
+    const existing = await this.db.getOpenAccountRecoveryRequest(user.id);
+    if (!existing || existing.status !== 'waiting' || existing.ipHash !== metadata.ipHash) return null;
+    const token = generateApprovalPollToken();
+    const rotated = await this.db.rotateAccountRecoveryToken(existing.id, hashApprovalPollToken(token));
+    return rotated ? { request: rotated, token } : null;
   }
 
   // 復旧依頼の実状態を poll の応答語彙に写す（waiting は「まだ待機中」＝pending）。
@@ -232,6 +290,13 @@ class AccountRecoveryService {
       }
     }
     if (approved && approved.status === 'approved') {
+      const blocked = typeof this.db.getBlockedLoginIp === 'function'
+        ? await this.db.getBlockedLoginIp(approved.userId, approved.ipHash)
+        : null;
+      if (blocked) {
+        const settled = await this.db.decideAccountRecoveryRequest(approved.userId, approved.id, 'block');
+        return settled || approved;
+      }
       await this.db.trustLoginIp(approved.userId, {
         ipHash: approved.ipHash,
         ipMasked: approved.ipMasked,
@@ -246,7 +311,13 @@ class AccountRecoveryService {
    * 要求元IPを恒久的にブロックする。
    */
   async decideRecovery({ user, requestId, decision }) {
-    const wantsBlock = !(decision === 'approve' || decision === 'approved');
+    if (decision !== 'approve' && decision !== 'block') {
+      const err = new Error('復旧依頼の処理方法が正しくありません。');
+      err.status = 400;
+      err.code = 'invalid_recovery_decision';
+      throw err;
+    }
+    const wantsBlock = decision === 'block';
     const request = await this.db.decideAccountRecoveryRequest(user.id, requestId, decision);
     if (!request) return null;
 
@@ -257,6 +328,13 @@ class AccountRecoveryService {
       return request;
     }
     if (request.status === 'approved') {
+      const blocked = typeof this.db.getBlockedLoginIp === 'function'
+        ? await this.db.getBlockedLoginIp(request.userId, request.ipHash)
+        : null;
+      if (blocked) {
+        const settled = await this.db.decideAccountRecoveryRequest(request.userId, request.id, 'block');
+        return settled || request;
+      }
       await this.db.trustLoginIp(request.userId, { ipHash: request.ipHash, ipMasked: request.ipMasked });
     }
     return request;
@@ -287,8 +365,19 @@ class AccountRecoveryService {
       sourceRecoveryId: request.id,
     });
 
+    if (typeof db.revokeTrustedLoginIp === 'function') {
+      try {
+        await db.revokeTrustedLoginIp(request.userId, request.ipHash);
+      } catch (error) {
+        this.logger?.warn?.(`[account-recovery] trusted IP revoke failed: ${error.message}`);
+      }
+    }
     if (typeof db.invalidateSessionsByIp === 'function') {
-      await db.invalidateSessionsByIp(request.userId, request.ipHash);
+      try {
+        await db.invalidateSessionsByIp(request.userId, request.ipHash);
+      } catch (error) {
+        this.logger?.warn?.(`[account-recovery] session invalidation failed: ${error.message}`);
+      }
     }
     return revoked;
   }

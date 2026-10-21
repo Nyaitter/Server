@@ -1,4 +1,5 @@
 const api = require('../utils/ApiRegistry');
+const TtlValueCache = require('../utils/TtlValueCache');
 const { requireAuth } = require('../middleware/auth');
 
 const router = api.createRouter({
@@ -10,6 +11,27 @@ const router = api.createRouter({
 function getDbAdapter(req) {
   return req.app.locals.dbAdapter;
 }
+
+const rankingCaches = new WeakMap();
+
+function getRankingCache(db) {
+  let cache = rankingCaches.get(db);
+  if (!cache) {
+    cache = new TtlValueCache({ ttlMs: 30000, maxEntries: 2000 });
+    rankingCaches.set(db, cache);
+  }
+  return cache;
+}
+
+function getCachedRanking(db, type, limit) {
+  return getRankingCache(db).get(`top:${type}:${limit}`, () => db.getRanking(type, limit));
+}
+
+function getCachedUserRanking(db, type, userId) {
+  return getRankingCache(db).get(`me:${type}:${userId}`, () => db.getUserRanking(type, userId));
+}
+
+const RANKING_CACHE_CONTROL = 'public, max-age=30, s-maxage=30, stale-while-revalidate=60';
 
 const VALID_RANKING_TYPES = new Set(['followers', 'posts', 'likes', 'stars']);
 
@@ -23,12 +45,13 @@ router.get({
 
   try {
     const [followers, posts, likes, stars] = await Promise.all([
-      db.getUserRanking('followers', userId),
-      db.getUserRanking('posts', userId),
-      db.getUserRanking('likes', userId),
-      db.getUserRanking('stars', userId),
+      getCachedUserRanking(db, 'followers', userId),
+      getCachedUserRanking(db, 'posts', userId),
+      getCachedUserRanking(db, 'likes', userId),
+      getCachedUserRanking(db, 'stars', userId),
     ]);
 
+    res.set('Cache-Control', 'private, no-store');
     res.json({
       followers: followers || { rank: null, follower_count: 0 },
       posts: posts || { rank: null, post_count: 0 },
@@ -55,8 +78,9 @@ router.get({
   }
 
   try {
-    const rows = await db.getRanking(type, limit);
+    const rows = await getCachedRanking(db, type, limit);
     const data = rows.map((row, index) => ({ rank: index + 1, ...row }));
+    res.set('Cache-Control', RANKING_CACHE_CONTROL);
     res.json({ data });
   } catch (err) {
     console.error('[ranking] list error:', err);

@@ -1033,11 +1033,18 @@ export default {
 				const waitUntil = body.waitUntil;
 				const now = new Date().toISOString();
 
-				await db.prepare(
-					`INSERT INTO account_recovery_requests
-					 (id, user_id, ip_hash, ip_masked, user_agent, auth_provider, request_token_hash, status, trust_score, wait_until, started_at, last_notified_at, notified_count)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, 1)`
-				).bind(id, userId, ipHash, ipMasked, userAgent, authProvider, requestTokenHash, trustScore, waitUntil, now, now).run();
+				try {
+					await db.prepare(
+						`INSERT INTO account_recovery_requests
+						 (id, user_id, ip_hash, ip_masked, user_agent, auth_provider, request_token_hash, status, trust_score, wait_until, started_at, last_notified_at, notified_count)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, 1)`
+					).bind(id, userId, ipHash, ipMasked, userAgent, authProvider, requestTokenHash, trustScore, waitUntil, now, now).run();
+				} catch (error) {
+					if (/unique|constraint/i.test(String(error?.message || ''))) {
+						return json({ error: 'account_recovery_in_progress' }, 409);
+					}
+					throw error;
+				}
 
 				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
 				return json(row || null);
@@ -1082,6 +1089,15 @@ export default {
 				return json(row || null);
 			}
 
+			if (method === 'GET' && pathname === '/account-recovery/open') {
+				const userId = Number(url.searchParams.get('userId'));
+				if (!Number.isSafeInteger(userId) || userId <= 0) return badRequest('Invalid user id');
+				const row = await db.prepare(
+					"SELECT * FROM account_recovery_requests WHERE user_id = ? AND status IN ('waiting', 'approved') ORDER BY started_at DESC LIMIT 1"
+				).bind(userId).first();
+				return json(row || null);
+			}
+
 			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/token-check$/)) {
 				const id = decodeURIComponent(pathname.split('/')[2]);
 				const body = await request.json();
@@ -1110,8 +1126,11 @@ export default {
 			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/decision$/)) {
 				const id = decodeURIComponent(pathname.split('/')[2]);
 				const body = await request.json();
+				if (body.decision !== 'approve' && body.decision !== 'block') {
+					return badRequest('Invalid recovery decision');
+				}
 				const userId = Number(body.userId);
-				const status = (body.decision === 'approve' || body.decision === 'approved') ? 'approved' : 'blocked';
+				const status = body.decision === 'approve' ? 'approved' : 'blocked';
 				const now = new Date().toISOString();
 				const res = await db.prepare(
 					"UPDATE account_recovery_requests SET status = ?, decided_at = ?, decided_by = 'user' WHERE id = ? AND user_id = ? AND (status = 'waiting' OR (status = 'approved' AND ? = 'blocked'))"
@@ -1119,6 +1138,15 @@ export default {
 				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
 				if (res.meta.changes > 0) return json(row);
 				return json(row && Number(row.user_id) === userId ? row : null);
+			}
+
+			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/expire$/)) {
+				const id = decodeURIComponent(pathname.split('/')[2]);
+				await db.prepare(
+					"UPDATE account_recovery_requests SET status = 'expired', decided_at = COALESCE(decided_at, datetime('now')) WHERE id = ? AND status = 'approved'"
+				).bind(id).run();
+				const row = await db.prepare('SELECT * FROM account_recovery_requests WHERE id = ?').bind(id).first();
+				return json(row || null);
 			}
 
 			if (method === 'POST' && pathname.match(/^\/account-recovery\/([^/]+)\/approve-due$/)) {

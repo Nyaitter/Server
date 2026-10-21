@@ -718,6 +718,50 @@ class InMemoryAdapter extends DatabaseAdapter {
 				return { postIds, authorIds: [...authorIds] };
 			}
 
+			async getUserRecommendationProfile(userId) {
+				const id = Number(userId);
+				if (!Number.isInteger(id)) {
+					return {
+						affinities: [], follows: [], extendedFollows: [], reacted: [],
+						dislikedPostIds: [], dislikedAuthors: [], blockedAuthors: [],
+					};
+				}
+				const affinityMap = this.userKeywordAffinityByUser.get(id) || new Map();
+				const affinities = [...affinityMap.entries()].map(([keyword, value]) => ({
+					keyword,
+					score: Number(value?.score) || 0,
+					updated_at: new Date(value?.updatedAt || Date.now()).toISOString(),
+				}));
+				const follows = [...(this.followingIdsByUser.get(id) || [])];
+				const directFollows = new Set(follows);
+				const extendedFollows = new Set();
+				for (const followedId of follows) {
+					for (const secondHopId of this.followingIdsByUser.get(followedId) || []) {
+						if (secondHopId !== id && !directFollows.has(secondHopId)) extendedFollows.add(secondHopId);
+					}
+				}
+				const [likeIds, starIds, feedback] = await Promise.all([
+					this.getLikeIds(id),
+					this.getStarIds(id),
+					this.getPostFeedbackForUser(id),
+				]);
+				const reacted = new Set([
+					...likeIds,
+					...starIds,
+					...(this.repostsByUser.get(id) || []),
+				]);
+				const user = this.users.get(id);
+				return {
+					affinities,
+					follows,
+					extendedFollows: [...extendedFollows],
+					reacted: [...reacted],
+					dislikedPostIds: feedback.postIds,
+					dislikedAuthors: feedback.authorIds,
+					blockedAuthors: normalizeBlockList(user?.block, id),
+				};
+			}
+
 			// Postgres/D1 は post_feedback が投稿削除で CASCADE 消える。インメモリでも同じ挙動に
 			// しないと、消えた投稿への「表示しない」評価が永久に残り続ける。
 			_removePostFeedbackForPost(postId) {
@@ -1375,6 +1419,16 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return latest ? { ...latest } : null;
 	}
 
+	async getOpenAccountRecoveryRequest(userId) {
+		let latest = null;
+		for (const request of this.accountRecoveryRequests.values()) {
+			if (Number(request.userId) !== Number(userId)) continue;
+			if (request.status !== 'waiting' && request.status !== 'approved') continue;
+			if (!latest || String(request.startedAt) > String(latest.startedAt)) latest = request;
+		}
+		return latest ? { ...latest } : null;
+	}
+
 	async rotateAccountRecoveryToken(id, tokenHash) {
 		const stored = this.accountRecoveryRequests.get(String(id));
 		if (!stored || stored.status !== 'waiting') return null;
@@ -1408,10 +1462,19 @@ class InMemoryAdapter extends DatabaseAdapter {
 		return result;
 	}
 
+	async expireAccountRecoveryRequest(id) {
+		const stored = this.accountRecoveryRequests.get(String(id));
+		if (!stored || stored.status !== 'approved') return stored ? { ...stored } : null;
+		stored.status = 'expired';
+		stored.decidedAt = stored.decidedAt || new Date();
+		return { ...stored };
+	}
+
 	async decideAccountRecoveryRequest(userId, id, decision) {
+		if (decision !== 'approve' && decision !== 'block') return null;
 		const stored = this.accountRecoveryRequests.get(String(id));
 		if (!stored || Number(stored.userId) !== Number(userId)) return null;
-		const wantsBlock = !(decision === 'approve' || decision === 'approved');
+		const wantsBlock = decision === 'block';
 		// 侵害者は待機時間を経過させて自動承認を進められる。所有者のブロックは
 		// 「承認済み（未消費）」の状態からも実行できなければ防御にならない。
 		if (stored.status !== 'waiting' && !(wantsBlock && stored.status === 'approved')) return { ...stored };
@@ -3893,6 +3956,29 @@ class InMemoryAdapter extends DatabaseAdapter {
 			return (this.postIdsByUser.get(Number(userId)) || []).length;
 		}
 
+	_getRankingReactionCounts(type) {
+		if (type !== 'likes' && type !== 'stars') return null;
+
+		const now = Date.now();
+		const cached = this.rankingReactionCountCache?.get(type);
+		if (cached && now - cached.cachedAt < 30 * 1000) return cached.counts;
+
+		const reactions = type === 'likes' ? this.likes : this.stars;
+		const counts = new Map();
+		for (const key of reactions.keys()) {
+			const [, postId] = key.split(':').map(Number);
+			const authorId = this.posts.get(postId)?.userId;
+			if (authorId != null) {
+				const normAuthor = Number(authorId);
+				counts.set(normAuthor, (counts.get(normAuthor) || 0) + 1);
+			}
+		}
+
+		if (!this.rankingReactionCountCache) this.rankingReactionCountCache = new Map();
+		this.rankingReactionCountCache.set(type, { counts, cachedAt: now });
+		return counts;
+	}
+
 	async getRanking(type, limit = 50) {
 		const fieldByType = {
 			followers: 'follower_count',
@@ -3904,18 +3990,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 		if (!metricField) throw new Error('Invalid ranking type');
 
 		const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
-		const reactionMap = new Map();
-		if (type === 'likes' || type === 'stars') {
-			const reactions = type === 'likes' ? this.likes : this.stars;
-			for (const key of reactions.keys()) {
-				const [, postId] = key.split(':').map(Number);
-				const authorId = this.posts.get(postId)?.userId;
-				if (authorId != null) {
-					const normAuthor = Number(authorId);
-					reactionMap.set(normAuthor, (reactionMap.get(normAuthor) || 0) + 1);
-				}
-			}
-		}
+		const reactionMap = this._getRankingReactionCounts(type) || new Map();
 
 		const rows = [];
 		for (const user of this.users.values()) {
@@ -3954,18 +4029,7 @@ class InMemoryAdapter extends DatabaseAdapter {
 			return { rank: null, [metricField]: 0 };
 		}
 
-		const reactionMap = new Map();
-		if (type === 'likes' || type === 'stars') {
-			const reactions = type === 'likes' ? this.likes : this.stars;
-			for (const key of reactions.keys()) {
-				const [, postId] = key.split(':').map(Number);
-				const authorId = this.posts.get(postId)?.userId;
-				if (authorId != null) {
-					const normAuthor = Number(authorId);
-					reactionMap.set(normAuthor, (reactionMap.get(normAuthor) || 0) + 1);
-				}
-			}
-		}
+		const reactionMap = this._getRankingReactionCounts(type) || new Map();
 
 		let myValue = 0;
 		if (type === 'followers') myValue = (this.followerIdsByUser.get(targetId) || new Set()).size;
@@ -4401,8 +4465,12 @@ class InMemoryAdapter extends DatabaseAdapter {
 		const wordUsers = new Map();    // word -> Set<userId>
 		const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
 
-		for (const post of this.posts.values()) {
-			if (post.groupId || post.group_id) continue;
+		let scanned = 0;
+		for (const postId of this.postIdsNewest) {
+			scanned += 1;
+			if (scanned > 500) break;
+			const post = this.posts.get(postId);
+			if (!post || post.groupId || post.group_id) continue;
 			const createdAtTime = new Date(post.createdAt || post.created_at || 0).getTime();
 			if (createdAtTime && createdAtTime < threeDaysAgo) continue;
 

@@ -72,6 +72,11 @@ function requireInteractiveSession(req, res, next) {
   return next();
 }
 
+// req.user は認可用の最小情報なので、インポスター判定にはセッションの完全なユーザー行を使う。
+function isImposterRequest(req) {
+  return isImposter(req.user?.visibilityUser || req.user);
+}
+
 async function verifyTurnstileToken(token) {
   const secret = config.turnstile?.secret;
   if (!secret) return { success: false, code: 'not_configured' };
@@ -179,6 +184,19 @@ async function createAuthenticatedSession(req, res, user, metadata) {
   const db = getDbAdapter(req);
   const sessionManager = new SessionManager({ dbAdapter: db });
   const session = await sessionManager.createSession(user.id, metadata);
+
+  // セッション作成とブロック確定が競合しても、ブロック済みIPへCookieを渡さない。
+  if (typeof db.getBlockedLoginIp === 'function') {
+    const blocked = await db.getBlockedLoginIp(user.id, metadata.ipHash);
+    if (blocked) {
+      await db.invalidateSession(SessionManager.hashToken(session.token)).catch(() => {});
+      const error = new Error('この場所からのログインは恒久的にブロックされています。');
+      error.status = 403;
+      error.code = 'login_ip_blocked';
+      throw error;
+    }
+  }
+
   setAuthenticatedSessionCookies(req, res, session);
   await recordLoginLog(db, user.scid || user.handle || '', user.id, req.ip);
   return session;
@@ -217,6 +235,9 @@ async function beginProtectedLogin(req, res, user, provider = null) {
     return { kind: 'authenticated', session };
   }
 
+  const recovery = await getAccountRecoveryService(req).resumeActiveRecovery({ user, metadata });
+  if (recovery) return { kind: 'recovery_waiting', ...recovery };
+
   const pollToken = generateApprovalPollToken();
   const approval = await db.createLoginApproval({
     userId: user.id,
@@ -232,11 +253,25 @@ async function beginProtectedLogin(req, res, user, provider = null) {
 }
 
 function sendLoginResult(req, res, user, result, { external = false } = {}) {
+  res.set('Cache-Control', 'no-store, private');
   if (result.kind === 'blocked') {
     return res.status(403).json({
       success: false,
       code: 'login_ip_blocked',
       message: 'この場所からのログインは恒久的にブロックされています。別のネットワークからログインし、設定の「ブロックしたIPアドレス」一覧から解除してください。解除できない場合は認証プロバイダー側で措置を行ってください。',
+    });
+  }
+
+  if (result.kind === 'recovery_waiting') {
+    return res.status(202).json({
+      success: false,
+      recovery_waiting: true,
+      recovery_id: result.request.id,
+      recovery_token: result.token,
+      status: 'waiting',
+      wait_until: result.request.waitUntil,
+      account_recovery_enabled: true,
+      message: 'アカウントアクセスの復旧待機期間中です。',
     });
   }
 
@@ -346,7 +381,7 @@ router.get({
 	auth: 'required',
 }, requireAuth, async (req, res) => {
   res.set('Cache-Control', 'no-store');
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.json({ linked_providers: [] });
   }
   const db = getDbAdapter(req);
@@ -373,7 +408,7 @@ router.post({
 	summary: '外部認証プロバイダー連携の開始',
 	auth: 'required',
 }, requireAuth, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントでは認証プロバイダーの連携を行えません。' });
   }
   const provider = String(req.params.provider || '').toLowerCase();
@@ -401,7 +436,7 @@ router.post({
 	summary: '外部認証プロバイダー連携の完了',
 	auth: 'required',
 }, requireAuth, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントでは認証プロバイダーの連携を行えません。' });
   }
   const provider = String(req.params.provider || '').toLowerCase();
@@ -435,7 +470,7 @@ router.delete({
 	summary: '外部認証プロバイダー連携の解除',
 	auth: 'required',
 }, requireAuth, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントでは認証プロバイダーの連携を行えません。' });
   }
   const provider = String(req.params.provider || '').toLowerCase();
@@ -521,6 +556,7 @@ router.post({
 	summary: 'ログイン承認リクエストのポーリング待機',
 	auth: 'none',
 }, async (req, res) => {
+  res.set('Cache-Control', 'no-store, private');
   const approvalId = String(req.params.approvalId || '');
   const pollToken = String(req.body?.approval_token || '');
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(approvalId) || !/^[A-Za-z0-9_-]{20,128}$/.test(pollToken)) {
@@ -544,20 +580,41 @@ router.post({
     return res.status(403).json({ error: 'ログイン要求時と異なるIPアドレスから承認を完了することはできません。' });
   }
 
-  const consumed = await db.consumeLoginApproval(approval.id, hashApprovalPollToken(pollToken));
-  if (!consumed) {
-    return res.status(409).json({ error: 'この承認は既に使用されたか、期限切れです。' });
-  }
   const user = await db.getUserById(approval.userId);
   if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません。' });
 
-  await db.trustLoginIp(user.id, metadata);
-  const session = await createAuthenticatedSession(req, res, user, metadata);
-	return res.json({
-		success: true,
-		expires_at: session.expiresAt,
-		user: serializeLoginUser(user, req),
-	});
+  // 復旧依頼をブロックした後も、承認済みの古いログイン要求から入れてはいけない。
+  if (typeof db.getBlockedLoginIp === 'function') {
+    const blocked = await db.getBlockedLoginIp(user.id, metadata.ipHash);
+    if (blocked) {
+      return res.status(403).json({
+        success: false,
+        code: 'login_ip_blocked',
+        error: 'この場所からのログインは恒久的にブロックされています。',
+      });
+    }
+  }
+
+  try {
+    const consumed = await db.consumeLoginApproval(approval.id, hashApprovalPollToken(pollToken));
+    if (!consumed) {
+      return res.status(409).json({ error: 'この承認は既に使用されたか、期限切れです。' });
+    }
+
+    await db.trustLoginIp(user.id, metadata);
+    const session = await createAuthenticatedSession(req, res, user, metadata);
+    return res.json({
+      success: true,
+      expires_at: session.expiresAt,
+      user: serializeLoginUser(user, req),
+    });
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({
+      error: error.message || 'ログインの完了に失敗しました。',
+      code: error.code || undefined,
+    });
+  }
 });
 
 router.get({
@@ -603,11 +660,15 @@ router.get({
 	summary: 'ログイン承認リクエストの詳細取得',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
+  if (isImposterRequest(req)) {
+    return res.status(403).json({ error: 'インポスターアカウントではログイン承認を管理できません。' });
+  }
   const db = getDbAdapter(req);
   const approval = await db.getLoginApproval(req.params.approvalId);
   if (!approval || Number(approval.userId) !== Number(req.user.id)) {
     return res.status(404).json({ error: 'ログイン承認依頼が見つかりません。' });
   }
+  res.set('Cache-Control', 'no-store, private');
   return res.json({ approval: serializeLoginApprovalForOwner(approval) });
 });
 
@@ -620,6 +681,10 @@ router.post({
 	summary: 'ログイン承認リクエストへの承認・拒否',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
+  if (isImposterRequest(req)) {
+    return res.status(403).json({ error: 'インポスターアカウントではログイン承認を管理できません。' });
+  }
+  res.set('Cache-Control', 'no-store, private');
   const decision = req.body?.decision;
   if (!['approve', 'deny'].includes(decision)) {
     return res.status(400).json({ error: 'decision must be approve or deny' });
@@ -628,6 +693,16 @@ router.post({
   const approval = await db.decideLoginApproval(req.user.id, req.params.approvalId, decision);
   if (!approval) return res.status(404).json({ error: 'ログイン承認依頼が見つかりません。' });
   if (approval.status === 'approved') {
+    // 復旧をブロックしたIPを、古い承認操作から信頼済みに戻さない。
+    if (typeof db.getBlockedLoginIp === 'function') {
+      const blocked = await db.getBlockedLoginIp(req.user.id, approval.ipHash);
+      if (blocked) {
+        return res.status(403).json({
+          error: 'この場所からのログインは恒久的にブロックされています。',
+          code: 'login_ip_blocked',
+        });
+      }
+    }
     await db.trustLoginIp(req.user.id, { ipHash: approval.ipHash, ipMasked: approval.ipMasked });
   }
   return res.json({ success: true, approval: serializeLoginApprovalForOwner(approval) });
@@ -663,6 +738,7 @@ router.post({
 	summary: '不明な場所からのアカウントアクセス復旧の開始',
 	auth: 'none',
 }, async (req, res) => {
+  res.set('Cache-Control', 'no-store, private');
   const approvalId = String(req.body?.approval_id || '');
   const approvalToken = String(req.body?.approval_token || '');
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(approvalId) || !/^[A-Za-z0-9_-]{20,128}$/.test(approvalToken)) {
@@ -688,6 +764,14 @@ router.post({
 
   const service = getAccountRecoveryService(req);
   try {
+    // 復旧を始めたら、同じ端末の古いログイン承認から待機期間を飛ばして入れないようにする。
+    if (typeof db.decideLoginApproval === 'function') {
+      const settled = await db.decideLoginApproval(user.id, approval.id, 'deny');
+      if (settled?.status === 'approved' && typeof db.invalidateSessionsByIp === 'function') {
+        await db.invalidateSessionsByIp(user.id, metadata.ipHash);
+      }
+    }
+
     const { request, token, resumed } = await service.startRecovery({ user, metadata, approval });
     if (!resumed) {
       await service.publishNotification(request);
@@ -719,6 +803,7 @@ router.post({
 	summary: 'アカウントアクセス復旧のポーリング待機',
 	auth: 'none',
 }, async (req, res) => {
+  res.set('Cache-Control', 'no-store, private');
   const recoveryId = String(req.params.recoveryId || '');
   const token = String(req.body?.recovery_token || '');
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(recoveryId) || !/^[A-Za-z0-9_-]{20,128}$/.test(token)) {
@@ -758,20 +843,41 @@ router.post({
     return res.status(403).json({ success: false, status: result.status, error: 'この復旧依頼は利用できません。' });
   }
 
-  const consumed = await db.consumeAccountRecoveryRequest(result.request.id, hashApprovalPollToken(token));
-  if (!consumed) {
-    return res.status(409).json({ error: 'この復旧は既に使用されたか、利用できません。' });
-  }
   const user = await db.getUserById(result.request.userId);
   if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません。' });
 
-  await db.trustLoginIp(user.id, metadata);
-  const session = await createAuthenticatedSession(req, res, user, metadata);
-  return res.json({
-    success: true,
-    expires_at: session.expiresAt,
-    user: serializeLoginUser(user, req),
-  });
+  // 承認とブロックが競合した場合も、ブロック済みIPへセッションを渡さない。
+  if (typeof db.getBlockedLoginIp === 'function') {
+    const blocked = await db.getBlockedLoginIp(user.id, metadata.ipHash);
+    if (blocked) {
+      return res.status(403).json({
+        success: false,
+        code: 'login_ip_blocked',
+        error: 'この場所からのログインは恒久的にブロックされています。',
+      });
+    }
+  }
+
+  try {
+    const consumed = await db.consumeAccountRecoveryRequest(result.request.id, hashApprovalPollToken(token));
+    if (!consumed) {
+      return res.status(409).json({ error: 'この復旧は既に使用されたか、利用できません。' });
+    }
+
+    await db.trustLoginIp(user.id, metadata);
+    const session = await createAuthenticatedSession(req, res, user, metadata);
+    return res.json({
+      success: true,
+      expires_at: session.expiresAt,
+      user: serializeLoginUser(user, req),
+    });
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({
+      error: error.message || '復旧の完了に失敗しました。',
+      code: error.code || undefined,
+    });
+  }
 });
 
 /**
@@ -783,12 +889,16 @@ router.get({
 	summary: 'アカウントアクセス復旧依頼の詳細取得',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
+  if (isImposterRequest(req)) {
+    return res.status(403).json({ error: 'インポスターアカウントでは復旧依頼を管理できません。' });
+  }
   const db = getDbAdapter(req);
   const request = await db.getAccountRecoveryRequest(req.params.recoveryId);
   if (!request || Number(request.userId) !== Number(req.user.id)) {
     return res.status(404).json({ error: '復旧依頼が見つかりません。' });
   }
   const service = getAccountRecoveryService(req);
+  res.set('Cache-Control', 'no-store, private');
   return res.json({ recovery: serializeAccountRecoveryForOwner(request, service, getRequestLoginMetadata(req).ipHash) });
 });
 
@@ -802,30 +912,42 @@ router.post({
 	summary: 'アカウントアクセス復旧依頼への承認・ブロック',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
+  if (isImposterRequest(req)) {
+    return res.status(403).json({ error: 'インポスターアカウントでは復旧依頼を管理できません。' });
+  }
+  res.set('Cache-Control', 'no-store, private');
   const decision = req.body?.decision;
   if (!['approve', 'block'].includes(decision)) {
     return res.status(400).json({ error: 'decision must be approve or block' });
   }
   const decisionMetadata = getRequestLoginMetadata(req);
   const service = getAccountRecoveryService(req);
-  const request = await service.decideRecovery({
-    user: req.user,
-    requestId: req.params.recoveryId,
-    decision,
-  });
-  if (!request) return res.status(404).json({ error: '復旧依頼が見つかりません。' });
+  try {
+    const request = await service.decideRecovery({
+      user: req.user,
+      requestId: req.params.recoveryId,
+      decision,
+    });
+    if (!request) return res.status(404).json({ error: '復旧依頼が見つかりません。' });
 
-  const payload = {
-    success: true,
-    recovery: serializeAccountRecoveryForOwner(request, service, decisionMetadata.ipHash),
-  };
-  if (request.revokedProvider) {
-    payload.provider_revoked = request.revokedProvider.revoked === true;
-    payload.remaining_providers = request.revokedProvider.remainingProviders || null;
+    const payload = {
+      success: true,
+      recovery: serializeAccountRecoveryForOwner(request, service, decisionMetadata.ipHash),
+    };
+    if (request.revokedProvider) {
+      payload.provider_revoked = request.revokedProvider.revoked === true;
+      payload.remaining_providers = request.revokedProvider.remainingProviders || null;
+    }
+    // 自分の現在のIPを恒久ブロックすると、この端末から再ログインできなくなる可能性がある。
+    if (payload.recovery?.is_your_current_ip) payload.current_ip_blocked = true;
+    return res.json(payload);
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({
+      error: error.message || '復旧依頼の処理に失敗しました。',
+      code: error.code || undefined,
+    });
   }
-  // 自分の現在のIPを恒久ブロックすると、この端末から再ログインできなくなる可能性がある。
-  if (payload.recovery?.is_your_current_ip) payload.current_ip_blocked = true;
-  return res.json(payload);
 });
 
 /**
@@ -838,7 +960,7 @@ router.get({
 	summary: 'ログインを恒久ブロックしたIP一覧',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントではブロックされたIPを管理できません。' });
   }
   const db = getDbAdapter(req);
@@ -868,7 +990,7 @@ router.delete({
 	summary: '恒久ブロックしたIPの解除',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントではブロックされたIPを管理できません。' });
   }
   const ipHash = String(req.params.ipHash || '');
@@ -907,11 +1029,17 @@ router.post({
 	summary: '現在のIPアドレスを信頼済みIPとして登録',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントではこの操作を行えません。' });
   }
   const db = getDbAdapter(req);
   const metadata = getRequestLoginMetadata(req);
+  if (typeof db.getBlockedLoginIp === 'function') {
+    const blocked = await db.getBlockedLoginIp(req.user.id, metadata.ipHash);
+    if (blocked) {
+      return res.status(403).json({ error: 'この場所からのログインは恒久的にブロックされています。' });
+    }
+  }
   await db.trustLoginIp(req.user.id, metadata);
   return res.json({ success: true, ip_masked: metadata.ipMasked });
 });
@@ -925,7 +1053,7 @@ router.get({
 	summary: 'アクティブなログインセッション一覧の取得',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.json({ sessions: [] });
   }
   const db = getDbAdapter(req);
@@ -944,7 +1072,7 @@ router.delete({
 	summary: '指定したログインセッションの切断',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントではセッションの管理を行えません。' });
   }
   const db = getDbAdapter(req);
@@ -979,7 +1107,7 @@ router.post({
 	summary: 'セッションに紐づくIPアドレスの信頼解除',
 	auth: 'session',
 }, requireAuth, requireInteractiveSession, async (req, res) => {
-  if (isImposter(req.user)) {
+  if (isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントではセッションの管理を行えません。' });
   }
   const db = getDbAdapter(req);
@@ -1214,7 +1342,7 @@ router.post({
 }, optionalAuth, async (req, res) => {
   const db = getDbAdapter(req);
 
-  if (req.user && isImposter(req.user)) {
+  if (req.user && isImposterRequest(req)) {
     return res.status(403).json({ error: 'インポスターアカウントから直接ログアウトすることはできません。アカウント切替をご利用ください。' });
   }
 

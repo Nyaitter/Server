@@ -27,6 +27,7 @@ const { listOwnedImposters } = require('../services/ImposterService');
 const {
 	createNotificationIfAllowed,
 } = require('../services/NotificationDeliveryService');
+const { getRecommendedUsers } = require('../services/UserRecommendationService');
 
 const api = require("../utils/ApiRegistry");
 const router = api.createRouter({
@@ -426,28 +427,14 @@ router.get({
 }, optionalAuth, searchLimiter, async (req, res) => {
 	const db = getDbAdapter(req);
 	const viewerId = req.user ? req.user.id : null;
+	res.setHeader('Cache-Control', 'private, no-store');
 
 	try {
-		let selected;
-		if (typeof db.getRecommendedUsers === 'function') {
-			selected = await db.getRecommendedUsers(3, viewerId);
-		} else {
-			const allUsers = db.getAllUsers ? await db.getAllUsers() : [];
-			let candidates = allUsers
-				.slice(0, 100) // cap before sort to avoid large in-memory operations
-				.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-			if (viewerId) {
-				candidates = candidates.filter(
-					(u) => u.id !== Number(viewerId),
-				);
-			}
-			selected = candidates.slice(0, 3);
-		}
+		const selected = await getRecommendedUsers(db, viewerId, 3);
 		await attachGroupBadgesToUsers(db, selected);
 		res.json({ users: selected.map((user) => serializeUserCard(user, getPublicUrl(req), {
 			includeSearchExclusion: Boolean(req.user?.admin),
 		})) });
-
 	} catch (err) {
 		console.error('[users] recommended error:', err);
 		res.status(500).json({ error: 'おすすめユーザー取得に失敗しました' });

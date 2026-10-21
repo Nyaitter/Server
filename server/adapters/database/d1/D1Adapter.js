@@ -624,6 +624,12 @@ class D1Adapter extends DatabaseAdapter {
 		}));
 	}
 
+	async getOpenAccountRecoveryRequest(userId) {
+		return mapAccountRecovery(await this._read(this._query('/account-recovery/open', {
+			userId: requireId(userId, 'userId'),
+		}), { cacheSeconds: 0 }));
+	}
+
 	async rotateAccountRecoveryToken(id, tokenHash) {
 		return mapAccountRecovery(await this._write(`/account-recovery/${encodeURIComponent(String(id))}/token`, {
 			requestTokenHash: String(tokenHash),
@@ -657,6 +663,10 @@ class D1Adapter extends DatabaseAdapter {
 			userId: requireId(userId, 'userId'),
 			decision: String(decision),
 		}));
+	}
+
+	async expireAccountRecoveryRequest(id) {
+		return mapAccountRecovery(await this._write(`/account-recovery/${encodeURIComponent(String(id))}/expire`, {}));
 	}
 
 	async approveDueAccountRecoveryRequest(id, decidedBy = 'timeout') {
@@ -1812,6 +1822,22 @@ class D1Adapter extends DatabaseAdapter {
 		};
 	}
 
+	async getUserRecommendationProfile(userId) {
+		const profile = await this._read(
+			`/users/${requireId(userId, 'userId')}/recommendation-profile`,
+			{ cacheSeconds: 30 },
+		).catch(() => null);
+		return {
+			affinities: Array.isArray(profile?.affinities) ? profile.affinities : [],
+			follows: Array.isArray(profile?.follows) ? profile.follows.map(Number).filter(Number.isInteger) : [],
+			extendedFollows: Array.isArray(profile?.extendedFollows) ? profile.extendedFollows.map(Number).filter(Number.isInteger) : [],
+			reacted: Array.isArray(profile?.reacted) ? profile.reacted.map(Number).filter(Number.isInteger) : [],
+			dislikedPostIds: Array.isArray(profile?.dislikedPostIds) ? profile.dislikedPostIds.map(Number).filter(Number.isInteger) : [],
+			dislikedAuthors: Array.isArray(profile?.dislikedAuthors) ? profile.dislikedAuthors.map(Number).filter(Number.isInteger) : [],
+			blockedAuthors: Array.isArray(profile?.blockedAuthors) ? profile.blockedAuthors.map(Number).filter(Number.isInteger) : [],
+		};
+	}
+
 	async getProfilePostIds({ userId, subType = 'all', order = 'latest', limit = 30, offset = 0, beforeId = null, cursor = null, cursorCreatedAt = null, cursorId = null } = {}) {
 		if (order !== 'latest') { beforeId = null; cursor = null; cursorCreatedAt = null; cursorId = null; }
 		const decodedCursor = cursorCreatedAt && cursorId
@@ -2044,18 +2070,18 @@ class D1Adapter extends DatabaseAdapter {
 		const list = await this._read(this._query(`/users/${requireId(userId, 'userId')}/group-dms`, {
 			limit: this._limit(limit, 50),
 			offset: this._offset(offset),
-		}), { cacheSeconds: 0 });
+		}), { cacheSeconds: 2 });
 		return Array.isArray(list) ? list.map((item) => serializeGroupDm(item, userId)) : [];
 	}
 
 	async getGroupDmVisibilityDataForUser(userId) {
-		const list = await this._read(`/users/${requireId(userId, 'userId')}/group-dms/visibility`, { cacheSeconds: 0 });
+		const list = await this._read(`/users/${requireId(userId, 'userId')}/group-dms/visibility`, { cacheSeconds: 2 });
 		return Array.isArray(list) ? list : [];
 	}
 
 	async getGroupDm(dmId) {
 		if (dmId == null || dmId === '') return null;
-		const dm = await this._read(`/group-dms/${encodeURIComponent(String(dmId))}`, { cacheSeconds: 0 });
+		const dm = await this._read(`/group-dms/${encodeURIComponent(String(dmId))}`, { cacheSeconds: 2 });
 		return serializeGroupDm(dm);
 	}
 
@@ -2089,12 +2115,12 @@ class D1Adapter extends DatabaseAdapter {
 	}
 
 	async getGroupDmUnreadCounts(userId) {
-		const list = await this._read(`/users/${requireId(userId, 'userId')}/group-dms/unread-counts`, { cacheSeconds: 0 });
+		const list = await this._read(`/users/${requireId(userId, 'userId')}/group-dms/unread-counts`, { cacheSeconds: 2 });
 		return Array.isArray(list) ? list : [];
 	}
 
 	async getGroupDmUnreadTotal(userId) {
-		const res = await this._read(`/users/${requireId(userId, 'userId')}/group-dms/unread-total`, { cacheSeconds: 0 });
+		const res = await this._read(`/users/${requireId(userId, 'userId')}/group-dms/unread-total`, { cacheSeconds: 2 });
 		return Number(res?.total ?? res?.count ?? res ?? 0);
 	}
 
