@@ -25,19 +25,17 @@ function envBoolean(name, fallback) {
   return Boolean(fallback);
 }
 
-function parseTrustProxySetting(value) {
-  if (value === true || value === false) return value;
-  if (value === undefined || value === null) return false;
+/**
+ * 信頼するプロキシのホップ数・サブネット指定。
+ * 未設定なら null。数値はホップ数、それ以外は Express が解釈する文字列。
+ */
+function parseTrustProxyHops(value) {
+  if (value === undefined || value === null) return null;
   const raw = String(value).trim();
-  if (!raw) return false;
-  const lower = raw.toLowerCase();
-  if (['true', 'yes', 'on'].includes(lower)) return true;
-  if (['false', 'no', 'off'].includes(lower)) return false;
-
-  // 数値は信頼するプロキシのホップ数として扱う。Express は
-  // 'loopback' や '10.0.0.0/8' のような文字列も受け付ける。
+  if (!raw) return null;
   const hops = Number(raw);
   if (Number.isInteger(hops) && hops >= 0) return hops;
+  // 'loopback' や '10.0.0.0/8' など。
   return raw;
 }
 
@@ -254,7 +252,7 @@ const configuredUserFilesEndpoint = process.env.NYAITTER_USER_FILES_ENDPOINT !==
 
 // 待ち受けアドレス。`NYAITTER_BIND=0.0.0.0:3000` のような host:port 指定に対応する。
 // 未指定なら従来どおり全インターフェースで待ち受ける。
-const serverHostSetting = readSetting(['NYAITTER_HOST', 'HOST'], ['server.host'], '');
+const serverHostSetting = readSetting(['NYAITTER_HOST'], ['server.host'], '');
 const serverBindSetting = readSetting(['NYAITTER_BIND'], ['server.bind'], '');
 const serverListen = resolveListenTarget({
   host: serverHostSetting,
@@ -285,11 +283,18 @@ const config = {
     bind: String(serverBindSetting || '').trim(),
     listenHost: serverListen.host,
     jsonBodyLimit: process.env.JSON_BODY_LIMIT || get('server.jsonBodyLimit', '2mb'),
-    trustProxy: parseTrustProxySetting(
-      process.env.TRUST_PROXY !== undefined
-        ? process.env.TRUST_PROXY
-        : get('server.trustProxy', false),
-    ),
+    // 後方互換: TRUST_PROXY は文字列 'true' または config.json の真偽値のみ。
+    // ホップ数・サブネットは NYAITTER_TRUST_PROXY_HOPS で指定する。
+    trustProxy: (() => {
+      const hops = parseTrustProxyHops(
+        process.env.NYAITTER_TRUST_PROXY_HOPS !== undefined
+          ? process.env.NYAITTER_TRUST_PROXY_HOPS
+          : get('server.trustProxyHops', null),
+      );
+      if (hops !== null) return hops;
+      // 旧実装と同じく真偽値として扱う（非ブール値でも truthy なら有効）。
+      return process.env.TRUST_PROXY === 'true' || Boolean(get('server.trustProxy', false));
+    })(),
     apiEndpoint,
     publicUrl: readSetting(
       ['NYAITTER_API_PUBLIC_URL', 'NYAITTER_API_URL', 'API_PUBLIC_URL'],

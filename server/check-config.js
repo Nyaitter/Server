@@ -146,7 +146,7 @@ function inspect() {
     const nodeEnv = String(process.env.NODE_ENV || 'development').toLowerCase();
     const isProduction = nodeEnv === 'production';
 
-    const hostSetting = firstSetting(['NYAITTER_HOST', 'HOST'], config, ['server.host'], '');
+    const hostSetting = firstSetting(['NYAITTER_HOST'], config, ['server.host'], '');
     const bindSetting = firstSetting(['NYAITTER_BIND'], config, ['server.bind'], '');
     const rawPort = setting('PORT', config, 'server.port', 3000);
     const port = Number(rawPort);
@@ -544,15 +544,27 @@ function inspect() {
             );
         }
 
-        const trustProxy = String(
+        const trustProxyRaw = String(
             setting('TRUST_PROXY', config, 'server.trustProxy', ''),
         ).trim().toLowerCase();
-        if (trustProxy === '' || ['false', 'no', 'off', '0'].includes(trustProxy)) {
+        const trustProxyHops = String(
+            firstSetting(['NYAITTER_TRUST_PROXY_HOPS'], config, ['server.trustProxyHops'], ''),
+        ).trim();
+        const trustProxyEnabled = trustProxyRaw === 'true' || trustProxyHops !== '';
+        if (!trustProxyEnabled) {
             addIssue(
                 'warning',
                 'TRUST_PROXY_DISABLED',
                 '本番環境でTRUST_PROXYが無効です。リバースプロキシ配下ではIP・HTTPS判定が正しくない場合があります。',
-                '信頼できるリバースプロキシの背後で運用する場合だけ TRUST_PROXY=true、または信頼するホップ数を指定してください。',
+                '信頼できるリバースプロキシの背後で運用する場合だけ TRUST_PROXY=true、または NYAITTER_TRUST_PROXY_HOPS に信頼するホップ数を設定してください。',
+            );
+        }
+        if (trustProxyRaw !== '' && !['true', 'false'].includes(trustProxyRaw) && trustProxyHops === '') {
+            addIssue(
+                'warning',
+                'TRUST_PROXY_VALUE_IGNORED',
+                `TRUST_PROXY の値は実行時に無視されます: ${trustProxyRaw}`,
+                'TRUST_PROXY は true / false のみ有効です。ホップ数は NYAITTER_TRUST_PROXY_HOPS に設定してください。',
             );
         }
     }

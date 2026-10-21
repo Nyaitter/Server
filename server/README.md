@@ -20,13 +20,13 @@ Nyaitter サーバーは用途ごとに別の HTTP サーバーを持ちます�
 
 | サーバー | 用途 | ポート | ホスト | 未設定時 |
 |---|---|---|---|---|
-| メイン | API・画面・WebSocket | `PORT`（既定 `3000`） | `HOST` / `NYAITTER_HOST` / `server.host` | 全インターフェース |
+| メイン | API・画面・WebSocket | `PORT`（既定 `3000`） | `NYAITTER_HOST` / `server.host` | 全インターフェース |
 | ユーザーファイル | 画像・添付の配信 | `NYAITTER_USER_FILES_PORT` / `userFiles.port` | `NYAITTER_USER_FILES_HOST` / `userFiles.host` | 専用サーバーなし。メイン配下で配信 |
 | 投稿共有 | クローラー向けOGP | `POST_SHARE_PORT`（メインと別のときだけ起動） | `NYAITTER_POST_SHARE_HOST` / `postShare.host` | 起動せずメインが配信 |
 | 埋め込みメール | メール送信の受け口 | `EMBEDDED_MAIL_SERVER_PORT`（既定 `2525`） | `EMBEDDED_MAIL_SERVER_HOST`（既定 `0.0.0.0`） | 起動しない |
 | 運用コントロール | CLI からの操作 | Unix ソケット | `NYAITTER_OPERATOR_SOCKET`（既定 `/tmp/nyaitter-operator.sock`） | 常に起動 |
 
-- `NYAITTER_BIND=0.0.0.0:3000` を指定すると、メインサーバーのホストとポートをまとめて上書きできます（`HOST` / `PORT` より優先）。
+- `NYAITTER_BIND=0.0.0.0:3000` を指定すると、メインサーバーのホストとポートをまとめて上書きできます（`NYAITTER_HOST` / `PORT` より優先）。
 - ユーザーファイルと投稿共有のホストは、指定しなければメインサーバーと同じホストで待ち受けます。
 - ホストにはホスト名、IPv4、IPv6（`::` や `::1`）を指定できます。不正な値は起動時に警告され、`npm run check:config` で検出されます。
 
@@ -35,16 +35,22 @@ Nyaitter サーバーは用途ごとに別の HTTP サーバーを持ちます�
 直接公開せず、プロキシだけが接続できるようにします。
 
 ```dotenv
-HOST=127.0.0.1
+NYAITTER_HOST=127.0.0.1
 PORT=3000
 TRUST_PROXY=true
 PUBLIC_URL=https://nyaitter.example.com
 ```
 
+`TRUST_PROXY=true` はすべてのプロキシを信頼します。`X-Forwarded-For` の偽装を防ぐには、信頼するホップ数を明示します。
+
+```dotenv
+NYAITTER_TRUST_PROXY_HOPS=1
+```
+
 #### 直接公開する
 
 ```dotenv
-HOST=0.0.0.0
+NYAITTER_HOST=0.0.0.0
 PORT=3000
 # または
 NYAITTER_BIND=0.0.0.0:3000
