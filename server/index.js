@@ -47,7 +47,9 @@ const {
     requestLogger,
     httpCompression,
 } = require('./middleware/system');
-const { generalLimiter, authLimiter } = require('./middleware/rateLimit');
+const { createRateLimiter, generalLimiter, authLimiter } = require('./middleware/rateLimit');
+const healthLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 120 });
+const { rejectExcessiveOffset } = require('./middleware/pagination');
 const ConnectionManager = require('./services/realtime/ConnectionManager');
 const PushNotificationService = require('./services/PushNotificationService');
 const { ModerationReportService } = require('./services/ModerationReportService');
@@ -162,7 +164,14 @@ app.use(API_ENDPOINT, requestId);
 app.use(securityHeaders);
 app.use(flexibleCors);
 app.use(API_ENDPOINT, csrfProtection);
-app.use(API_ENDPOINT, generalLimiter);
+const healthPaths = new Set([apiPath('/health'), apiPath('/ready')]);
+app.use(API_ENDPOINT, (req, res, next) => {
+    const requestPath = String(req.originalUrl || req.url || '').split('?', 1)[0].replace(/\/+$/, '') || '/';
+    if (healthPaths.has(requestPath)) return next();
+    return generalLimiter(req, res, next);
+});
+// Bound deep OFFSET requests before they reach SQL-backed listing routes.
+app.use(API_ENDPOINT, rejectExcessiveOffset);
 app.use(apiPath('/auth'), authLimiter);
 app.use(API_ENDPOINT, requestLogger);
 
@@ -335,23 +344,65 @@ realtimeServer.on('connection', (webSocket, _request, principal) => {
     const userId = principal.id;
     if (!principal.guest) realtimeConnections.register(userId, webSocket, principal.sessionTokenHash);
 
-    webSocket.on('message', (rawMessage, isBinary) => void (async () => {
+    // DB-backed realtime handlers must be serialized and bounded per socket.
+    const MAX_REALTIME_MESSAGES_PER_WINDOW = 1000;
+    const REALTIME_MESSAGE_WINDOW_MS = 10_000;
+    const MAX_PENDING_REALTIME_MESSAGES = 32;
+    let messageWindowStartedAt = Date.now();
+    let realtimeMessageCount = 0;
+    let pendingRealtimeMessages = 0;
+    let realtimeQueue = Promise.resolve();
+
+    webSocket.on('message', (rawMessage, isBinary) => {
+        const now = Date.now();
+        if (now - messageWindowStartedAt >= REALTIME_MESSAGE_WINDOW_MS) {
+            messageWindowStartedAt = now;
+            realtimeMessageCount = 0;
+        }
+        realtimeMessageCount += 1;
+        if (realtimeMessageCount > MAX_REALTIME_MESSAGES_PER_WINDOW) {
+            webSocket.close(1008, 'Too many realtime messages');
+            return;
+        }
         if (isBinary) {
             webSocket.close(1003, 'Binary messages are not supported');
             return;
         }
+
+        let message;
         try {
-            const message = JSON.parse(rawMessage.toString());
-            if (message?.type === 'ping') {
-                webSocket.send(JSON.stringify({ type: 'pong' }));
-                return;
-            }
-            await calls.handle(webSocket, principal.guest ? userId : Number(userId), message, principal.guestStageId || null);
-            if (!principal.guest) await handleRealtimeSpaceMessage(webSocket, userId, message);
+            message = JSON.parse(rawMessage.toString());
         } catch (_) {
-            // 1通の処理例外で接続を切らず、後続メッセージの処理を続ける。
+            return;
         }
-    })());
+
+        // Keep heartbeats responsive, but include them in the per-socket rate limit.
+        if (message?.type === 'ping') {
+            if (webSocket.readyState === 1 && webSocket.bufferedAmount < 1024 * 1024) {
+                webSocket.send(JSON.stringify({ type: 'pong' }));
+            }
+            return;
+        }
+
+        if (pendingRealtimeMessages >= MAX_PENDING_REALTIME_MESSAGES) {
+            webSocket.close(1008, 'Too many pending realtime messages');
+            return;
+        }
+        pendingRealtimeMessages += 1;
+        realtimeQueue = realtimeQueue.then(async () => {
+            try {
+                if (webSocket.readyState !== 1) return;
+                await calls.handle(webSocket, principal.guest ? userId : Number(userId), message, principal.guestStageId || null);
+                if (!principal.guest && webSocket.readyState === 1) {
+                    await handleRealtimeSpaceMessage(webSocket, userId, message);
+                }
+            } catch (_) {
+                // 1通の処理例外で接続を切らず、後続メッセージの処理を続ける。
+            } finally {
+                pendingRealtimeMessages -= 1;
+            }
+        });
+    });
     webSocket.on('close', () => { calls.disconnect(webSocket); if (!principal.guest) realtimeConnections.unregister(userId, webSocket); });
     webSocket.on('error', () => { calls.disconnect(webSocket); if (!principal.guest) realtimeConnections.unregister(userId, webSocket); });
 
@@ -365,7 +416,7 @@ realtimeServer.on('connection', (webSocket, _request, principal) => {
 
 
 // ── Health & Readiness ─────────────────────────────────────────────────────────
-app.get(apiPath('/health'), (req, res) => {
+app.get(apiPath('/health'), healthLimiter, (req, res) => {
     const base = {
         status: 'ok',
         timestamp: new Date().toISOString(),
@@ -387,7 +438,7 @@ app.get(apiPath('/health'), (req, res) => {
     res.json(base);
 });
 
-app.get(apiPath('/ready'), async (req, res) => {
+app.get(apiPath('/ready'), healthLimiter, async (req, res) => {
     try {
         const db = app.locals.dbAdapter;
         if (db && typeof db.getUserById === 'function') {
@@ -452,7 +503,16 @@ app.get('/favicon.ico', (req, res) => {
 // ── Static Frontend Serving ────────────────────────────────────────────────────
 const pageDir = path.join(__dirname, '../page');
 const hasStaticPage = fs.existsSync(pageDir) && fs.statSync(pageDir).isDirectory();
+const realPageDir = hasStaticPage ? fs.realpathSync(pageDir) : path.resolve(pageDir);
 const indexPath = path.join(pageDir, 'index.html');
+
+function isPathWithinDirectory(directoryPath, targetPath) {
+    const relativePath = path.relative(directoryPath, targetPath);
+    return relativePath !== ''
+        && relativePath !== '..'
+        && !relativePath.startsWith('..' + path.sep)
+        && !path.isAbsolute(relativePath);
+}
 let indexHtmlTemplate = null;
 if (hasStaticPage) {
     try {
@@ -627,9 +687,18 @@ if (hasStaticPage) {
         }
 
         if (!path.extname(cleanPath) && cleanPath !== '/') {
-            const htmlFilePath = path.join(pageDir, cleanPath + '.html');
-            if (fs.existsSync(htmlFilePath) && fs.statSync(htmlFilePath).isFile()) {
-                return res.sendFile(htmlFilePath);
+            // Prefix with '.' so leading slashes stay relative; verify the normalized
+            // path and its realpath to reject traversal and symlink escapes.
+            const htmlFilePath = path.resolve(realPageDir, '.' + cleanPath + '.html');
+            if (isPathWithinDirectory(realPageDir, htmlFilePath) && fs.existsSync(htmlFilePath)) {
+                try {
+                    const realHtmlFilePath = fs.realpathSync(htmlFilePath);
+                    if (isPathWithinDirectory(realPageDir, realHtmlFilePath) && fs.statSync(realHtmlFilePath).isFile()) {
+                        return res.sendFile(realHtmlFilePath);
+                    }
+                } catch (_) {
+                    // Missing files and invalid paths fall through to the static handler.
+                }
             }
         }
 
