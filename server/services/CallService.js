@@ -74,6 +74,22 @@ class CallService {
         this.queues = new WeakMap();
         this.joinQueues = new Map();
         this.stageBans = new Map();
+        // 直近のチャットメッセージID -> 送信者。削除権限の検証にだけ使う。
+        this.chatMessages = new Map();
+    }
+
+    rememberChatMessage(key, id, userId) {
+        this.chatMessages.set(id, { key, userId, at: Date.now() });
+        if (this.chatMessages.size <= 2000) return;
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        for (const [messageId, info] of this.chatMessages) {
+            if (info.at < cutoff) this.chatMessages.delete(messageId);
+        }
+        while (this.chatMessages.size > 2000) {
+            const oldest = this.chatMessages.keys().next().value;
+            if (oldest === undefined) break;
+            this.chatMessages.delete(oldest);
+        }
     }
 
     send(socket, event) {
@@ -374,10 +390,28 @@ class CallService {
             if (message.type === 'call:transcript' && entry.muted) fail(403, 'マイクが無効なため文字起こしを受け付けません。');
             const text = String(message.text || '').trim();
             if (!text || text.length > 2000) fail(400, '2000文字以内で入力してください。');
-            const event = { type: message.type, user_id: userId, name: entry.name, handle: entry.handle, nyaitter_id: entry.nyaitterId, guest: Boolean(entry.guest), text, at: new Date().toISOString() };
+            const messageId = crypto.randomUUID();
+            const event = { type: message.type, id: messageId, user_id: userId, name: entry.name, handle: entry.handle, nyaitter_id: entry.nyaitterId, guest: Boolean(entry.guest), text, at: new Date().toISOString() };
             if (message.type === 'call:transcript') {
                 for (const recipient of room.values()) if (recipient.transcriptionEnabled) this.send(recipient.socket, { ...event, room: key });
-            } else this.publish(key, event);
+            } else {
+                this.rememberChatMessage(key, messageId, userId);
+                this.publish(key, event);
+            }
+        } else if (message.type === 'call:chat-delete') {
+            const messageId = String(message.message_id || '');
+            if (!messageId || messageId.length > 128) fail(400, 'メッセージIDが正しくありません。');
+            const stored = this.chatMessages.get(messageId);
+            if (!stored || stored.key !== key) fail(404, 'メッセージが見つかりません。');
+            if (entry.role !== 'host' && String(stored.userId) !== String(userId)) fail(403, 'このメッセージは削除できません。');
+            this.chatMessages.delete(messageId);
+            this.publish(key, { type: 'call:chat-delete', id: messageId });
+        } else if (message.type === 'call:chat-clear') {
+            if (entry.role !== 'host') fail(403, 'チャットを消去できるのはホストだけです。');
+            for (const [messageId, info] of this.chatMessages) {
+                if (info.key === key) this.chatMessages.delete(messageId);
+            }
+            this.publish(key, { type: 'call:chat-clear' });
         }
     }
 }
