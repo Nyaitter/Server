@@ -22,12 +22,12 @@ Nyaitter サーバーは用途ごとに別の HTTP サーバーを持ちます�
 |---|---|---|---|---|
 | メイン | API・画面・WebSocket | `PORT`（既定 `3000`） | `NYAITTER_HOST` / `server.host` | 全インターフェース |
 | ユーザーファイル | 画像・添付の配信 | `NYAITTER_USER_FILES_PORT` / `userFiles.port` | `NYAITTER_USER_FILES_HOST` / `userFiles.host` | 専用サーバーなし。メイン配下で配信 |
-| 投稿共有 | クローラー向けOGP | `POST_SHARE_PORT`（メインと別のときだけ起動） | `NYAITTER_POST_SHARE_HOST` / `postShare.host` | 起動せずメインが配信 |
+| 共有 | クローラー向けOGP・埋め込み | `SHARE_PORT`（旧 `POST_SHARE_PORT`。メインと別のときだけ起動） | `NYAITTER_SHARE_HOST` / `share.host`（旧 `NYAITTER_POST_SHARE_HOST` / `postShare.host`） | 起動せずメインが配信 |
 | 埋め込みメール | メール送信の受け口 | `EMBEDDED_MAIL_SERVER_PORT`（既定 `2525`） | `EMBEDDED_MAIL_SERVER_HOST`（既定 `0.0.0.0`） | 起動しない |
 | 運用コントロール | CLI からの操作 | Unix ソケット | `NYAITTER_OPERATOR_SOCKET`（既定 `/tmp/nyaitter-operator.sock`） | 常に起動 |
 
 - `NYAITTER_BIND=0.0.0.0:3000` を指定すると、メインサーバーのホストとポートをまとめて上書きできます（`NYAITTER_HOST` / `PORT` より優先）。
-- ユーザーファイルと投稿共有のホストは、指定しなければメインサーバーと同じホストで待ち受けます。
+- ユーザーファイルと共有のホストは、指定しなければメインサーバーと同じホストで待ち受けます。
 - ホストにはホスト名、IPv4、IPv6（`::` や `::1`）を指定できます。不正な値は起動時に警告され、`npm run check:config` で検出されます。
 
 #### リバースプロキシの背後で公開する
@@ -56,16 +56,19 @@ PORT=3000
 NYAITTER_BIND=0.0.0.0:3000
 ```
 
-#### 画像を別ポート、投稿共有を別オリジンにする
+#### 画像を別ポート、共有を別オリジンにする
 
 ```dotenv
 PORT=3000
 NYAITTER_USER_FILES_PORT=3001
 NYAITTER_USER_FILES_HOST=127.0.0.1
-POST_SHARE_PORT=3002
-NYAITTER_POST_SHARE_HOST=0.0.0.0
-POST_SHARE_URL=https://share.example.com
+SHARE_PORT=3002
+NYAITTER_SHARE_HOST=0.0.0.0
+SHARE_URL=https://share.example.com
 ```
+
+旧名（`POST_SHARE_PORT` / `NYAITTER_POST_SHARE_HOST` / `POST_SHARE_URL`、
+config.json の `postSharePort` / `postShare.host` / `postShareUrl`）も後方互換で使用できます。
 
 #### 埋め込みメールサーバーを立てる
 
@@ -108,13 +111,15 @@ STORAGE_USER_QUOTA_MB=512
 
 `STORAGE_USER_QUOTA_MB` は 1 人あたりの保存上限（MB）です。Cloudflare R2 を使う場合は [Cloudflare R2 設定ガイド](./help/storage-r2.md) を参照してください。
 
-## 4. 投稿リンクをカード表示する
+## 4. 共有リンクをカード表示する
 
-投稿リンクをカード表示するポート番号を指定します。
+共有リンク（投稿・グループ・ステージ）をカード表示するポート番号を指定します。
 
 ```dotenv
-POST_SHARE_PORT=3000
+SHARE_PORT=3000
 ```
+
+旧名 `POST_SHARE_PORT` も後方互換で使用できます。
 
 ## 5. ログイン方法を選ぶ
 

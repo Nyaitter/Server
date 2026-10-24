@@ -92,14 +92,22 @@ function getFrontendUrl(req = null) {
   return normalizePublicUrl(config.frontendUrl) || getPublicUrl(req);
 }
 
-function getPostShareUrl(req = null) {
-  const configuredShareUrl = config.postShareUrl || process.env.POST_SHARE_URL;
+function getShareUrl(req = null) {
+  const configuredShareUrl =
+    config.shareUrl ||
+    config.postShareUrl ||
+    process.env.SHARE_URL ||
+    process.env.POST_SHARE_URL;
   if (configuredShareUrl) {
     const normalized = normalizePublicUrl(configuredShareUrl);
     if (normalized) return normalized;
   }
 
-  const portSetting = process.env.POST_SHARE_PORT || config.postSharePort;
+  const portSetting =
+    process.env.SHARE_PORT ||
+    process.env.POST_SHARE_PORT ||
+    config.sharePort ||
+    config.postSharePort;
   if (portSetting) {
     const port = Number(portSetting);
     if (Number.isInteger(port) && port >= 1 && port <= 65535) {
@@ -117,6 +125,9 @@ function getPostShareUrl(req = null) {
   return getPublicUrl(req);
 }
 
+// 後方互換: 旧名 getPostShareUrl は共有URLの取得にそのまま使える。
+const getPostShareUrl = getShareUrl;
+
 function getUserNyaitterId(user) {
 	if (!user) return null;
 	return formatNyaitterId(
@@ -131,6 +142,7 @@ module.exports = {
   getPublicUrl,
   getApiPublicUrl,
   getFrontendUrl,
+  getShareUrl,
   getPostShareUrl,
   getUserNyaitterId,
   normalizePublicUrl,

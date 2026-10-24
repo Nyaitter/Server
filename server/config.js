@@ -49,6 +49,20 @@ function envNonNegativeInteger(name, fallback) {
   return Number.isInteger(normalizedFallback) && normalizedFallback >= 0 ? normalizedFallback : 0;
 }
 
+/**
+ * 複数の環境変数名・設定パスを優先順に解決して非負整数にする。
+ * 新名を先に、旧名を後に並べて後方互換を保つ。
+ */
+function readNonNegativeInteger(envNames, configPaths, fallback) {
+  const value = readSetting(envNames, configPaths, undefined);
+  const candidate = value === undefined || value === '' ? fallback : value;
+  const parsed = Number(candidate);
+  if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+  console.warn(`[config] ${envNames[0]} must be a non-negative integer; using configured default.`);
+  const normalizedFallback = Number(fallback);
+  return Number.isInteger(normalizedFallback) && normalizedFallback >= 0 ? normalizedFallback : 0;
+}
+
 function readSetting(envNames, configPaths, fallback) {
   for (const name of envNames) {
     const value = process.env[name];
@@ -262,13 +276,27 @@ const serverListen = resolveListenTarget({
 
 // 個別サーバーのホスト。未設定ならメインサーバーと同じホストで待ち受ける。
 const userFilesHostSetting = readSetting(['NYAITTER_USER_FILES_HOST'], ['userFiles.host'], '');
-const postShareHostSetting = readSetting(
-  ['NYAITTER_POST_SHARE_HOST'],
-  ['postShare.host', 'posts.shareHost'],
+// 共有サーバーのホスト。新名 NYAITTER_SHARE_HOST / share.host を優先し、
+// 旧名 NYAITTER_POST_SHARE_HOST / postShare.host / posts.shareHost も受け付ける。
+const shareHostSetting = readSetting(
+  ['NYAITTER_SHARE_HOST', 'NYAITTER_POST_SHARE_HOST'],
+  ['share.host', 'postShare.host', 'posts.shareHost'],
   '',
 );
 const userFilesListenHost = resolveOptionalHost(userFilesHostSetting, serverListen.host);
-const postShareListenHost = resolveOptionalHost(postShareHostSetting, serverListen.host);
+const shareListenHost = resolveOptionalHost(shareHostSetting, serverListen.host);
+
+// 共有サーバー（OGP/埋め込み）の公開URL。新名 SHARE_URL / share.url を優先し、
+// 旧名 POST_SHARE_URL / postShareUrl も受け付ける。
+const shareUrlSetting = String(
+  readSetting(['SHARE_URL', 'POST_SHARE_URL'], ['share.url', 'shareUrl', 'postShareUrl'], '') || '',
+).trim();
+// 共有サーバーの待ち受けポート。0/未設定ならメインサーバーが配信する。
+const sharePortSetting = readNonNegativeInteger(
+  ['SHARE_PORT', 'POST_SHARE_PORT'],
+  ['share.port', 'sharePort', 'postSharePort', 'posts.sharePort'],
+  0,
+) || null;
 
 const config = {
   ai: {
@@ -1051,10 +1079,21 @@ const config = {
     enabled: Boolean(turnstileSecretKey),
   },
 
-  postSharePort: envNonNegativeInteger('POST_SHARE_PORT', get('postSharePort', get('posts.sharePort', 0))) || null,
-  // 投稿共有サーバーの待ち受けホスト。未設定ならメインと同じ。
-  postShareHost: String(postShareHostSetting || '').trim(),
-  postShareListenHost: postShareListenHost,
+  // 共有サーバー（OGP/埋め込み）の公開URL。新名 SHARE_URL / share.url を優先し、
+  // 旧名 POST_SHARE_URL / postShareUrl も受け付ける。両プロパティに同じ値を入れる。
+  shareUrl: shareUrlSetting,
+  postShareUrl: shareUrlSetting,
+
+  // 共有サーバーの待ち受けポート。新名 SHARE_PORT / share.port を優先し、
+  // 旧名 POST_SHARE_PORT / postSharePort / posts.sharePort も受け付ける。
+  sharePort: sharePortSetting,
+  postSharePort: sharePortSetting,
+
+  // 共有サーバーの待ち受けホスト。未設定ならメインと同じ。
+  shareHost: String(shareHostSetting || '').trim(),
+  postShareHost: String(shareHostSetting || '').trim(),
+  shareListenHost: shareListenHost,
+  postShareListenHost: shareListenHost,
 
   // スペースの音声通話（WebRTC）。
   // ICE サーバーは TURN 認証情報付きのものを推奨。未指定の場合は公開 STUN のみを使う。

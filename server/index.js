@@ -63,7 +63,7 @@ const { startAccountRecoveryScheduler } = require('./services/AccountRecoverySch
 const PostActionQueue = require('./services/PostActionQueue');
 const PostEventOutbox = require('./services/PostEventOutbox');
 const PostKeywordBackfillService = require('./services/PostKeywordBackfillService');
-const { getPublicUrl, getFrontendUrl, getPostShareUrl } = require('./utils/nyaitterAddress');
+const { getPublicUrl, getFrontendUrl, getShareUrl } = require('./utils/nyaitterAddress');
 const { startOperatorControlServer } = require('./utils/operatorControl');
 const { getEmbeddedMailServer } = require('./services/mail/EmbeddedMailServer');
 const {
@@ -98,7 +98,7 @@ const PORT = config.server.port || 3000;
 const LISTEN_HOST = config.server.listenHost;
 const DISPLAY_HOST = LISTEN_HOST || 'localhost';
 const USER_FILES_HOST = config.userFiles.listenHost;
-const POST_SHARE_HOST = config.postShareListenHost;
+const SHARE_HOST = config.shareListenHost;
 const API_ENDPOINT = config.server.apiEndpoint;
 const apiPath = (suffix = '') => {
     const normalizedSuffix = String(suffix || '').replace(/^\/+/, '');
@@ -633,7 +633,7 @@ if (hasStaticPage) {
                 try {
                     const db = app.locals.dbAdapter;
                     const publicUrl = getPublicUrl(req);
-                    const shareBase = getPostShareUrl(req).replace(/\/+$/, '');
+                    const shareBase = getShareUrl(req).replace(/\/+$/, '');
                     const frontendUrl = getFrontendUrl(req).replace(/\/+$/, '');
                     const userAgent = req.headers['user-agent'] || '';
 
@@ -736,7 +736,7 @@ if (userFilesEndpoint && userFilesPort) {
     userFilesServer = http.createServer(userFilesApp);
 }
 
-let postShareServer = null;
+let shareServer = null;
 
 // ── Error & 404 Handlers ───────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
@@ -823,7 +823,7 @@ async function startServer() {
     app.locals.dbAdapter = dbAdapter;
     app.locals.storageAdapter = storageAdapter;
     const userFileEndpoint = config.userFiles?.endpoint || null;
-    const postShareUrl = getPostShareUrl();
+    const shareUrl = getShareUrl();
     const turnstileSiteKey = config.turnstile?.siteKey || '';
 
     moderationScheduler = startModerationAssignmentScheduler(moderationReportService);
@@ -841,7 +841,8 @@ async function startServer() {
             startedAt: new Date().toISOString(),
             client_config: {
                 user_file_endpoint: userFileEndpoint,
-                post_share_url: postShareUrl,
+                share_url: shareUrl,
+                post_share_url: shareUrl,
                 turnstile_site_key: turnstileSiteKey,
                 resource_links: config.client?.resourceLinks || [],
                 widget_links: config.client?.widgetLinks || [],
@@ -875,14 +876,14 @@ async function startServer() {
             });
         }
 
-        const sharePort = config.postSharePort ? Number(config.postSharePort) : null;
+        const sharePort = config.sharePort ? Number(config.sharePort) : null;
         if (sharePort && sharePort !== PORT && Number.isInteger(sharePort) && sharePort > 0) {
-            postShareServer = http.createServer(app);
-            postShareServer.once('error', (error) => {
+            shareServer = http.createServer(app);
+            shareServer.once('error', (error) => {
                 console.error(`[share-server] Failed to listen on port ${sharePort}:`, error.message);
             });
-            postShareServer.listen(sharePort, POST_SHARE_HOST, () => {
-                console.log(`[share-server] Listening for post share traffic on http://${POST_SHARE_HOST || 'localhost'}:${sharePort}`);
+            shareServer.listen(sharePort, SHARE_HOST, () => {
+                console.log(`[share-server] Listening for share traffic on http://${SHARE_HOST || 'localhost'}:${sharePort}`);
             });
         }
 

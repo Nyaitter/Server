@@ -178,7 +178,7 @@ function inspect() {
 
     const perServerHosts = [
         { value: firstSetting(['NYAITTER_USER_FILES_HOST'], config, ['userFiles.host'], ''), label: 'NYAITTER_USER_FILES_HOST / userFiles.host' },
-        { value: firstSetting(['NYAITTER_POST_SHARE_HOST'], config, ['postShare.host', 'posts.shareHost'], ''), label: 'NYAITTER_POST_SHARE_HOST / postShare.host' },
+        { value: firstSetting(['NYAITTER_SHARE_HOST', 'NYAITTER_POST_SHARE_HOST'], config, ['share.host', 'postShare.host', 'posts.shareHost'], ''), label: 'NYAITTER_SHARE_HOST / share.host' },
     ];
     for (const item of perServerHosts) {
         const value = String(item.value || '').trim();
@@ -511,9 +511,9 @@ function inspect() {
             label: 'Client公開URL (client.publicUrl)',
         },
         {
-            envNames: ['POST_SHARE_URL'],
-            configPaths: ['postShareUrl'],
-            label: 'POST_SHARE_URL / postShareUrl',
+            envNames: ['SHARE_URL', 'POST_SHARE_URL'],
+            configPaths: ['share.url', 'shareUrl', 'postShareUrl'],
+            label: 'SHARE_URL / share.url',
         },
     ];
     for (const item of publicUrlSettings) {
