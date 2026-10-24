@@ -4207,10 +4207,12 @@ export default {
 				const now = new Date().toISOString();
 				await db.prepare('INSERT INTO reposts (user_id, post_id, created_at) VALUES (?, ?, ?)').bind(userId, postId, now).run();
 
+				// 純粋なリポスト行は content を空文字・attachments を NULL のまま保つ。
+				// 元投稿の本文/添付を複製するとクライアントに引用ポストとして扱われるため。
 				const res = await db.prepare(
 					`INSERT INTO posts (user_id, content, attachments, mask, lock, repost_to, created_at)
 					 VALUES (?, ?, ?, ?, ?, ?, ?)`
-				).bind(userId, original.content, original.attachments, original.mask, original.lock, postId, now).run();
+				).bind(userId, '', null, original.mask, original.lock, postId, now).run();
 
 				const created = await db.prepare('SELECT * FROM posts WHERE id = ?').bind(res.meta.last_row_id).first();
 				return json(normalizePostRow(created));

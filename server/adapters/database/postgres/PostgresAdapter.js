@@ -29,6 +29,14 @@ const { encodePostCursor, decodePostCursor } = require('../../../utils/postCurso
 const GROUP_DM_READ_CACHE_TTL_MS = 2000;
 const GROUP_DM_READ_CACHE_MAX_ENTRIES = 1000;
 
+// migration 032 で追加した集約カラムが未作成の DB かどうか。
+// コードだけ先にデプロイされた環境でも DM 一覧を 500 にしないための判定。
+function isMissingGroupDmSummaryColumn(error) {
+	return error?.code === '42703'
+		|| /column .*message_count.* does not exist/i.test(error?.message || '')
+		|| /column .*latest_message.* does not exist/i.test(error?.message || '');
+}
+
 
 function parseJsonSafe(value, fallback = null) {
 	if (value === null || value === undefined) return fallback;
@@ -529,8 +537,14 @@ class PostgresAdapter extends DatabaseAdapter {
 			throw new Error('Invalid PostgreSQL sslmode. Use disable, allow, prefer, require, verify-ca, verify-full, or no-verify.');
 		}
 
-		const poolMax = Math.max(25, Number(this.config.poolSize) || 25);
-		const poolMin = Math.min(poolMax, Math.max(5, Number(this.config.poolMin) || 5));
+		// poolMax は config 側で安全上限に丸め済み。アダプターを直接構築した場合も
+		// 明示指定がなければ 10 を上限にして migration 等の接続枠を残す。
+		const explicitPoolMax = Math.floor(Number(this.config.poolMax));
+		const requestedPoolMax = Number.isFinite(explicitPoolMax) && explicitPoolMax > 0
+			? explicitPoolMax
+			: Math.min(Math.floor(Number(this.config.poolSize)) || 10, 10);
+		const poolMax = Math.max(1, Math.min(100, requestedPoolMax));
+		const poolMin = Math.min(poolMax, Math.max(1, Number(this.config.poolMin) || 2));
 		const poolOptions = {
 			connectionString,
 			max: poolMax,
@@ -3308,12 +3322,8 @@ class PostgresAdapter extends DatabaseAdapter {
 		if (!Number.isSafeInteger(postId) || postId <= 0) return;
 		const post = await this.getPostById(postId);
 		if (!post) return;
-		const client = await this.pool.connect();
-		try {
-			await this._adjustUserKeywordAffinitiesForTags(client, post.userId, post.tags, 1);
-		} finally {
-			client.release();
-		}
+		// 単発の UPDATE なので専用クライアントを確保せずプールに任せる。
+		await this._adjustUserKeywordAffinitiesForTags(this.pool, post.userId, post.tags, 1);
 	}
 
 	async enqueuePostEvent(eventType, payload, { postId = null, availableAt = null, client = null } = {}) {
@@ -5349,14 +5359,17 @@ class PostgresAdapter extends DatabaseAdapter {
 			);
 
 			const origRow = original.rows[0];
+			// 純粋なリポスト行は content を空・attachments を NULL のままにする。
+			// 元投稿の本文/添付をコピーすると、クライアントが content の有無で
+			// リポストを引用ポストと誤判定してしまうため。
 			const { rows: created } = await client.query(
 				`INSERT INTO posts (user_id, content, attachments, mask, lock, repost_to, created_at)
 				 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
 				 RETURNING *`,
 				[
 					Number(userId),
-					origRow.content,
-					origRow.attachments ? JSON.stringify(origRow.attachments) : null,
+					'',
+					null,
 					origRow.mask,
 					origRow.lock,
 					Number(postId),
@@ -5664,15 +5677,31 @@ class PostgresAdapter extends DatabaseAdapter {
 		return this._cachedGroupDmRead(`list:${Number(userId)}:${safeLimit}:${safeOffset}`, async () => {
 			// 会話の全メッセージ(post)は一覧では不要。末尾メッセージと件数のみ取得する。
 			// member @> ARRAY[$1] は整数配列の GIN 索引 (gin(member)) を利用できる形。
-			const { rows } = await this.pool.query(
-				`SELECT id, host_id, title, member, unread, time, created_at,
-				        message_count,
-				        latest_message
-				   FROM group_dms
-				  WHERE member @> ARRAY[$1]::int[]
-				  ORDER BY time DESC LIMIT $2 OFFSET $3`,
-				[Number(userId), safeLimit, safeOffset],
-			);
+			let rows;
+			try {
+				({ rows } = await this.pool.query(
+					`SELECT id, host_id, title, member, unread, time, created_at,
+					        message_count,
+					        latest_message
+					   FROM group_dms
+					  WHERE member @> ARRAY[$1]::int[]
+					  ORDER BY time DESC LIMIT $2 OFFSET $3`,
+					[Number(userId), safeLimit, safeOffset],
+				));
+			} catch (error) {
+				if (!isMissingGroupDmSummaryColumn(error)) throw error;
+				// migration 032 未適用の DB: 集約カラムを使わず従来どおり post 全件から組み立てる。
+				if (!this._groupDmSummaryFallbackWarned) {
+					this._groupDmSummaryFallbackWarned = true;
+					console.warn('[PostgresAdapter] group_dms の message_count/latest_message が未作成です。migration 032 を適用してください。DM 一覧は post 取得にフォールバックします。');
+				}
+				({ rows } = await this.pool.query(
+					`SELECT * FROM group_dms
+					  WHERE member @> ARRAY[$1]::int[]
+					  ORDER BY time DESC LIMIT $2 OFFSET $3`,
+					[Number(userId), safeLimit, safeOffset],
+				));
+			}
 			return rows.map((row) => normalizeGroupDmRow(row, Number(userId)));
 		});
 	}

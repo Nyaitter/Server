@@ -298,6 +298,29 @@ const sharePortSetting = readNonNegativeInteger(
   0,
 ) || null;
 
+// PostgreSQL のプール上限。max_connections が小さい環境でも migration や
+// 管理用接続の枠を残すため、明示指定がなければ控えめな値に抑える。
+const POSTGRES_POOL_SAFE_MAX = 10;
+const postgresPoolSize = Math.min(100, Math.max(1, Math.floor(Number(
+  process.env.POSTGRES_POOL_SIZE || get('database.postgres.poolSize', 10),
+) || 10)));
+const postgresPoolMaxSetting = readSetting(
+  ['POSTGRES_POOL_MAX'],
+  ['database.postgres.poolMax'],
+  '',
+);
+const postgresPoolMax = (() => {
+  if (postgresPoolMaxSetting === '' || postgresPoolMaxSetting === undefined || postgresPoolMaxSetting === null) {
+    return Math.min(postgresPoolSize, POSTGRES_POOL_SAFE_MAX);
+  }
+  const parsed = Number(postgresPoolMaxSetting);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    console.warn(`[config] POSTGRES_POOL_MAX must be a positive integer; using ${Math.min(postgresPoolSize, POSTGRES_POOL_SAFE_MAX)}.`);
+    return Math.min(postgresPoolSize, POSTGRES_POOL_SAFE_MAX);
+  }
+  return Math.min(100, Math.max(1, Math.floor(parsed)));
+})();
+
 const config = {
   ai: {
     providers: aiProviderSettings(),
@@ -907,9 +930,10 @@ const config = {
       ...get('database.postgres', {}),
       connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL || get('database.postgres.connectionString', ''),
       sslCa: process.env.POSTGRES_SSL_CA || get('database.postgres.sslCa', ''),
-      poolSize: Math.min(100, Math.max(1, Math.floor(Number(process.env.POSTGRES_POOL_SIZE || get('database.postgres.poolSize', 10)) || 10))),
+      poolSize: postgresPoolSize,
+      poolMax: postgresPoolMax,
       poolMin: Math.min(20, Math.max(1, Math.floor(Number(process.env.POSTGRES_POOL_MIN || get('database.postgres.poolMin', 2)) || 2))),
-      poolIdleTimeoutMs: Math.min(86400000, Math.max(1000, Math.floor(Number(process.env.POSTGRES_POOL_IDLE_TIMEOUT_MS || get('database.postgres.poolIdleTimeoutMs', 300000)) || 300000))),
+      poolIdleTimeoutMs: Math.min(86400000, Math.max(1000, Math.floor(Number(process.env.POSTGRES_POOL_IDLE_TIMEOUT_MS || get('database.postgres.poolIdleTimeoutMs', 60000)) || 60000))),
       poolMaxLifetimeSeconds: Math.min(86400, Math.max(60, Math.floor(Number(process.env.POSTGRES_POOL_MAX_LIFETIME_SECONDS || get('database.postgres.poolMaxLifetimeSeconds', 1800)) || 1800))),
       connectionTimeoutMs: Math.min(60000, Math.max(1000, Math.floor(Number(process.env.POSTGRES_CONNECTION_TIMEOUT_MS || get('database.postgres.connectionTimeoutMs', 15000)) || 15000))),
       transactionRetries: Math.min(10, Math.max(0, Math.floor(Number(process.env.POSTGRES_TRANSACTION_RETRIES || get('database.postgres.transactionRetries', 5)) || 0))),

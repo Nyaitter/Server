@@ -270,6 +270,25 @@ function validateMessageHistoryUpdate(existingMessages, requestedMessages, userI
 	}
 }
 
+async function findDirectDmBetweenUsers(db, userId, otherUserId) {
+	const memberIds = Array.from(new Set([Number(userId), Number(otherUserId)]));
+	if (memberIds.length === 0 || memberIds.some((id) => !Number.isInteger(id) || id < 0)) {
+		return null;
+	}
+	if (typeof db.findGroupDmByMembers === 'function') {
+		return db.findGroupDmByMembers(memberIds);
+	}
+	// findGroupDmByMembers を持たないアダプタでは一覧から完全一致を探す。
+	const dms = await db.getGroupDmsForUser(Number(userId));
+	const normalizedMemberIds = [...memberIds].sort((a, b) => a - b);
+	return (dms || []).find((dm) => {
+		if (!Array.isArray(dm?.member)) return false;
+		const members = dm.member.map(Number).sort((a, b) => a - b);
+		return members.length === normalizedMemberIds.length
+			&& members.every((id, index) => id === normalizedMemberIds[index]);
+	}) || null;
+}
+
 async function getBlockedDmMemberIds(db, userId, memberIds, usersById = null) {
 	const blockedMemberIds = new Set();
 	const userCache = usersById instanceof Map ? usersById : null;

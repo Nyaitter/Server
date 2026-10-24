@@ -132,7 +132,7 @@
 				"connectionString": "postgres://user:pass@localhost:5432/nyaitter",
 				"poolSize": 25,
 				"poolMin": 5,
-					"poolIdleTimeoutMs": 300000,
+					"poolIdleTimeoutMs": 60000,
 					"poolMaxLifetimeSeconds": 1800,
 					"connectionTimeoutMs": 15000,
 				"transactionRetries": 5,
